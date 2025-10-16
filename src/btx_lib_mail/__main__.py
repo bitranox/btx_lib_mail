@@ -23,7 +23,9 @@ documented in ``docs/systemdesign/module_reference.md``.
 
 from __future__ import annotations
 
-from typing import Callable, ContextManager, Final
+from collections.abc import Callable
+from contextlib import AbstractContextManager
+from typing import Final
 
 from lib_cli_exit_tools import cli_session
 import rich_click as click
@@ -41,7 +43,7 @@ TRACEBACK_VERBOSE_LIMIT: Final[int] = cli.TRACEBACK_VERBOSE_LIMIT
 CommandRunner = Callable[..., int]
 
 
-def _open_cli_session() -> ContextManager[CommandRunner]:
+def _open_cli_session() -> AbstractContextManager[CommandRunner]:
     """Return the configured ``cli_session`` context manager.
 
     Why
@@ -101,8 +103,8 @@ def _module_main() -> int:
         int: Exit code reported by the CLI run.
     """
 
-    with _open_cli_session() as run:
-        return run(
+    with _open_cli_session() as runner:
+        return runner(
             _command_to_run(),
             prog_name=_command_name(),
         )

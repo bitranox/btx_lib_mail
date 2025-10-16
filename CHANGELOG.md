@@ -1,5 +1,39 @@
 # Changelog
 
+## [1.0.0] - 2025-10-16
+### Added
+- Pydantic-powered ``ConfMail`` configuration introduces STARTTLS and optional
+  SMTP authentication, plus per-call overrides for credentials and timeouts.
+- Unit tests that stub ``smtplib.SMTP`` exercise UTF-8 payloads, attachment
+  handling, and multi-host fallbacks while keeping the suite deterministic.
+- Optional integration test that sends real mail when ``TEST_SMTP_HOSTS`` and
+  ``TEST_RECIPIENTS`` are defined (shell environment or project ``.env``),
+  exercising UTF-8 content, HTML body, and attachment delivery against staging
+  SMTP relays.
+- CLI subcommand ``send`` exposes :func:`btx_lib_mail.lib_mail.send`,
+  honouring ``BTX_MAIL_*`` environment variables or command-line overrides for
+  hosts, recipients, sender, STARTTLS, credentials, and attachments.
+
+### Changed
+- ``lib_mail.send`` now renders messages as UTF-8, performs STARTTLS when
+  configured, logs failed host attempts at warning level, and guarantees clean
+  connection teardown via context managers.
+- Documentation (README and module reference) now describes the mail helper
+  surface, accepted ``smtphosts`` shapes, and the new security options.
+- Dropped legacy compatibility branches for Python releases prior to 3.13 and
+  refreshed type hints to use modern built-in generics throughout the CLI and
+  mail modules.
+- Raised the runtime ``pydantic`` floor to ``>=2.12.2`` so the configuration
+  model tracks the latest validation improvements.
+- GitHub Actions workflows now enable pip caching via ``actions/setup-python@v6``
+  and pin ``github/codeql-action`` to ``v4.30.8`` to align with the October 2025
+  ruleset without downgrading existing actions.
+- ``pyproject.toml`` configures ``pyright`` with ``pythonVersion = "3.13"`` so
+  static analysis matches the runtime baseline.
+- Dependency audit (October 16, 2025) confirmed runtime (`rich-click 1.9.3`,
+  ``lib_cli_exit_tools 2.1.0``, ``pydantic 2.12.2``) and development extras remain
+  on their current stable releases; no version bumps were needed this cycle.
+
 ## [0.0.1] - 2025-10-15
 ### Added
 - Static metadata portrait generated from ``pyproject.toml`` and exported via

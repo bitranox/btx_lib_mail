@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -264,6 +265,92 @@ def test_when_info_is_invoked_the_metadata_is_displayed(cli_runner: CliRunner) -
     assert result.exit_code == 0
     assert f"Info for {__init__conf__.name}:" in result.output
     assert __init__conf__.version in result.output
+
+
+@pytest.mark.os_agnostic
+def test_send_mail_command_uses_env_defaults(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner) -> None:
+    monkeypatch.setenv("BTX_MAIL_SMTP_HOSTS", "smtp.example.com:2525")
+    monkeypatch.setenv("BTX_MAIL_RECIPIENTS", "first@example.com,second@example.com")
+
+    calls: dict[str, Any] = {}
+
+    def fake_send(**kwargs: Any) -> bool:
+        calls.update(kwargs)
+        return True
+
+    monkeypatch.setattr(cli_mod, "send", fake_send)
+
+    result = cli_runner.invoke(
+        cli_mod.cli,
+        [
+            "send",
+            "--subject",
+            "Env Subject",
+            "--body",
+            "Env Body",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls["mail_from"] == "first@example.com"
+    assert calls["mail_recipients"] == ["first@example.com", "second@example.com"]
+    assert calls["smtphosts"] == ["smtp.example.com:2525"]
+    assert calls["mail_body_html"] == ""
+    assert calls["credentials"] is None
+    assert calls["use_starttls"] is False
+
+
+@pytest.mark.os_agnostic
+def test_send_mail_command_honours_cli_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+    cli_runner: CliRunner,
+    tmp_path: Path,
+) -> None:
+    attachment = tmp_path / "note.txt"
+    attachment.write_text("payload", encoding="utf-8")
+
+    calls: dict[str, Any] = {}
+
+    def fake_send(**kwargs: Any) -> bool:
+        calls.update(kwargs)
+        return True
+
+    monkeypatch.setattr(cli_mod, "send", fake_send)
+
+    result = cli_runner.invoke(
+        cli_mod.cli,
+        [
+            "send",
+            "--host",
+            "cli.smtp.example:587",
+            "--recipient",
+            "cli@example.com",
+            "--sender",
+            "sender@example.com",
+            "--subject",
+            "CLI Subject",
+            "--body",
+            "CLI Body",
+            "--html-body",
+            "<p>CLI</p>",
+            "--attachment",
+            str(attachment),
+            "--starttls",
+            "--username",
+            "user",
+            "--password",
+            "pass",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls["mail_from"] == "sender@example.com"
+    assert calls["mail_recipients"] == ["cli@example.com"]
+    assert calls["smtphosts"] == ["cli.smtp.example:587"]
+    assert calls["mail_body_html"] == "<p>CLI</p>"
+    assert calls["attachment_file_paths"] == [attachment]
+    assert calls["credentials"] == ("user", "pass")
+    assert calls["use_starttls"] is True
 
 
 @pytest.mark.os_agnostic

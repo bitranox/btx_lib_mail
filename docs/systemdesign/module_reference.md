@@ -1,10 +1,10 @@
-# Feature Documentation: CLI Behavior Scaffold
+# Feature Documentation: CLI Behavior Scaffold {#feature-cli-behavior-scaffold}
 
-## Status
+## Status {#feature-cli-status}
 
 Complete
 
-## Links & References
+## Links & References {#feature-cli-links}
 **Feature Requirements:** Scaffold requirements (ad-hoc)
 **Task/Ticket:** None documented
 **Pull Requests:** Pending current refactor
@@ -22,7 +22,7 @@ Complete
 
 ---
 
-## Problem Statement
+## Problem Statement {#feature-cli-problem}
 
 The original scaffold concentrated the greeting, failure trigger, and CLI
 orchestration inside a single module, making it harder to explain module intent
@@ -31,7 +31,7 @@ behaviourally identical. We needed clearer module boundaries and shared helpers
 for traceback preferences without introducing the full domain/application
 separation that would be overkill for this minimal template.
 
-## Solution Overview
+## Solution Overview {#feature-cli-solution}
 
 * Extracted the behaviour helpers into ``behaviors.py`` so both CLI and library
   consumers have a single cohesive module documenting the temporary domain.
@@ -47,7 +47,7 @@ separation that would be overkill for this minimal template.
 
 ---
 
-## Architecture Integration
+## Architecture Integration {#feature-cli-architecture}
 
 **App Layer Fit:** This package remains a CLI-first utility; all modules live in
 the transport/adapter layer, with ``behaviors.py`` representing the small
@@ -66,9 +66,9 @@ stand-in domain.
 
 ---
 
-## Core Components
+## Core Components {#feature-cli-components}
 
-### behaviors.emit_greeting
+### behaviors.emit_greeting {#behaviors-emit-greeting}
 
 * **Purpose:** Write the canonical greeting used in smoke tests and
   documentation.
@@ -76,21 +76,21 @@ stand-in domain.
 * **Output:** Writes ``"Hello World\n"`` to the stream and flushes if possible.
 * **Location:** src/btx_lib_mail/behaviors.py
 
-### behaviors.raise_intentional_failure
+### behaviors.raise_intentional_failure {#behaviors-raise-intentional-failure}
 
 * **Purpose:** Provide a deterministic failure hook for error-handling tests.
 * **Input:** None.
 * **Output:** Raises ``RuntimeError('I should fail')``.
 * **Location:** src/btx_lib_mail/behaviors.py
 
-### behaviors.noop_main
+### behaviors.noop_main {#behaviors-noop-main}
 
 * **Purpose:** Placeholder entry for transports expecting a ``main`` callable.
 * **Input:** None.
 * **Output:** Returns ``None``.
 * **Location:** src/btx_lib_mail/behaviors.py
 
-### cli.apply_traceback_preferences
+### cli.apply_traceback_preferences {#cli-apply-traceback-preferences}
 
 * **Purpose:** Synchronise traceback configuration between the CLI and ``python -m`` paths.
 * **Input:** Boolean flag enabling rich tracebacks.
@@ -98,14 +98,14 @@ stand-in domain.
   ``traceback_force_color``.
 * **Location:** src/btx_lib_mail/cli.py
 
-### cli.main
+### cli.main {#cli-main}
 
 * **Purpose:** Execute the click command group with shared exit handling.
 * **Input:** Optional argv, restore flag, summary and verbose limits.
 * **Output:** Integer exit code (0 on success, mapped error codes otherwise).
 * **Location:** src/btx_lib_mail/cli.py
 
-### cli._record_traceback_choice / cli._announce_traceback_choice / cli._traceback_option_requested
+### cli._record_traceback_choice / cli._announce_traceback_choice / cli._traceback_option_requested {#cli-traceback-management}
 
 * **Purpose:** Persist the selected traceback mode in both the Click context and
   ``lib_cli_exit_tools`` while exposing a predicate that tells whether the user
@@ -115,7 +115,7 @@ stand-in domain.
   boolean value from ``_traceback_option_requested``.
 * **Location:** src/btx_lib_mail/cli.py
 
-### cli._invoke_cli / cli._current_traceback_mode / cli._traceback_limit / cli._print_exception / cli._run_cli_via_exit_tools / cli._show_help
+### cli._invoke_cli / cli._current_traceback_mode / cli._traceback_limit / cli._print_exception / cli._run_cli_via_exit_tools / cli._show_help {#cli-infrastructure}
 
 * **Purpose:** Delegate execution to ``lib_cli_exit_tools`` while deciding how
   to present tracebacks and when to show command help for bare invocations.
@@ -125,14 +125,62 @@ stand-in domain.
   or the exit code produced by ``lib_cli_exit_tools``.
 * **Location:** src/btx_lib_mail/cli.py
 
-### __main__._module_main
+### cli.cli_send_mail {#cli-cli-send-mail}
+
+* **Purpose:** Expose the ``send`` CLI surface for :func:`btx_lib_mail.lib_mail.send`,
+  enabling engineers to smoke-test SMTP setups without writing bespoke
+  scripts.
+* **Input:** ``send`` command options ``--host``, ``--recipient``, ``--sender``,
+  ``--subject``, ``--body``, ``--html-body``, ``--attachment``,
+  ``--starttls``, ``--username``, and ``--password``. Falls back to
+  ``BTX_MAIL_SMTP_HOSTS``, ``BTX_MAIL_RECIPIENTS``, ``BTX_MAIL_SENDER``,
+  ``BTX_MAIL_SMTP_USE_STARTTLS``, ``BTX_MAIL_SMTP_USERNAME``, and
+  ``BTX_MAIL_SMTP_PASSWORD`` environment variables (or a local ``.env``) when
+  CLI values are omitted. Precedence: CLI options → environment variables →
+  `.env` entries → :data:`btx_lib_mail.lib_mail.conf`.
+* **Output:** Delegates to :func:`send` and echoes a summary line upon success;
+  exceptions from :func:`send` bubble up to the shared error handlers.
+* **Location:** src/btx_lib_mail/cli.py
+
+### lib_mail.ConfMail {#lib-mail-confmail}
+
+* **Purpose:** Declarative configuration (via Pydantic) for outbound SMTP
+  delivery, consolidating host lists, attachment policies, and security
+  options.
+* **Input:** Accepts strings, lists, or tuples for ``smtphosts``; optional
+  ``smtp_username``/``smtp_password`` credentials; ``smtp_use_starttls`` toggle;
+  policy flags for attachment and recipient validation.
+* **Output:** Provides normalised configuration through methods such as
+  :meth:`resolved_credentials`, enabling the send helper to consume consistent
+  data regardless of input form.
+* **Location:** src/btx_lib_mail/lib_mail.py
+
+### lib_mail.send
+
+* **Purpose:** Deliver multipart UTF-8 e-mails with optional HTML and
+  attachments, iterating over configured SMTP hosts until delivery succeeds or
+  all hosts fail.
+* **Input:** Sender, recipients, subject/body content, optional HTML body,
+  optional attachment paths, and runtime overrides for credentials,
+  STARTTLS usage, and socket timeout.
+* **Output:** Returns ``True`` after a successful delivery; raises
+  ``RuntimeError`` listing undelivered recipients when every host fails.
+* **Additional Behaviour:**
+  - Uses ``ConfMail`` defaults when per-call overrides are not provided.
+  - Performs STARTTLS when configured and authenticates with supplied
+    credentials.
+  - Logs failed host attempts at WARNING level and ensures connections are
+    closed via context managers.
+* **Location:** src/btx_lib_mail/lib_mail.py
+
+### __main__._module_main {#module-main-module-main}
 
 * **Purpose:** Provide ``python -m`` entry point mirroring the console script.
 * **Input:** None.
 * **Output:** Exit code from ``cli.main`` after restoring traceback state.
 * **Location:** src/btx_lib_mail/__main__.py
 
-### __main__._open_cli_session / _command_to_run / _command_name
+### __main__._open_cli_session / _command_to_run / _command_name {#module-main-session-helpers}
 
 * **Purpose:** Describe the session wiring and command selection used by the
   module entry point so tests and documentation can reason about the
@@ -141,16 +189,189 @@ stand-in domain.
   itself, and the shell-facing name.
 * **Location:** src/btx_lib_mail/__main__.py
 
-### __init__conf__.print_info
+### __init__conf__.print_info {#init-conf-print-info}
 
 * **Purpose:** Render the statically-defined project metadata for the CLI ``info`` command.
 * **Input:** None.
 * **Output:** Writes the hard-coded metadata block to ``stdout``.
 * **Location:** src/btx_lib_mail/__init__conf__.py
 
-### Package Exports
+### Package Exports {#package-exports-cli}
 
 * ``__init__.py`` re-exports behaviour helpers and ``print_info`` for library
+  consumers while hiding adapter wiring.
+
+---
+
+# Feature Documentation: Mail Delivery Helpers {#feature-mail-delivery-helpers}
+
+## Status {#feature-mail-status}
+
+Complete
+
+## Links & References {#feature-mail-links}
+**Feature Requirements:** Internal SMTP helper expansion
+**Task/Ticket:** None documented
+**Pull Requests:** Pending current refactor
+**Related Files:**
+
+* src/btx_lib_mail/lib_mail.py
+* tests/test_lib_mail.py
+
+---
+
+## Problem Statement {#feature-mail-problem}
+
+The project needed a reusable SMTP helper capable of iterating through multiple
+hosts, handling optional STARTTLS and authentication, validating recipients, and
+packaging attachments—all without leaking transport details into callers or the
+CLI. Earlier iterations relied on list utility helpers and scattered logic.
+
+## Solution Overview {#feature-mail-solution}
+
+* Introduced immutable value objects (:class:`AttachmentPayload`,
+  :class:`DeliveryOptions`) to separate preparation from SMTP orchestration.
+* Replaced the external list utility dependency with explicit normalisers that
+  keep intent obvious.
+* Broke the delivery pipeline into small helpers (`_prepare_*`, `_deliver_*`,
+  `_compose_message`) so each step reads like prose.
+* Ensured validation and logging behave consistently whether invoked via CLI or
+  directly from library code.
+
+---
+
+## Architecture Integration {#feature-mail-architecture}
+
+**App Layer Fit:** ``lib_mail`` sits in the adapter layer, translating validated
+inputs into SMTP side effects.
+
+**Data Flow:**
+1. Callers populate :data:`conf` or pass explicit overrides.
+2. :func:`send` prepares recipients, hosts, attachments, and delivery options.
+3. Each recipient is attempted across the host list via ``_deliver_to_any_host``.
+4. ``_deliver_via_host`` composes the MIME message and sends it over SMTP.
+
+**System Dependencies:**
+* ``smtplib`` for SMTP interactions
+* ``ssl`` for STARTTLS contexts
+* ``pydantic`` for configuration validation
+
+---
+
+## Core Components {#feature-mail-components}
+
+### lib_mail.AttachmentPayload {#lib-mail-attachmentpayload}
+
+* **Purpose:** Preserve attachment filename and bytes together for MIME encoding.
+* **Fields:** ``filename`` (``str``), ``content`` (``bytes``).
+* **Location:** src/btx_lib_mail/lib_mail.py
+
+### lib_mail.DeliveryOptions {#lib-mail-deliveryoptions}
+
+* **Purpose:** Freeze delivery knobs (credentials, STARTTLS flag, timeout) once.
+* **Fields:** ``credentials`` (``tuple[str, str] | None``), ``use_starttls`` (``bool``), ``timeout`` (``float``).
+* **Location:** src/btx_lib_mail/lib_mail.py
+
+### lib_mail.conf {#lib-mail-conf}
+
+* **Purpose:** Global configuration instance shared across adapters.
+* **Behaviour:** Values may be set directly or populated via CLI precedence
+  (CLI args → env vars → `.env` → defaults).
+* **Type:** :class:`ConfMail`.
+* **Location:** src/btx_lib_mail/lib_mail.py
+
+### lib_mail._resolve_delivery_options {#lib-mail-resolve-delivery-options}
+
+* **Purpose:** Merge per-call overrides with :data:`conf` defaults.
+* **Inputs:** Optional credentials, STARTTLS flag, timeout.
+* **Output:** :class:`DeliveryOptions`.
+* **Location:** src/btx_lib_mail/lib_mail.py
+
+### lib_mail._prepare_recipients {#lib-mail-prepare-recipients}
+
+* **Purpose:** Strip, deduplicate, lower-case, and validate recipient emails.
+* **Inputs:** ``str`` or ``Sequence[str]``.
+* **Output:** ``tuple[str, ...]``.
+* **Location:** src/btx_lib_mail/lib_mail.py
+
+### lib_mail._prepare_hosts {#lib-mail-prepare-hosts}
+
+* **Purpose:** Normalise host strings and remove duplicates/empties.
+* **Inputs:** ``tuple[str, ...]``.
+* **Output:** ``tuple[str, ...]``.
+* **Location:** src/btx_lib_mail/lib_mail.py
+
+### lib_mail._prepare_attachments {#lib-mail-prepare-attachments}
+
+* **Purpose:** Resolve file paths, read bytes, and create attachment payloads.
+* **Inputs:** ``tuple[pathlib.Path, ...]``.
+* **Output:** ``tuple[AttachmentPayload, ...]``.
+* **Location:** src/btx_lib_mail/lib_mail.py
+
+### lib_mail._deliver_to_any_host {#lib-mail-deliver-to-any-host}
+
+* **Purpose:** Iterate over hosts until delivery succeeds.
+* **Inputs:** Sender, recipient, content, host tuple, attachments, delivery options.
+* **Output:** ``bool`` (success flag).
+* **Location:** src/btx_lib_mail/lib_mail.py
+
+### lib_mail._deliver_via_host {#lib-mail-deliver-via-host}
+
+* **Purpose:** Manage SMTP session lifecycle for a single host.
+* **Inputs:** Host string, sender/recipient/content, attachments, delivery options.
+* **Output:** ``None`` (raises on failure).
+* **Location:** src/btx_lib_mail/lib_mail.py
+
+### lib_mail._compose_message {#lib-mail-compose-message}
+
+* **Purpose:** Build a multipart MIME message string with optional HTML and attachments.
+* **Inputs:** Sender, recipient, subject, bodies, attachments.
+* **Output:** ``str``.
+* **Location:** src/btx_lib_mail/lib_mail.py
+
+### lib_mail._render_attachment {#lib-mail-render-attachment}
+
+* **Purpose:** Encode an :class:`AttachmentPayload` as a MIME part.
+* **Inputs:** :class:`AttachmentPayload`.
+* **Output:** :class:`email.mime.base.MIMEBase`.
+* **Location:** src/btx_lib_mail/lib_mail.py
+
+### lib_mail._normalise_email_address {#lib-mail-normalise-email}
+
+* **Purpose:** Trim whitespace/quotes and lower-case email candidates.
+* **Inputs:** ``str``.
+* **Output:** ``str``.
+* **Location:** src/btx_lib_mail/lib_mail.py
+
+### lib_mail._normalise_host {#lib-mail-normalise-host}
+
+* **Purpose:** Strip whitespace/quotes from host entries.
+* **Inputs:** ``str``.
+* **Output:** ``str``.
+* **Location:** src/btx_lib_mail/lib_mail.py
+
+### lib_mail._collect_host_inputs {#lib-mail-collect-host-inputs}
+
+* **Purpose:** Accept ``None``, strings, or iterables and return a host list.
+* **Inputs:** ``Any``.
+* **Output:** ``list[str]``.
+* **Location:** src/btx_lib_mail/lib_mail.py
+
+### lib_mail._split_host_and_port {#lib-mail-split-host-port}
+
+* **Purpose:** Split ``host:port`` strings while tolerating missing ports.
+* **Inputs:** ``str``.
+* **Output:** ``tuple[str, int | None]``.
+* **Location:** src/btx_lib_mail/lib_mail.py
+
+### lib_mail._is_valid_email_address {#lib-mail-is-valid-email-address}
+
+* **Purpose:** Confirm email syntax via regex before delivery attempts.
+* **Inputs:** ``str``.
+* **Output:** ``bool``.
+* **Location:** src/btx_lib_mail/lib_mail.py
+
+---
   consumers. No legacy compatibility layer remains; new code should import from
   the canonical module paths.
 

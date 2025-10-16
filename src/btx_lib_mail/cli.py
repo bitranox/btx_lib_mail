@@ -39,7 +39,9 @@ behaviour remains consistent regardless of entry point.
 
 from __future__ import annotations
 
-from typing import Final, Optional, Sequence, Tuple
+import os
+from pathlib import Path
+from typing import Final, Sequence
 
 import rich_click as click
 
@@ -48,6 +50,76 @@ from click.core import ParameterSource
 
 from . import __init__conf__
 from .behaviors import emit_greeting, noop_main, raise_intentional_failure
+from .lib_mail import send
+
+_DOTENV_PATH = Path(".env")
+_TRUE_VALUES = {"1", "true", "yes", "on"}
+_FALSE_VALUES = {"0", "false", "no", "off"}
+
+
+def _dotenv_value(key: str) -> str | None:
+    if not _DOTENV_PATH.is_file():
+        return None
+    for line in _DOTENV_PATH.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if "=" not in stripped:
+            continue
+        candidate_key, candidate_value = stripped.split("=", 1)
+        if candidate_key.strip() != key:
+            continue
+        return candidate_value.strip().strip('"').strip("'") or None
+    return None
+
+
+def _configured_value(key: str) -> str | None:
+    env_value = os.getenv(key)
+    if env_value not in (None, ""):
+        return env_value
+    return _dotenv_value(key)
+
+
+def _split_values(values: Sequence[str]) -> list[str]:
+    flattened: list[str] = []
+    for raw in values:
+        for item in raw.split(","):
+            candidate = item.strip()
+            if candidate:
+                flattened.append(candidate)
+    return flattened
+
+
+def _resolve_list(cli_values: Sequence[str], env_key: str, *, label: str) -> list[str]:
+    values = _split_values(cli_values)
+    if not values:
+        env_raw = _configured_value(env_key)
+        if env_raw:
+            values = _split_values([env_raw])
+    if not values:
+        raise click.UsageError(f"Provide at least one {label} via options or {env_key}.")
+    return values
+
+
+def _resolve_bool(cli_flag: bool | None, env_key: str, *, default: bool = False) -> bool:
+    if cli_flag is not None:
+        return cli_flag
+    env_raw = _configured_value(env_key)
+    if env_raw is None:
+        return default
+    lowered = env_raw.strip().lower()
+    if lowered in _TRUE_VALUES:
+        return True
+    if lowered in _FALSE_VALUES or lowered == "":
+        return False
+    raise click.BadParameter(f"Unrecognised boolean value for {env_key}: {env_raw!r}")
+
+
+def _resolve_credentials(user: str | None, password: str | None) -> tuple[str, str] | None:
+    if user and password:
+        return user, password
+    return None
+
 
 #: Shared Click context flags so help output stays consistent across commands.
 CLICK_CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}  # noqa: C408
@@ -55,7 +127,7 @@ CLICK_CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}  # noqa: C408
 TRACEBACK_SUMMARY_LIMIT: Final[int] = 500
 #: Character budget used when verbose tracebacks are enabled.
 TRACEBACK_VERBOSE_LIMIT: Final[int] = 10_000
-TracebackState = Tuple[bool, bool]
+TracebackState = tuple[bool, bool]
 
 
 def apply_traceback_preferences(enabled: bool) -> None:
@@ -192,7 +264,7 @@ def _no_subcommand_requested(ctx: click.Context) -> bool:
     return ctx.invoked_subcommand is None
 
 
-def _invoke_cli(argv: Optional[Sequence[str]]) -> int:
+def _invoke_cli(argv: Sequence[str] | None) -> int:
     """Ask ``lib_cli_exit_tools`` to execute the Click command.
 
     Why
@@ -201,7 +273,7 @@ def _invoke_cli(argv: Optional[Sequence[str]]) -> int:
 
     Inputs
         argv:
-            Optional sequence of command-line arguments. ``None`` delegates to
+        Optional sequence of command-line arguments. ``None`` delegates to
             ``sys.argv`` inside ``lib_cli_exit_tools``.
 
     Outputs
@@ -314,7 +386,7 @@ def _show_help(ctx: click.Context) -> None:
 
 
 def _run_cli_via_exit_tools(
-    argv: Optional[Sequence[str]],
+    argv: Sequence[str] | None,
     *,
     summary_limit: int,
     verbose_limit: int,
@@ -327,7 +399,7 @@ def _run_cli_via_exit_tools(
 
     Inputs
         argv:
-            Optional sequence of CLI arguments.
+        Optional sequence of CLI arguments.
         summary_limit / verbose_limit:
             Character budgets steering exception output length.
 
@@ -444,6 +516,79 @@ def cli_hello() -> None:
     emit_greeting()
 
 
+@cli.command("send", context_settings=CLICK_CONTEXT_SETTINGS)
+@click.option(
+    "--host",
+    "hosts",
+    multiple=True,
+    help="SMTP host to use (repeat or provide comma-separated values).",
+    metavar="HOST",
+)
+@click.option(
+    "--recipient",
+    "recipients",
+    multiple=True,
+    help="Recipient email address (repeat or provide comma-separated values).",
+    metavar="EMAIL",
+)
+@click.option("--sender", help="Envelope sender address.")
+@click.option("--subject", required=True, help="Mail subject line.")
+@click.option("--body", required=True, help="Plain-text email body.")
+@click.option("--html-body", help="Optional HTML body content.")
+@click.option(
+    "--attachment",
+    "attachments",
+    type=click.Path(path_type=Path),
+    multiple=True,
+    help="Attachment file path (repeat for multiple files).",
+)
+@click.option(
+    "--starttls/--no-starttls",
+    "starttls",
+    default=None,
+    help="Force STARTTLS negotiation (overrides environment).",
+)
+@click.option("--username", help="SMTP username.")
+@click.option("--password", help="SMTP password.")
+def cli_send_mail(
+    *,
+    hosts: Sequence[str],
+    recipients: Sequence[str],
+    sender: str | None,
+    subject: str,
+    body: str,
+    html_body: str | None,
+    attachments: Sequence[Path],
+    starttls: bool | None,
+    username: str | None,
+    password: str | None,
+) -> None:
+    """Send an email using ``btx_lib_mail.lib_mail.send``."""
+
+    resolved_hosts = _resolve_list(hosts, "BTX_MAIL_SMTP_HOSTS", label="SMTP host")
+    resolved_recipients = _resolve_list(recipients, "BTX_MAIL_RECIPIENTS", label="recipient")
+
+    sender_value = sender or _configured_value("BTX_MAIL_SENDER") or resolved_recipients[0]
+    username_value = username or _configured_value("BTX_MAIL_SMTP_USERNAME")
+    password_value = password or _configured_value("BTX_MAIL_SMTP_PASSWORD")
+    use_starttls = _resolve_bool(starttls, "BTX_MAIL_SMTP_USE_STARTTLS", default=False)
+    credentials = _resolve_credentials(username_value, password_value)
+
+    send(
+        mail_from=sender_value,
+        mail_recipients=resolved_recipients,
+        mail_subject=subject,
+        mail_body=body,
+        mail_body_html=html_body or "",
+        smtphosts=resolved_hosts,
+        attachment_file_paths=list(attachments),
+        credentials=credentials,
+        use_starttls=use_starttls,
+    )
+
+    click.echo(f"Mail sent to {', '.join(resolved_recipients)} via {', '.join(resolved_hosts)}")
+
+
 @cli.command("fail", context_settings=CLICK_CONTEXT_SETTINGS)
 def cli_fail() -> None:
     """Trigger the intentional failure helper to test error handling."""
@@ -452,7 +597,7 @@ def cli_fail() -> None:
 
 
 def main(
-    argv: Optional[Sequence[str]] = None,
+    argv: Sequence[str] | None = None,
     *,
     restore_traceback: bool = True,
     summary_limit: int = TRACEBACK_SUMMARY_LIMIT,
@@ -467,7 +612,7 @@ def main(
 
     Inputs
         argv:
-            Optional sequence of CLI arguments. ``None`` lets Click consume
+        Optional sequence of CLI arguments. ``None`` lets Click consume
             ``sys.argv`` directly.
         restore_traceback:
             ``True`` to restore the prior ``lib_cli_exit_tools`` traceback

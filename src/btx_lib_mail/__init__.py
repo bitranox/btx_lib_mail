@@ -8,6 +8,7 @@ from .behaviors import (
     noop_main,
     raise_intentional_failure,
 )
+from .lib_mail import ConfMail, conf, logger, send
 from .__init__conf__ import print_info
 
 __all__ = [
@@ -16,4 +17,8 @@ __all__ = [
     "noop_main",
     "print_info",
     "raise_intentional_failure",
+    "ConfMail",
+    "conf",
+    "send",
+    "logger",
 ]

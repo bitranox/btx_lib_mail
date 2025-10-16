@@ -1,10 +1,10 @@
 [project]
 name = "btx_lib_mail"
-version = "0.0.1"
+version = "1.0.0"
 description = "Template for python apps with registered cli commands"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = ["rich-click>=1.9.3", "lib_cli_exit_tools>=2.1.0"]
+dependencies = ["rich-click>=1.9.3", "lib_cli_exit_tools>=2.1.0", "pydantic>=2.12.2"]
 license = { text = "MIT" }
 authors = [{ name = "bitranox", email = "bitranox@gmail.com" }]
 keywords = ["logging", "rich", "cli", "terminal", "ansi"]
@@ -61,6 +61,7 @@ target-version = "py313"
 
 [tool.pyright]
 typeCheckingMode = "strict"
+pythonVersion = "3.13"
 extraPaths = [
   "src",
 ]
@@ -78,6 +79,7 @@ markers = [
   "os_macos: test exercises macOS-only behavior",
   "os_posix: test exercises behavior requiring POSIX semantics",
   "os_linux: test exercises Linux-only behavior",
+  "integration: sends a real SMTP message when TEST_SMTP_* env vars are set",
 ]
 
 [tool.coverage.run]
