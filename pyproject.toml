@@ -1,6 +1,6 @@
 [project]
 name = "btx_lib_mail"
-version = "1.0.0"
+version = "1.0.1"
 description = "Template for python apps with registered cli commands"
 readme = "README.md"
 requires-python = ">=3.13"
