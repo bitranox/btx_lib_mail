@@ -1,35 +1,29 @@
-"""Domain-level behaviors supporting the minimal CLI transport.
+"""## btx_lib_mail.behaviors {#module-btx-lib-mail-behaviors}
 
-Purpose
--------
-Collect the placeholder behaviors that the CLI adapter exposes so that each
-concern remains self-contained. Keeping these helpers together makes it easy to
-swap in richer logging logic later without touching the transport surface.
+**Purpose:** Gather the domain-placeholder helpers that back the CLI scaffold so
+each behaviour has a single, well-documented home. Keeping the trio together
+lets adapter layers evolve without rewriting domain stubs.
 
-Contents
---------
-* :func:`emit_greeting` – success-path helper that writes the canonical scaffold
-  message.
-* :func:`raise_intentional_failure` – deterministic error hook used by tests and
-  CLI flows to validate traceback handling.
-* :func:`noop_main` – placeholder entry used when callers expect a ``main``
-  callable despite the domain layer being stubbed today.
+**Contents:**
+- `emit_greeting` — success-path helper that emits the canonical message.
+- `raise_intentional_failure` — deterministic failure hook for exercising error paths.
+- `noop_main` — placeholder entry point for transports expecting a `main`.
 
-System Role
------------
-Acts as the temporary domain surface for this template. Other modules import
-from here instead of duplicating literals so the public API stays coherent as
-features evolve.
+**System Role:** Described in
+`docs/systemdesign/module_reference.md#feature-cli-behavior-scaffold`; this
+module represents the current domain surface for the template while richer
+features incubate elsewhere.
 """
 
 from __future__ import annotations
 
-from typing import TextIO
+from typing import Final, TextIO
 
 import sys
 
 
-CANONICAL_GREETING = "Hello World"
+CANONICAL_GREETING: Final[str] = "Hello World"
+"""Canonical greeting line shared across CLI and smoke tests."""
 
 
 def _target_stream(preferred: TextIO | None) -> TextIO:
@@ -53,34 +47,29 @@ def _flush_if_possible(stream: TextIO) -> None:
 
 
 def emit_greeting(*, stream: TextIO | None = None) -> None:
-    """Write the canonical greeting to the provided text stream.
+    """### emit_greeting(stream: TextIO | None = None) {#behaviors-emit-greeting}
 
-    Why
-        Provide a deterministic success path that the documentation, smoke
-        tests, and packaging checks can rely on while the real logging helpers
-        are developed.
+    **Purpose:** Offer a deterministic success story that documentation, tests,
+    and CLI commands can reuse while the real domain behaviour is still under
+    construction.
 
-    What
-        Writes :data:`CANONICAL_GREETING` followed by a newline to the target
-        stream.
+    **What:** Writes `CANONICAL_GREETING` followed by a newline to the selected
+    text stream and flushes the stream when a `flush` method exists.
 
-    Parameters
-    ----------
-    stream:
-        Optional text stream receiving the greeting. Defaults to
-        :data:`sys.stdout` when ``None``.
+    **Parameters:**
+    - `stream: TextIO | None = None` — Optional destination. When `None`, the
+      helper targets `sys.stdout`.
 
-    Side Effects
-        Writes to the target stream and flushes it when a ``flush`` attribute is
-        available.
+    **Returns:** `None`.
 
-    Examples
-    --------
+    **Raises:** No new exceptions are raised; any stream failures bubble up.
+
+    **Example:**
     >>> from io import StringIO
     >>> buffer = StringIO()
     >>> emit_greeting(stream=buffer)
-    >>> buffer.getvalue() == "Hello World\\n"
-    True
+    >>> buffer.getvalue()
+    'Hello World\\n'
     """
 
     target = _target_stream(stream)
@@ -89,49 +78,48 @@ def emit_greeting(*, stream: TextIO | None = None) -> None:
 
 
 def raise_intentional_failure() -> None:
-    """Raise ``RuntimeError`` so transports can exercise failure flows.
+    """### raise_intentional_failure() {#behaviors-raise-intentional-failure}
 
-    Why
-        CLI commands and tests need a guaranteed failure scenario to ensure the
-        shared exit-code helpers and traceback toggles remain correct.
+    **Purpose:** Provide a guaranteed failure hook so transports and tests can
+    assert traceback and exit-code behaviour without introducing ad-hoc errors.
 
-    What
-        Always raises ``RuntimeError`` with the message ``"I should fail"``.
+    **What:** Always raises `RuntimeError('I should fail')`.
 
-    Side Effects
-        None beyond raising the exception.
+    **Parameters:** None.
 
-    Raises
-        RuntimeError: Regardless of input.
+    **Returns:** This helper never returns.
 
-    Examples
-    --------
-    >>> raise_intentional_failure()
-    Traceback (most recent call last):
-    ...
-    RuntimeError: I should fail
+    **Raises:** `RuntimeError` — unconditionally, with the canonical message.
+
+    **Example:**
+    >>> try:
+    ...     raise_intentional_failure()
+    ... except RuntimeError as exc:
+    ...     exc.args[0]
+    'I should fail'
     """
 
     raise RuntimeError("I should fail")
 
 
 def noop_main() -> None:
-    """Explicit placeholder callable for transports without domain logic yet.
+    """### noop_main() {#behaviors-noop-main}
 
-    Why
-        Some tools expect a module-level ``main`` even when the underlying
-        feature set is still stubbed out. Exposing this helper makes that
-        contract obvious and easy to replace later.
+    **Purpose:** Honour tooling contracts that expect a `main` callable even
+    while the real domain implementation is pending.
 
-    What
-        Performs no work and returns immediately.
+    **What:** Performs no work and returns immediately so callers can treat the
+    placeholder as a benign default.
 
-    Side Effects
-        None.
+    **Parameters:** None.
 
-    Examples
-    --------
-    >>> noop_main()
+    **Returns:** `None`.
+
+    **Raises:** No exceptions.
+
+    **Example:**
+    >>> noop_main() is None
+    True
     """
 
     return None

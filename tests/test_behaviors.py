@@ -51,6 +51,23 @@ def test_when_flush_is_possible_the_stream_is_polished() -> None:
 
 
 @pytest.mark.os_agnostic
+def test_when_the_stream_refuses_to_flush_the_song_remains_serene() -> None:
+    @dataclass
+    class StoicStream:
+        ledger: list[str]
+        flush: str = "silent"
+
+        def write(self, text: str) -> None:
+            self.ledger.append(text)
+
+    stream = StoicStream([])
+
+    behaviors.emit_greeting(stream=stream)  # type: ignore[arg-type]
+
+    assert stream.ledger == ["Hello World\n"]
+
+
+@pytest.mark.os_agnostic
 def test_when_failure_is_invoked_a_runtime_error_rises() -> None:
     with pytest.raises(RuntimeError, match="I should fail"):
         behaviors.raise_intentional_failure()

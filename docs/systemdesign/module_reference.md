@@ -132,12 +132,12 @@ stand-in domain.
   scripts.
 * **Input:** ``send`` command options ``--host``, ``--recipient``, ``--sender``,
   ``--subject``, ``--body``, ``--html-body``, ``--attachment``,
-  ``--starttls``, ``--username``, and ``--password``. Falls back to
+  ``--starttls``, ``--username``, ``--password``, and ``--timeout``. Falls back to
   ``BTX_MAIL_SMTP_HOSTS``, ``BTX_MAIL_RECIPIENTS``, ``BTX_MAIL_SENDER``,
-  ``BTX_MAIL_SMTP_USE_STARTTLS``, ``BTX_MAIL_SMTP_USERNAME``, and
-  ``BTX_MAIL_SMTP_PASSWORD`` environment variables (or a local ``.env``) when
-  CLI values are omitted. Precedence: CLI options → environment variables →
-  `.env` entries → :data:`btx_lib_mail.lib_mail.conf`.
+  ``BTX_MAIL_SMTP_USE_STARTTLS``, ``BTX_MAIL_SMTP_USERNAME``,
+  ``BTX_MAIL_SMTP_PASSWORD``, and ``BTX_MAIL_SMTP_TIMEOUT`` environment variables
+  (or a local ``.env``) when CLI values are omitted. Precedence: CLI options →
+  environment variables → `.env` entries → :data:`btx_lib_mail.lib_mail.conf`.
 * **Output:** Delegates to :func:`send` and echoes a summary line upon success;
   exceptions from :func:`send` bubble up to the shared error handlers.
 * **Location:** src/btx_lib_mail/cli.py
@@ -148,7 +148,8 @@ stand-in domain.
   delivery, consolidating host lists, attachment policies, and security
   options.
 * **Input:** Accepts strings, lists, or tuples for ``smtphosts``; optional
-  ``smtp_username``/``smtp_password`` credentials; ``smtp_use_starttls`` toggle;
+  ``smtp_username``/``smtp_password`` credentials; ``smtp_use_starttls`` toggle
+  (defaults to ``True``); ``smtp_timeout`` value (defaults to ``30.0`` seconds);
   policy flags for attachment and recipient validation.
 * **Output:** Provides normalised configuration through methods such as
   :meth:`resolved_credentials`, enabling the send helper to consume consistent
@@ -166,7 +167,8 @@ stand-in domain.
 * **Output:** Returns ``True`` after a successful delivery; raises
   ``RuntimeError`` listing undelivered recipients when every host fails.
 * **Additional Behaviour:**
-  - Uses ``ConfMail`` defaults when per-call overrides are not provided.
+  - Uses ``ConfMail`` defaults when per-call overrides are not provided
+    (STARTTLS is enabled by default and may be disabled explicitly when needed).
   - Performs STARTTLS when configured and authenticates with supplied
     credentials.
   - Logs failed host attempts at WARNING level and ensures connections are

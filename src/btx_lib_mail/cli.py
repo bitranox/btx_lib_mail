@@ -1,40 +1,22 @@
-"""CLI adapter wiring the behavior helpers into a rich-click interface.
+"""## btx_lib_mail.cli {#module-btx-lib-mail-cli}
 
-Purpose
--------
-Expose a stable command-line surface so tooling, documentation, and packaging
-automation can be exercised while the richer logging helpers are being built.
-By delegating to :mod:`btx_lib_mail.behaviors` the transport stays
-aligned with the Clean Code rules captured in
-``docs/systemdesign/module_reference.md``.
+**Purpose:** Provide the rich-click adapter that exposes the behaviour helpers
+to users and automation while keeping traceback handling consistent across
+console scripts and `python -m` entry points.
 
-Contents
---------
-* :data:`CLICK_CONTEXT_SETTINGS` – shared Click settings ensuring consistent
-  ``--help`` behavior across commands.
-* :func:`apply_traceback_preferences` – helper that synchronises the shared
-  traceback configuration flags.
-* :func:`snapshot_traceback_state` / :func:`restore_traceback_state` – utilities
-  for preserving and reapplying the global traceback preference.
-* :func:`cli` – root command group wiring the global options.
-* :func:`cli_main` – default action when no subcommand is provided.
-* :func:`cli_info`, :func:`cli_hello`, :func:`cli_fail` – subcommands covering
-  metadata printing, success path, and failure path.
-* :func:`_record_traceback_choice`, :func:`_announce_traceback_choice` – persist
-  traceback preferences across context and shared tooling.
-* :func:`_invoke_cli`, :func:`_current_traceback_mode`, :func:`_traceback_limit`,
-  :func:`_print_exception`, :func:`_run_cli_via_exit_tools` – isolate the error
-  handling and delegation path.
-* :func:`_restore_when_requested` – restores tracebacks when ``main`` finishes.
-* :func:`main` – composition helper delegating to ``lib_cli_exit_tools`` while
-  honouring the shared traceback preferences.
+**Contents:**
+- `CLICK_CONTEXT_SETTINGS`, `TRACEBACK_SUMMARY_LIMIT`, `TRACEBACK_VERBOSE_LIMIT`
+  — shared configuration constants.
+- `apply_traceback_preferences`, `snapshot_traceback_state`,
+  `restore_traceback_state` — shared traceback state helpers.
+- `cli` and its subcommands (`cli_info`, `cli_hello`, `cli_send_mail`, `cli_fail`)
+  plus `cli_main` — the public CLI surface.
+- `main` — composition helper driving execution through `lib_cli_exit_tools`.
 
-System Role
------------
-The CLI is the primary adapter for local development workflows; packaging
-targets register the console script defined in :mod:`btx_lib_mail.__init__conf__`.
-Other transports (including ``python -m`` execution) reuse the same helpers so
-behaviour remains consistent regardless of entry point.
+**System Role:** Documented in
+`docs/systemdesign/module_reference.md#feature-cli-components`; this module is
+the primary adapter, ensuring every transport shares the same traceback and
+delivery semantics.
 """
 
 from __future__ import annotations
@@ -50,7 +32,7 @@ from click.core import ParameterSource
 
 from . import __init__conf__
 from .behaviors import emit_greeting, noop_main, raise_intentional_failure
-from .lib_mail import send
+from .lib_mail import conf, send
 
 _DOTENV_PATH = Path(".env")
 _TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -121,37 +103,72 @@ def _resolve_credentials(user: str | None, password: str | None) -> tuple[str, s
     return None
 
 
+def _resolve_float(cli_value: float | None, env_key: str, *, default: float) -> float:
+    """Return the float value provided via CLI, environment, or default.
+
+    Why
+        Keeps timeout resolution readable while surfacing friendly errors.
+
+    Inputs
+    ------
+    cli_value:
+        Value supplied on the CLI (``None`` when flag omitted).
+    env_key:
+        Environment variable consulted when CLI value is absent.
+    default:
+        Fallback applied when neither CLI nor environment provided a value.
+
+    Outputs
+    -------
+    float
+        Parsed float value honouring the precedence chain.
+
+    Side Effects
+    ------------
+    Raises :class:`click.BadParameter` when the environment variable cannot be
+    parsed as a float.
+    """
+
+    if cli_value is not None:
+        return cli_value
+    env_raw = _configured_value(env_key)
+    if env_raw is None or env_raw.strip() == "":
+        return default
+    try:
+        return float(env_raw.strip())
+    except ValueError as exc:
+        raise click.BadParameter(f"Unrecognised float value for {env_key}: {env_raw!r}") from exc
+
+
 #: Shared Click context flags so help output stays consistent across commands.
 CLICK_CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}  # noqa: C408
+"""Click context settings ensuring every command honours `-h/--help`."""
 #: Character budget used when printing truncated tracebacks.
 TRACEBACK_SUMMARY_LIMIT: Final[int] = 500
+"""Character budget applied to compact traceback output."""
 #: Character budget used when verbose tracebacks are enabled.
 TRACEBACK_VERBOSE_LIMIT: Final[int] = 10_000
+"""Character budget applied when verbose tracebacks are requested."""
 TracebackState = tuple[bool, bool]
 
 
 def apply_traceback_preferences(enabled: bool) -> None:
-    """Synchronise shared traceback flags with the requested preference.
+    """### apply_traceback_preferences(enabled: bool) -> None {#cli-apply-traceback-preferences}
 
-    Why
-        ``lib_cli_exit_tools`` inspects global flags to decide whether tracebacks
-        should be truncated and whether colour should be forced. Updating both
-        attributes together ensures the ``--traceback`` flag behaves the same for
-        console scripts and ``python -m`` execution.
+    **Purpose:** Keep `lib_cli_exit_tools` configuration aligned with the CLI's
+    `--traceback/--no-traceback` flag so console scripts and `python -m` runs
+    present identical diagnostics.
 
-    Parameters
-    ----------
-    enabled:
-        ``True`` enables full tracebacks with colour. ``False`` restores the
-        compact summary mode.
+    **Parameters:**
+    - `enabled: bool` — `True` enables verbose, colourised tracebacks;
+      `False` restores compact summaries.
 
-    Examples
-    --------
+    **Returns:** `None`.
+
+    **Example:**
     >>> apply_traceback_preferences(True)
-    >>> bool(lib_cli_exit_tools.config.traceback)
-    True
-    >>> bool(lib_cli_exit_tools.config.traceback_force_color)
-    True
+    >>> (lib_cli_exit_tools.config.traceback, lib_cli_exit_tools.config.traceback_force_color)
+    (True, True)
     """
 
     lib_cli_exit_tools.config.traceback = bool(enabled)
@@ -159,17 +176,16 @@ def apply_traceback_preferences(enabled: bool) -> None:
 
 
 def snapshot_traceback_state() -> TracebackState:
-    """Capture the current traceback configuration for later restoration.
+    """### snapshot_traceback_state() -> TracebackState {#cli-snapshot-traceback-state}
 
-    Returns
-    -------
-    TracebackState
-        Tuple of ``(traceback_enabled, force_color)``.
+    **Purpose:** Capture the current verbose/colour traceback settings so they
+    can be restored after a CLI run modifies them.
 
-    Examples
-    --------
-    >>> snapshot = snapshot_traceback_state()
-    >>> isinstance(snapshot, tuple)
+    **Returns:** `TracebackState` — Tuple `(traceback_enabled, force_color)`
+    describing the current configuration.
+
+    **Example:**
+    >>> snapshot_traceback_state() in [(False, False), (True, True)]
     True
     """
 
@@ -180,19 +196,22 @@ def snapshot_traceback_state() -> TracebackState:
 
 
 def restore_traceback_state(state: TracebackState) -> None:
-    """Reapply a previously captured traceback configuration.
+    """### restore_traceback_state(state: TracebackState) -> None {#cli-restore-traceback-state}
 
-    Parameters
-    ----------
-    state:
-        Tuple returned by :func:`snapshot_traceback_state`.
+    **Purpose:** Reapply a previously captured traceback configuration so global
+    state looks untouched to callers after CLI execution.
 
-    Examples
-    --------
-    >>> prev = snapshot_traceback_state()
+    **Parameters:**
+    - `state: TracebackState` — Tuple produced by
+      `snapshot_traceback_state()`.
+
+    **Returns:** `None`.
+
+    **Example:**
+    >>> saved = snapshot_traceback_state()
     >>> apply_traceback_preferences(True)
-    >>> restore_traceback_state(prev)
-    >>> snapshot_traceback_state() == prev
+    >>> restore_traceback_state(saved)
+    >>> snapshot_traceback_state() == saved
     True
     """
 
@@ -445,33 +464,29 @@ def _run_cli_via_exit_tools(
 )
 @click.pass_context
 def cli(ctx: click.Context, traceback: bool) -> None:
-    """Root command storing global flags and syncing shared traceback state.
+    """### cli(traceback: bool = False) -> None {#cli-root}
 
-    Why
-        The CLI must provide a switch for verbose tracebacks so developers can
-        toggle diagnostic depth without editing configuration files.
+    **Purpose:** Register global CLI options (notably `--traceback`) and ensure
+    `lib_cli_exit_tools` reflects the caller's preference before dispatching to
+    subcommands.
 
-    What
-        Ensures a dict-based context, stores the ``traceback`` flag, and mirrors
-        the value into ``lib_cli_exit_tools.config`` so downstream helpers observe
-        the preference. When no subcommand (or options) are provided, the command
-        prints help instead of running the domain stub; otherwise the default
-        action delegates to :func:`cli_main`.
+    **Parameters:**
+    - `ctx: click.Context` — Click context initialised by Click.
+    - `traceback: bool = False` — `True` to enable verbose tracebacks; defaults
+      to `False`.
 
-    Side Effects
-        Mutates :mod:`lib_cli_exit_tools.config` to reflect the requested
-        traceback mode, including ``traceback_force_color`` when tracebacks are
-        enabled.
+    **Returns:** `None`.
 
-    Examples
-    --------
+    **Side Effects:** Stores the traceback preference in `ctx.obj` and mirrors
+    it into `lib_cli_exit_tools.config`. When invoked without a subcommand and
+    without explicitly setting the traceback flag, the command prints help
+    instead of executing the placeholder domain entry.
+
+    **Example:**
     >>> from click.testing import CliRunner
     >>> runner = CliRunner()
-    >>> result = runner.invoke(cli, ["hello"])
-    >>> result.exit_code
+    >>> runner.invoke(cli, ["hello"]).exit_code
     0
-    >>> "Hello World" in result.output
-    True
     """
 
     _record_traceback_choice(ctx, enabled=traceback)
@@ -484,19 +499,18 @@ def cli(ctx: click.Context, traceback: bool) -> None:
 
 
 def cli_main() -> None:
-    """Run the placeholder domain entry when callers opt into execution.
+    """### cli_main() -> None {#cli-main}
 
-    Why
-        Maintains compatibility with tooling that expects the original
-        "do-nothing" behaviour by explicitly opting in via options (e.g.
-        ``--traceback`` without subcommands).
+    **Purpose:** Preserve the scaffold behaviour where the CLI performs the
+    placeholder domain action when users opt into execution (e.g. `--traceback`
+    without subcommands).
 
-    Side Effects
-        Delegates to :func:`noop_main`.
+    **Returns:** `None`.
 
-    Examples
-    --------
-    >>> cli_main()
+    **Side Effects:** Delegates to `noop_main()`.
+
+    **Example:**
+    >>> cli_main()  # returns None
     """
 
     noop_main()
@@ -504,14 +518,30 @@ def cli_main() -> None:
 
 @cli.command("info", context_settings=CLICK_CONTEXT_SETTINGS)
 def cli_info() -> None:
-    """Print resolved metadata so users can inspect installation details."""
+    """### cli_info() -> None {#cli-info}
+
+    **Purpose:** Surface the package metadata so operators can confirm version,
+    homepage, and authorship information.
+
+    **Returns:** `None`.
+
+    **Side Effects:** Writes metadata to standard output.
+    """
 
     __init__conf__.print_info()
 
 
 @cli.command("hello", context_settings=CLICK_CONTEXT_SETTINGS)
 def cli_hello() -> None:
-    """Demonstrate the success path by emitting the canonical greeting."""
+    """### cli_hello() -> None {#cli-hello}
+
+    **Purpose:** Demonstrate the happy-path behaviour by emitting the canonical
+    greeting used throughout the scaffold.
+
+    **Returns:** `None`.
+
+    **Side Effects:** Writes `Hello World` plus newline to standard output.
+    """
 
     emit_greeting()
 
@@ -550,6 +580,12 @@ def cli_hello() -> None:
 )
 @click.option("--username", help="SMTP username.")
 @click.option("--password", help="SMTP password.")
+@click.option(
+    "--timeout",
+    type=float,
+    default=None,
+    help="Socket timeout in seconds (overrides environment).",
+)
 def cli_send_mail(
     *,
     hosts: Sequence[str],
@@ -562,8 +598,35 @@ def cli_send_mail(
     starttls: bool | None,
     username: str | None,
     password: str | None,
+    timeout: float | None,
 ) -> None:
-    """Send an email using ``btx_lib_mail.lib_mail.send``."""
+    """### cli_send_mail(...) -> None {#cli-send-mail}
+
+    **Purpose:** Provide a convenient SMTP smoke test that feeds resolved CLI
+    and environment inputs into `btx_lib_mail.lib_mail.send`.
+
+    **Parameters:**
+    - `hosts: Sequence[str]` — One or more `host[:port]` entries; defaults to
+      `BTX_MAIL_SMTP_HOSTS` when omitted.
+    - `recipients: Sequence[str]` — Recipient addresses; defaults to
+      `BTX_MAIL_RECIPIENTS`.
+    - `sender: str | None` — Optional envelope sender. Falls back to
+      `BTX_MAIL_SENDER` or the first recipient.
+    - `subject: str` — Required subject line.
+    - `body: str` — Required plain-text body.
+    - `html_body: str | None` — Optional HTML body.
+    - `attachments: Sequence[Path]` — Zero or more filesystem paths to attach.
+    - `starttls: bool | None` — Override for STARTTLS preference. When `None`,
+      falls back to configuration/environment.
+    - `username: str | None`, `password: str | None` — Optional credentials.
+      Both are required to enable authentication.
+    - `timeout: float | None` — Optional socket timeout override in seconds.
+
+    **Returns:** `None`.
+
+    **Side Effects:** Calls `send()` and echoes a summary message to standard
+    output. Exceptions from `send()` propagate to the shared error handlers.
+    """
 
     resolved_hosts = _resolve_list(hosts, "BTX_MAIL_SMTP_HOSTS", label="SMTP host")
     resolved_recipients = _resolve_list(recipients, "BTX_MAIL_RECIPIENTS", label="recipient")
@@ -571,8 +634,9 @@ def cli_send_mail(
     sender_value = sender or _configured_value("BTX_MAIL_SENDER") or resolved_recipients[0]
     username_value = username or _configured_value("BTX_MAIL_SMTP_USERNAME")
     password_value = password or _configured_value("BTX_MAIL_SMTP_PASSWORD")
-    use_starttls = _resolve_bool(starttls, "BTX_MAIL_SMTP_USE_STARTTLS", default=False)
+    use_starttls = _resolve_bool(starttls, "BTX_MAIL_SMTP_USE_STARTTLS", default=conf.smtp_use_starttls)
     credentials = _resolve_credentials(username_value, password_value)
+    timeout_value = _resolve_float(timeout, "BTX_MAIL_SMTP_TIMEOUT", default=conf.smtp_timeout)
 
     send(
         mail_from=sender_value,
@@ -584,6 +648,7 @@ def cli_send_mail(
         attachment_file_paths=list(attachments),
         credentials=credentials,
         use_starttls=use_starttls,
+        timeout=timeout_value,
     )
 
     click.echo(f"Mail sent to {', '.join(resolved_recipients)} via {', '.join(resolved_hosts)}")
@@ -591,7 +656,15 @@ def cli_send_mail(
 
 @cli.command("fail", context_settings=CLICK_CONTEXT_SETTINGS)
 def cli_fail() -> None:
-    """Trigger the intentional failure helper to test error handling."""
+    """### cli_fail() -> None {#cli-fail}
+
+    **Purpose:** Trigger the intentional failure helper so developers can verify
+    traceback and exit-code handling.
+
+    **Returns:** This command never returns; it raises instead.
+
+    **Raises:** `RuntimeError` propagated from `raise_intentional_failure()`.
+    """
 
     raise_intentional_failure()
 
@@ -603,29 +676,27 @@ def main(
     summary_limit: int = TRACEBACK_SUMMARY_LIMIT,
     verbose_limit: int = TRACEBACK_VERBOSE_LIMIT,
 ) -> int:
-    """Execute the CLI with deliberate error handling and return the exit code.
+    """### main(...) -> int {#cli-main-entry}
 
-    Why
-        Provides the single entry point used by console scripts and
-        ``python -m`` execution so that behaviour stays identical across
-        transports.
+    **Purpose:** Serve as the shared entry point for console scripts and
+    `python -m` execution, orchestrating error handling and traceback
+    restoration.
 
-    Inputs
-        argv:
-        Optional sequence of CLI arguments. ``None`` lets Click consume
-            ``sys.argv`` directly.
-        restore_traceback:
-            ``True`` to restore the prior ``lib_cli_exit_tools`` traceback
-            configuration after execution.
-        summary_limit / verbose_limit:
-            Character budgets used when formatting exceptions.
+    **Parameters:**
+    - `argv: Sequence[str] | None = None` — Optional argument vector. `None`
+      lets Click consume `sys.argv`.
+    - `restore_traceback: bool = True` — `True` restores the prior traceback
+      configuration after execution; set to `False` to leave modifications in
+      place.
+    - `summary_limit: int = TRACEBACK_SUMMARY_LIMIT` — Character budget applied
+      when tracebacks are summarised.
+    - `verbose_limit: int = TRACEBACK_VERBOSE_LIMIT` — Character budget applied
+      when verbose tracebacks are enabled.
 
-    Outputs
-        int:
-            Exit code reported by the CLI run.
+    **Returns:** `int` — Exit code produced by the CLI.
 
-    Side Effects
-        Mutates the global traceback configuration while the CLI runs.
+    **Side Effects:** Temporarily mutates `lib_cli_exit_tools.config` while the
+    CLI executes.
     """
 
     previous_state = snapshot_traceback_state()

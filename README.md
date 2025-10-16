@@ -12,9 +12,11 @@
 [![Maintainability](https://qlty.sh/badges/041ba2c1-37d6-40bb-85a0-ec5a8a0aca0c/maintainability.svg)](https://qlty.sh/gh/bitranox/projects/btx_lib_mail)
 [![Known Vulnerabilities](https://snyk.io/test/github/bitranox/btx_lib_mail/badge.svg)](https://snyk.io/test/github/bitranox/btx_lib_mail)
 
-Scaffold for Python Projects with registered commandline commands:
-- CLI entry point styled with rich-click (rich output + click ergonomics)
+Mail Library - send Mails easy
+- TLS by default
+- Rich CLI Interface, entry point styled with rich-click (rich output + click ergonomics)
 - Exit-code and messaging helpers powered by lib_cli_exit_tools
+- can be used as Commandline Mailer
 
 ## Install
 
@@ -28,8 +30,7 @@ For alternative install paths (pipx, uv, source builds, etc.), see
 
 ### Python 3.13+ Baseline
 
-- The project targets **Python 3.13 and newer only**. Compatibility shims for
-  legacy interpreters remain removed, so helpers freely rely on conveniences
+- The project targets **Python 3.13 and newer only**. Helpers freely rely on conveniences
   such as `Path.unlink(missing_ok=True)` and modern `contextlib` utilities.
 - **Dependency audit (October 16, 2025):** runtime requirements continue to
   match the latest stable releases (`rich-click>=1.9.3`,
@@ -43,10 +44,7 @@ For alternative install paths (pipx, uv, source builds, etc.), see
 
 ## Usage
 
-The CLI leverages [rich-click](https://github.com/ewels/rich-click) so help output, validation errors, and prompts render with Rich styling while keeping the familiar click ergonomics.
-The scaffold keeps a CLI entry point so you can validate packaging flows, but it
-currently exposes a single informational command while logging features are
-developed:
+The CLI leverages [rich-click](https://github.com/ewels/rich-click) so prompts render with Rich styling while keeping the familiar click ergonomics.
 
 ```bash
 btx_lib_mail info
@@ -140,16 +138,113 @@ Key behaviours:
 - `smtphosts` may be a string (single host), list, or tuple; items can include
   an explicit `host:port` override. Hosts are normalised, deduplicated, and
   tried in order.
-- When `smtp_use_starttls` is enabled (default `False`), the helper performs a
-  STARTTLS handshake with the system SSL context before authenticating.
+- STARTTLS is enabled by default (`smtp_use_starttls=True`). The helper performs
+  the handshake with the system SSL context before authenticating; set the flag
+  to `False` when connecting to servers that do not support STARTTLS.
 - Credentials are optional. If both `smtp_username` and `smtp_password` are
   provided, `send` will call `SMTP.login`. The helper also accepts
   one-off credentials via the `credentials=` argument.
 - Messages are always rendered as UTF-8; attachments retain their binary
   payload via base64 encoding. Failed hosts are logged at WARNING level and the
   helper proceeds to the next configured server before raising.
-- The socket timeout defaults to `conf.smtp_timeout` (30 seconds) and can be
-  overridden per call through the `timeout=` argument.
+- The socket timeout defaults to `conf.smtp_timeout` (30 seconds). Override the
+  value via the `timeout=` argument, the `--timeout` CLI flag, or the
+  `BTX_MAIL_SMTP_TIMEOUT` environment variable / `.env` entry.
+
+## Public API Reference {#public-api}
+
+All public interfaces are documented in
+`docs/systemdesign/module_reference.md#feature-cli-components`. The summary
+below mirrors that source so the README can be used as a quick reference.
+
+### Configuration Surface {#public-api-config}
+
+#### `btx_lib_mail.conf: ConfMail` {#public-api-conf}
+
+`conf` is the global configuration instance used whenever a `send` caller does
+not supply per-call overrides. Update it directly or replace it wholesale with
+`ConfMail.model_validate()`.
+
+#### `ConfMail` fields {#public-api-confmail-fields}
+
+| Field                          | Type          | Default | Description                                                                                                                             |
+|--------------------------------|---------------|---------|-----------------------------------------------------------------------------------------------------------------------------------------|
+| `smtphosts`                    | `list[str]`   | `[]`    | Ordered SMTP hosts (`"host[:port]"`). An empty list requires callers to supply `smtphosts` when sending.                                |
+| `raise_on_missing_attachments` | `bool`        | `True`  | When `True`, missing attachments raise `FileNotFoundError`; otherwise a warning is logged and delivery proceeds without the attachment. |
+| `raise_on_invalid_recipient`   | `bool`        | `True`  | When `True`, invalid recipient addresses raise `ValueError`; otherwise a warning is logged and the address is skipped.                  |
+| `smtp_username`                | `str \| None` | `None`  | Username used for SMTP authentication. Must be paired with `smtp_password`.                                                             |
+| `smtp_password`                | `str \| None` | `None`  | Password paired with `smtp_username`. Ignored when either value is missing.                                                             |
+| `smtp_use_starttls`            | `bool`        | `True`  | Enables `STARTTLS` negotiation before authentication. Set to `False` for servers that do not support STARTTLS.                          |
+| `smtp_timeout`                 | `float`       | `30.0`  | Socket timeout in seconds applied to SMTP connections.                                                                                  |
+
+Common helpers:
+
+- `ConfMail.model_validate(data: dict[str, Any]) -> ConfMail` — validate crude
+  configuration (dicts, strings, iterables) into a typed instance.
+- `ConfMail.model_update(new_values: dict[str, Any]) -> ConfMail` — update an
+  existing instance in place.
+- `ConfMail.resolved_credentials() -> tuple[str, str] | None` — return the
+  `(username, password)` pair when both credential fields are populated.
+
+### Functions {#public-api-functions}
+
+#### `emit_greeting(*, stream: TextIO | None = None) -> None` {#public-api-emit-greeting}
+
+Writes the canonical `"Hello World\n"` line to `stream` (defaults to
+`sys.stdout`) and flushes the stream when it exposes a `flush()` method.
+Useful for smoke tests and quick health probes.
+
+#### `raise_intentional_failure() -> None` {#public-api-raise-intentional-failure}
+
+Raises `RuntimeError("I should fail")` unconditionally. The CLI and tests use
+this helper to validate traceback handling and exit-code mapping without
+crafting bespoke exceptions.
+
+#### `noop_main() -> None` {#public-api-noop-main}
+
+Returns `None` immediately. The CLI uses this placeholder when the user opts in
+to running the domain stub (for example via `--traceback` without a
+subcommand), ensuring the scaffold remains predictable.
+
+#### `send(...) -> bool` {#public-api-send}
+
+Entry point for SMTP delivery. Returns `True` when all recipients succeed and
+raises when every host fails for at least one recipient. Parameters:
+
+| Parameter               | Type                    | Default        | Notes                                                                                                    |
+|-------------------------|-------------------------|----------------|----------------------------------------------------------------------------------------------------------|
+| `mail_from`             | `str`                   | —              | Envelope sender address (`local@domain`).                                                                |
+| `mail_recipients`       | `str                    | Sequence[str]` | Deduplicated, validated recipient addresses.                                                             |
+| `mail_subject`          | `str`                   | —              | UTF-8 subject line.                                                                                      |
+| `mail_body`             | `str`                   | `""`           | Optional plain-text body.                                                                                |
+| `mail_body_html`        | `str`                   | `""`           | Optional HTML body (UTF-8).                                                                              |
+| `smtphosts`             | `Sequence[str]          | None`          | Host override. Falls back to `conf.smtphosts`.                                                           |
+| `attachment_file_paths` | `Sequence[pathlib.Path] | None`          | Iterable of attachment paths. Missing files raise unless `conf.raise_on_missing_attachments` is `False`. |
+| `credentials`           | `tuple[str, str]        | None`          | `(username, password)` override. Defaults to `conf.resolved_credentials()`.                              |
+| `use_starttls`          | `bool                   | None`          | When `None`, the helper uses `conf.smtp_use_starttls`.                                                   |
+| `timeout`               | `float                  | None`          | When `None`, the helper uses `conf.smtp_timeout`.                                                        |
+
+**Raises:**
+
+- `ValueError` — after validation if no valid recipients remain.
+- `FileNotFoundError` — when a required attachment is missing and
+  `raise_on_missing_attachments` is `True`.
+- `RuntimeError` — when every configured host fails for a recipient (the error
+  lists recipients and host roster).
+
+### CLI Commands {#public-api-cli}
+
+The CLI wraps the same behaviour through rich-click. Highlights:
+
+| Command              | Purpose                                                      | Key Options                                                                                                                                                                                                                                        |
+|----------------------|--------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `btx_lib_mail info`  | Print project metadata via `print_info()`.                   | —                                                                                                                                                                                                                                                  |
+| `btx_lib_mail hello` | Emit the canonical greeting.                                 | —                                                                                                                                                                                                                                                  |
+| `btx_lib_mail fail`  | Trigger `raise_intentional_failure()` to inspect tracebacks. | `--traceback/--no-traceback` toggles verbosity.                                                                                                                                                                                                    |
+| `btx_lib_mail send`  | Deliver an email using `send()`.                             | `--host`, `--recipient`, `--sender`, `--subject`, `--body`, `--html-body`, `--attachment`, `--starttls/--no-starttls`, `--username`, `--password`, `--timeout`. Each flag defaults to the matching `BTX_MAIL_*` environment variable when omitted. |
+
+`python -m btx_lib_mail` delegates to the same command group, so the examples
+above apply verbatim.
 
 ### Environment Variables and Precedence {#mail-env-variables}
 
@@ -161,14 +256,15 @@ The CLI and library coordinate configuration using the following precedence:
 
 Environment variables understood by the CLI:
 
-| Variable | Purpose | Example |
-| --- | --- | --- |
-| `BTX_MAIL_SMTP_HOSTS` | Comma-separated list of SMTP hosts (each `host[:port]`). | `smtp1.example.com:587,smtp2.example.com` |
-| `BTX_MAIL_RECIPIENTS` | Comma-separated list of recipient emails. | `primary@example.com,backup@example.com` |
-| `BTX_MAIL_SENDER` | Envelope sender; defaults to the first recipient when unset. | `alerts@example.com` |
-| `BTX_MAIL_SMTP_USE_STARTTLS` | Boolean flag (`1`, `true`, `yes`, `on`) enabling STARTTLS. | `true` |
-| `BTX_MAIL_SMTP_USERNAME` | Username used when STARTTLS/authentication is required. | `smtp-user` |
-| `BTX_MAIL_SMTP_PASSWORD` | Password paired with the SMTP username. | `s3cr3t` |
+| Variable                     | Purpose                                                      | Example                                   |
+|------------------------------|--------------------------------------------------------------|-------------------------------------------|
+| `BTX_MAIL_SMTP_HOSTS`        | Comma-separated list of SMTP hosts (each `host[:port]`).     | `smtp1.example.com:587,smtp2.example.com` |
+| `BTX_MAIL_RECIPIENTS`        | Comma-separated list of recipient emails.                    | `primary@example.com,backup@example.com`  |
+| `BTX_MAIL_SENDER`            | Envelope sender; defaults to the first recipient when unset. | `alerts@example.com`                      |
+| `BTX_MAIL_SMTP_USE_STARTTLS` | Boolean flag (`1`, `true`, `yes`, `on`) enabling STARTTLS.   | `true`                                    |
+| `BTX_MAIL_SMTP_USERNAME`     | Username used when STARTTLS/authentication is required.      | `smtp-user`                               |
+| `BTX_MAIL_SMTP_PASSWORD`     | Password paired with the SMTP username.                      | `s3cr3t`                                  |
+| `BTX_MAIL_SMTP_TIMEOUT`      | Socket timeout in seconds (defaults to `30`).                | `12.5`                                    |
 
 `.env` files are optional. When present, the CLI trims whitespace, honours
 quoted values, and treats empty strings as unset. Exporting an environment

@@ -82,6 +82,19 @@ def test_conf_mail_resolves_credentials() -> None:
     assert config.resolved_credentials() is None
 
 
+@pytest.mark.os_agnostic
+def test_when_conf_receives_none_for_hosts_it_sets_an_empty_list() -> None:
+    config = ConfMail.model_validate({"smtphosts": None})
+
+    assert config.smtphosts == []
+
+
+@pytest.mark.os_agnostic
+def test_when_conf_receives_an_illegal_host_type_it_objects() -> None:
+    with pytest.raises(ValidationError, match="smtphosts must be a string"):
+        ConfMail.model_validate({"smtphosts": 123})
+
+
 class RecordingSMTP:
     created: list["RecordingSMTP"] = []
     init_calls: list[tuple[str, int | None, float | None]] = []
@@ -133,6 +146,101 @@ def _install_recording_smtp(monkeypatch: pytest.MonkeyPatch) -> type[RecordingSM
     RecordingSMTP.reset()
     monkeypatch.setattr(lib_mail.smtplib, "SMTP", RecordingSMTP)
     return RecordingSMTP
+
+
+@pytest.mark.os_agnostic
+def test_when_an_attachment_is_missing_strict_mode_raises(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.txt"
+
+    with pytest.raises(FileNotFoundError, match="Attachment File"):
+        lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients="recipient@example.com",
+            mail_subject="Subject",
+            smtphosts=["smtp.example.com"],
+            attachment_file_paths=[missing],
+        )
+
+
+@pytest.mark.os_agnostic
+def test_when_missing_attachments_are_allowed_a_warning_is_logged(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    recorder = _install_recording_smtp(monkeypatch)
+    caplog.set_level("WARNING")
+    ghost = tmp_path / "ghost.txt"
+
+    lib_mail.conf.raise_on_missing_attachments = False
+
+    result = lib_mail.send(
+        mail_from="sender@example.com",
+        mail_recipients="recipient@example.com",
+        mail_subject="Subject",
+        smtphosts=["smtp.example.com"],
+        attachment_file_paths=[ghost],
+    )
+
+    assert result is True
+    assert "Attachment File" in caplog.text
+    assert recorder.created[0].sent_messages[0][2]
+
+
+@pytest.mark.os_agnostic
+def test_when_all_hosts_are_blank_the_send_call_refuses() -> None:
+    with pytest.raises(ValueError, match="no valid smtphost passed"):
+        lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients="recipient@example.com",
+            mail_subject="Subject",
+            smtphosts=["   "],
+        )
+
+
+@pytest.mark.os_agnostic
+def test_when_an_invalid_recipient_is_spotted_strict_mode_raises() -> None:
+    with pytest.raises(ValueError, match="invalid recipient"):
+        lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients="invalid@",
+            mail_subject="Subject",
+            smtphosts=["smtp.example.com"],
+        )
+
+
+@pytest.mark.os_agnostic
+def test_when_invalid_recipients_are_tolerated_a_warning_is_emitted(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    recorder = _install_recording_smtp(monkeypatch)
+    caplog.set_level("WARNING")
+    lib_mail.conf.raise_on_invalid_recipient = False
+
+    result = lib_mail.send(
+        mail_from="sender@example.com",
+        mail_recipients=["invalid@", "valid@example.com"],
+        mail_subject="Subject",
+        smtphosts=["smtp.example.com"],
+    )
+
+    assert result is True
+    assert "invalid recipient invalid@" in caplog.text
+    assert recorder.created[0].sent_messages[0][1] == "valid@example.com"
+
+
+@pytest.mark.os_agnostic
+def test_when_every_recipient_is_invalid_the_call_still_fails() -> None:
+    lib_mail.conf.raise_on_invalid_recipient = False
+
+    with pytest.raises(ValueError, match="no valid recipients"):
+        lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients=["invalid@"],
+            mail_subject="Subject",
+            smtphosts=["smtp.example.com"],
+        )
 
 
 def test_send_handles_utf8_and_credentials(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:

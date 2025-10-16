@@ -25,6 +25,11 @@
   mail modules.
 - Raised the runtime ``pydantic`` floor to ``>=2.12.2`` so the configuration
   model tracks the latest validation improvements.
+- STARTTLS is now enabled by default (``smtp_use_starttls=True``); disable it
+  explicitly via CLI flags, environment variables, or `ConfMail` updates when
+  targeting servers without STARTTLS support.
+- Added support for ``BTX_MAIL_SMTP_TIMEOUT``/`--timeout`, allowing CLI users to
+  adjust the SMTP socket timeout (default remains 30 seconds).
 - GitHub Actions workflows now enable pip caching via ``actions/setup-python@v6``
   and pin ``github/codeql-action`` to ``v4.30.8`` to align with the October 2025
   ruleset without downgrading existing actions.

@@ -1,24 +1,16 @@
-"""Module entry point ensuring SystemExit semantics match project standards.
+"""## btx_lib_mail.__main__ {#module-btx-lib-mail-main}
 
-Purpose
--------
-Provide the ``python -m btx_lib_mail`` path mandated by the
-project's packaging guidelines. The wrapper delegates to
-:func:`btx_lib_mail.cli.main` so that module execution mirrors the
-installed console script, including traceback handling and exit-code mapping.
+**Purpose:** Provide the `python -m btx_lib_mail` entry point mandated by the
+packaging guidelines, delegating to `btx_lib_mail.cli.main` so exit semantics
+remain identical to the console script.
 
-Contents
---------
-* :func:`_open_cli_session` – wires ``cli_session`` with the agreed limits.
-* :func:`_command_to_run` / :func:`_command_name` – expose the command and label
-  used by the module entry.
-* :func:`_module_main` – drives execution and returns the exit code.
+**Contents:** `_open_cli_session`, `_command_to_run`, `_command_name`, and
+`_module_main` — the helpers that compose module execution with
+`lib_cli_exit_tools`.
 
-System Role
------------
-Lives in the adapters layer. It bridges CPython's module execution entry point
-to the shared CLI helper while reusing the same ``cli_session`` orchestration
-documented in ``docs/systemdesign/module_reference.md``.
+**System Role:** Mirrors the description in
+`docs/systemdesign/module_reference.md#module-main-session-helpers`, ensuring
+module execution shares the same traceback limits and command wiring as the CLI.
 """
 
 from __future__ import annotations
@@ -32,29 +24,23 @@ import rich_click as click
 
 from . import __init__conf__, cli
 
-# Match the CLI defaults so truncation behaviour stays consistent across entry
-# points regardless of whether users call the console script or ``python -m``.
-#: Character budget for truncated tracebacks when running via module entry.
 TRACEBACK_SUMMARY_LIMIT: Final[int] = cli.TRACEBACK_SUMMARY_LIMIT
-#: Character budget for verbose tracebacks when running via module entry.
+"""Character budget for truncated tracebacks when running via module entry."""
 TRACEBACK_VERBOSE_LIMIT: Final[int] = cli.TRACEBACK_VERBOSE_LIMIT
+"""Character budget for verbose tracebacks when running via module entry."""
 
 
 CommandRunner = Callable[..., int]
 
 
 def _open_cli_session() -> AbstractContextManager[CommandRunner]:
-    """Return the configured ``cli_session`` context manager.
+    """### _open_cli_session() -> AbstractContextManager[CommandRunner] {#module-main-open-cli-session}
 
-    Why
-        ``cli_session`` wires ``lib_cli_exit_tools`` with the tracing limits we
-        want for module execution. Wrapping it keeps the configuration in a
-        single place.
+    **Purpose:** Provide a context manager wired with the agreed traceback
+    limits so module execution mirrors the CLI.
 
-    Outputs
-        ContextManager[CommandRunner]:
-            Context manager that yields the callable responsible for invoking
-            the Click command.
+    **Returns:** Context manager yielding the callable that invokes the Click
+    command via `lib_cli_exit_tools.cli_session`.
     """
 
     return cli_session(
@@ -64,43 +50,35 @@ def _open_cli_session() -> AbstractContextManager[CommandRunner]:
 
 
 def _command_to_run() -> click.Command:
-    """Expose the click command that powers the module entry.
+    """### _command_to_run() -> click.Command {#module-main-command-to-run}
 
-    Why
-        Keeps the module entry explicit about which command is being executed
-        while remaining easy to stub in tests.
+    **Purpose:** Identify the root Click command used by module execution.
 
-    Outputs
-        click.Command: reference to the root CLI command group.
+    **Returns:** `click.Command` referencing `btx_lib_mail.cli.cli`.
     """
 
     return cli.cli
 
 
 def _command_name() -> str:
-    """Return the shell-friendly name announced by the session.
+    """### _command_name() -> str {#module-main-command-name}
 
-    Why
-        ``lib_cli_exit_tools`` uses this value when presenting help and error
-        messages; we centralise the derivation so tests can assert against it.
+    **Purpose:** Provide the console-script name announced by the session so
+    tests can assert against a single source of truth.
 
-    Outputs
-        str: Name of the console script as published through entry points.
+    **Returns:** `str` containing `__init__conf__.shell_command`.
     """
 
     return __init__conf__.shell_command
 
 
 def _module_main() -> int:
-    """Execute the CLI entry point and return a normalised exit code.
+    """### _module_main() -> int {#module-main-module-main}
 
-    Why
-        Implements ``python -m btx_lib_mail`` by delegating to the
-        shared CLI composition while respecting the configured traceback
-        budgets.
+    **Purpose:** Implement `python -m btx_lib_mail` by delegating to the CLI
+    while preserving traceback limits.
 
-    Outputs
-        int: Exit code reported by the CLI run.
+    **Returns:** `int` exit code produced by the CLI run.
     """
 
     with _open_cli_session() as runner:

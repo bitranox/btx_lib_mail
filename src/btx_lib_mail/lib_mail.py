@@ -1,27 +1,18 @@
-"""Mail delivery helpers weaving SMTP access into the library.
+"""## btx_lib_mail.lib_mail {#module-btx-lib-mail-lib-mail}
 
-Purpose
--------
-Provide a thin application-layer API (`send`) plus supporting utilities that
-collect configuration, normalise user-provided inputs, and assemble multipart
-messages. The module holds the boundary between the CLI adapter and the SMTP
-network.
+**Purpose:** Provide the SMTP delivery boundary for the library. The module
+collects configuration, normalises user input, and renders multipart messages so
+adapters such as the CLI can treat delivery as a single call.
 
-Contents
---------
-* :class:`AttachmentPayload` – frozen payload ready for MIME encoding.
-* :class:`ConfMail` – validated runtime configuration surface.
-* :class:`DeliveryOptions` – resolved delivery knobs used per attempt.
-* :func:`send` – public entry that orchestrates the delivery journey.
-* Private helpers starting with ``_`` – pure preparation or IO-focused helpers
-  that each narrate a single step.
+**Contents:**
+- `AttachmentPayload` — frozen attachment payload supplied to the MIME renderer.
+- `ConfMail` — Pydantic configuration surface shared across transports.
+- `DeliveryOptions` — resolved runtime options derived from configuration.
+- `send` — public orchestration entry point.
 
-System Role
------------
-Lives in the adapter layer. It translates validated intent (sender, recipients,
-message bodies) into SMTP side effects while respecting the clean architecture
-story: configuration flows inward from the CLI, delivery events flow outward to
-the network.
+**System Role:** Matches `docs/systemdesign/module_reference.md#feature-cli-components`
+by translating intent gathered by the CLI into SMTP side effects while keeping
+configuration flow and delivery flow separated.
 """
 
 from __future__ import annotations
@@ -48,21 +39,17 @@ logger = logging.getLogger("btx_lib_mail")
 
 @dataclass(frozen=True)
 class AttachmentPayload:
-    """Pre-wrapped attachment payload awaiting MIME encoding.
+    """### AttachmentPayload {#lib-mail-attachmentpayload}
 
-    Why
-        Preserve filename and binary content together so that MIME rendering
-        stays declarative.
+    **Purpose:** Preserve the filename and bytes read from disk so MIME
+    rendering remains declarative and reproducible.
 
-    What
-        Frozen value object consumed by :func:`_render_attachment`.
+    **Fields:**
+    - `filename: str` — Basename surfaced in the `Content-Disposition` header.
+    - `content: bytes` — UTF-8 agnostic payload already read from disk.
 
-    Fields
-    ------
-    filename:
-        Basename announced in the `Content-Disposition` header.
-    content:
-        Raw bytes read from the attachment file on disk.
+    Instances are immutable (`frozen=True`) so helpers can rely on their
+    stability across retries.
     """
 
     filename: str
@@ -70,29 +57,30 @@ class AttachmentPayload:
 
 
 class ConfMail(BaseModel):
-    """Validated SMTP configuration shared across delivery routes.
+    """### ConfMail {#lib-mail-confmail}
 
-    Why
-        Expose a single authoritative object that reconciles CLI flags, env
-        variables, and defaults while enforcing types and sensible ranges.
+    **Purpose:** Serve as the authoritative SMTP configuration object, merging
+    CLI options, environment variables, and defaults while enforcing type and
+    range checks.
 
-    What
-        A Pydantic model that feeds defaults to :func:`send`.
+    **Fields:**
+    - `smtphosts: list[str] = []` — Ordered hosts in `host[:port]` form. Empty
+      by default so callers must supply at least one host.
+    - `raise_on_missing_attachments: bool = True` — When `True`, missing files
+      raise `FileNotFoundError`; otherwise the module logs a warning and
+      continues.
+    - `raise_on_invalid_recipient: bool = True` — When `True`, invalid addresses
+      raise `ValueError`; otherwise a warning is logged and delivery skips the
+      address.
+    - `smtp_username: str | None = None` and `smtp_password: str | None = None`
+      — Optional credentials; both must be populated to enable authentication.
+    - `smtp_use_starttls: bool = True` — Enables `STARTTLS` negotiation before
+      authentication when supported by the server.
+    - `smtp_timeout: float = 30.0` — Socket timeout in seconds applied to SMTP
+      connections.
 
-    Fields
-    ------
-    smtphosts:
-        Ordered list of host strings, e.g. ``"smtp.example.com:587"``.
-    raise_on_missing_attachments:
-        Toggle deciding whether missing attachments raise or merely warn.
-    raise_on_invalid_recipient:
-        Toggle deciding whether invalid recipients raise or warn.
-    smtp_username / smtp_password:
-        Optional credentials used when both values are supplied.
-    smtp_use_starttls:
-        Enables ``STARTTLS`` handshakes before authentication.
-    smtp_timeout:
-        Socket timeout in seconds for SMTP connections.
+    **Interactions:** The CLI resolves its defaults through this model, and
+    `send` reads resolved values when per-call overrides are absent.
     """
 
     smtphosts: list[str] = Field(default_factory=list)
@@ -100,7 +88,7 @@ class ConfMail(BaseModel):
     raise_on_invalid_recipient: bool = True
     smtp_username: str | None = None
     smtp_password: str | None = None
-    smtp_use_starttls: bool = False
+    smtp_use_starttls: bool = True
     smtp_timeout: float = 30.0
 
     model_config = ConfigDict(validate_assignment=True)
@@ -131,15 +119,13 @@ class ConfMail(BaseModel):
         return _collect_host_inputs(value)
 
     def resolved_credentials(self) -> tuple[str, str] | None:
-        """Return a ``(username, password)`` tuple when both fields are set.
+        """### resolved_credentials() -> tuple[str, str] | None {#lib-mail-confmail-resolved-credentials}
 
-        Why
-            Allows downstream helpers to rely on a single optional tuple.
+        **Purpose:** Provide downstream helpers with a single optional tuple
+        rather than juggling two separate optional strings.
 
-        Outputs
-        -------
-        tuple[str, str] | None
-            Credentials when both values are present; ``None`` otherwise.
+        **Returns:** `(username, password)` when both `smtp_username` and
+        `smtp_password` are populated; `None` otherwise.
         """
 
         if self.smtp_username and self.smtp_password:
@@ -147,8 +133,8 @@ class ConfMail(BaseModel):
         return None
 
 
-#: Global configuration instance reflecting defaults and runtime overrides.
-conf = ConfMail()
+conf: ConfMail = ConfMail()
+"""Global SMTP configuration surface used when per-call overrides are absent."""
 
 
 def send(
@@ -164,48 +150,45 @@ def send(
     use_starttls: bool | None = None,
     timeout: float | None = None,
 ) -> bool:
-    """Deliver a multipart UTF-8 email through the configured SMTP hosts.
+    """### send(...) -> bool {#lib-mail-send}
 
-    Why
-        Provide the public façade that transports CLI/library intent to SMTP
-        without exposing the surrounding helpers.
+    **Purpose:** Provide the library/CLI façade that turns validated intent
+    (sender, recipients, message bodies, attachments) into SMTP activity while
+    honouring delivery policies defined in `ConfMail`.
 
-    What
-        Normalises recipients, attachments, and host lists; resolves delivery
-        options; iterates through hosts until delivery succeeds or every host
-        fails.
+    **Parameters:**
+    - `mail_from: str` — Envelope sender address. Must be a syntactically valid
+      email.
+    - `mail_recipients: str | Sequence[str]` — Single recipient or iterable of
+      recipients. Values are trimmed, deduplicated, lower-cased, and validated.
+    - `mail_subject: str` — Subject line; UTF-8 is supported.
+    - `mail_body: str = ""` — Optional plain-text body.
+    - `mail_body_html: str = ""` — Optional HTML body.
+    - `smtphosts: Sequence[str] | None = None` — Override host list. When
+      `None`, the helper falls back to `conf.smtphosts`.
+    - `attachment_file_paths: Sequence[pathlib.Path] | None = None` — Optional
+      iterable of filesystem paths. Each existing file becomes an attachment.
+    - `credentials: tuple[str, str] | None = None` — Override credentials. When
+      omitted, `conf.resolved_credentials()` is used.
+    - `use_starttls: bool | None = None` — Override STARTTLS preference. When
+      `None`, the helper uses `conf.smtp_use_starttls`.
+    - `timeout: float | None = None` — Override socket timeout in seconds. When
+      `None`, the helper uses `conf.smtp_timeout`.
 
-    Inputs
-    ------
-    mail_from:
-        Envelope sender (email address).
-    mail_recipients:
-        Single recipient or sequence of recipients. Accepts strings, lists,
-        tuples.
-    mail_subject, mail_body, mail_body_html:
-        Message content. Plain text and HTML bodies are optional.
-    smtphosts:
-        Optional override for hosts; defaults to :attr:`ConfMail.smtphosts`.
-    attachment_file_paths:
-        Optional iterable of :class:`pathlib.Path` to attach.
-    credentials, use_starttls, timeout:
-        Per-call overrides for credentials, STARTTLS preference, and timeout.
+    **Returns:** `bool` — Always `True` when all deliveries succeed. A failure
+    raises instead of returning `False`.
 
-    Outputs
-    -------
-    bool
-        Returns ``True`` when every recipient is successfully delivered.
+    **Raises:**
+    - `ValueError` — When no valid recipients remain after validation.
+    - `FileNotFoundError` — When required attachments are missing and
+      `conf.raise_on_missing_attachments` is `True`.
+    - `RuntimeError` — When every SMTP host fails for a recipient; the error
+      lists the affected recipients and host set.
 
-    Side Effects
-    ------------
-    Opens SMTP connections, performs optional STARTTLS handshakes, logs failures,
-    and raises when all hosts fail for a recipient.
-
-    Examples
-    --------
+    **Example:**
     >>> from unittest import mock
-    >>> mock_smtp = mock.MagicMock()
-    >>> _ = mock.patch('smtplib.SMTP', mock_smtp).start()
+    >>> sentinel = mock.MagicMock()
+    >>> _ = mock.patch("smtplib.SMTP", sentinel).start()
     >>> conf.smtphosts = ["smtp.example.com"]
     >>> send(
     ...     mail_from="sender@example.com",
@@ -248,23 +231,16 @@ def send(
 
 @dataclass(frozen=True)
 class DeliveryOptions:
-    """Concrete runtime knobs resolved for a delivery attempt.
+    """### DeliveryOptions {#lib-mail-deliveryoptions}
 
-    Why
-        Encapsulates derived state so lower-level helpers receive a single
-        immutable argument.
+    **Purpose:** Capture the resolved runtime knobs for a single delivery attempt
+    so low-level helpers receive one immutable object.
 
-    What
-        Dataclass consumed by :func:`_deliver_via_host`.
-
-    Fields
-    ------
-    credentials:
-        Tuple ``(username, password)`` or ``None`` when anonymous.
-    use_starttls:
-        ``True`` enables STARTTLS.
-    timeout:
-        Socket timeout expressed in seconds.
+    **Fields:**
+    - `credentials: tuple[str, str] | None` — `(username, password)` pair or
+      `None` when anonymous delivery is requested.
+    - `use_starttls: bool` — `True` enables `STARTTLS` handshakes.
+    - `timeout: float` — Socket timeout (seconds) applied to SMTP connections.
     """
 
     credentials: tuple[str, str] | None

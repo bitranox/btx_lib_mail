@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Callable, Sequence
 from typing import Any
 
 import pytest
+import click
 from click.testing import CliRunner, Result
 
 import lib_cli_exit_tools
 
 from btx_lib_mail import cli as cli_mod
 from btx_lib_mail import __init__conf__
+
+
+def _call_cli_private(name: str, *args: Any, **kwargs: Any) -> Any:
+    helper = getattr(cli_mod, name)
+    return helper(*args, **kwargs)
 
 
 @dataclass(slots=True)
@@ -77,6 +83,181 @@ def _capture_run_cli(target: list[CapturedRun]) -> Callable[..., int]:
         return 42
 
     return _run
+
+
+@pytest.mark.os_agnostic
+def test_when_the_dotenv_is_missing_the_lookup_has_no_answer(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ghost_dotenv = tmp_path / "ghost.env"
+    monkeypatch.setattr(cli_mod, "_DOTENV_PATH", ghost_dotenv)
+
+    answer = _call_cli_private("_dotenv_value", "BTX_MAIL_GHOST")
+
+    assert answer is None
+
+
+@pytest.mark.os_agnostic
+def test_when_the_dotenv_meets_malformed_lines_it_moves_on(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    dotenv_path = tmp_path / ".env"
+    dotenv_path.write_text("# comment\nMALFORMED\nOTHER=value\n  \n", encoding="utf-8")
+    monkeypatch.setattr(cli_mod, "_DOTENV_PATH", dotenv_path)
+
+    answer = _call_cli_private("_dotenv_value", "BTX_MAIL_MISSING")
+
+    assert answer is None
+
+
+@pytest.mark.os_agnostic
+def test_when_split_values_meet_blanks_only_words_survive() -> None:
+    result = _call_cli_private("_split_values", ["alpha, , beta", "  ", "gamma"])
+
+    assert result == ["alpha", "beta", "gamma"]
+
+
+@pytest.mark.os_agnostic
+def test_when_no_host_input_is_given_the_cli_requests_help(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("BTX_MAIL_SMTP_HOSTS", raising=False)
+    monkeypatch.setattr(cli_mod, "_DOTENV_PATH", tmp_path / "void.env")
+
+    with pytest.raises(click.UsageError, match="Provide at least one SMTP host"):
+        _call_cli_private("_resolve_list", (), "BTX_MAIL_SMTP_HOSTS", label="SMTP host")
+
+
+@pytest.mark.os_agnostic
+def test_when_boolean_env_is_absent_the_default_choice_wins(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("BTX_MAIL_SMTP_USE_STARTTLS", raising=False)
+    monkeypatch.setattr(cli_mod, "_DOTENV_PATH", tmp_path / "void.env")
+
+    assert _call_cli_private("_resolve_bool", None, "BTX_MAIL_SMTP_USE_STARTTLS", default=True) is True
+
+
+@pytest.mark.os_agnostic
+def test_when_boolean_env_says_yes_the_flag_follows(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BTX_MAIL_SMTP_USE_STARTTLS", "YES")
+
+    assert _call_cli_private("_resolve_bool", None, "BTX_MAIL_SMTP_USE_STARTTLS", default=False) is True
+
+
+@pytest.mark.os_agnostic
+def test_when_boolean_env_is_nonsense_a_bad_parameter_surfaces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BTX_MAIL_SMTP_USE_STARTTLS", "maybe")
+
+    with pytest.raises(click.BadParameter, match="Unrecognised boolean value"):
+        _call_cli_private("_resolve_bool", None, "BTX_MAIL_SMTP_USE_STARTTLS", default=False)
+
+
+@pytest.mark.os_agnostic
+def test_when_float_env_is_absent_the_default_fills_in(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("BTX_MAIL_SMTP_TIMEOUT", raising=False)
+    monkeypatch.setattr(cli_mod, "_DOTENV_PATH", tmp_path / "void.env")
+
+    assert _call_cli_private("_resolve_float", None, "BTX_MAIL_SMTP_TIMEOUT", default=7.0) == 7.0
+
+
+@pytest.mark.os_agnostic
+def test_when_float_env_is_gibberish_a_bad_parameter_surfaces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BTX_MAIL_SMTP_TIMEOUT", "not-a-float")
+
+    with pytest.raises(click.BadParameter, match="Unrecognised float value"):
+        _call_cli_private("_resolve_float", None, "BTX_MAIL_SMTP_TIMEOUT", default=3.0)
+
+
+@pytest.mark.os_agnostic
+def test_when_the_traceback_mode_is_read_the_truth_is_returned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(lib_cli_exit_tools.config, "traceback", True, raising=False)
+
+    assert _call_cli_private("_current_traceback_mode") is True
+
+
+@pytest.mark.os_agnostic
+def test_when_tracebacks_are_enabled_the_verbose_limit_wins() -> None:
+    assert _call_cli_private("_traceback_limit", True, summary_limit=10, verbose_limit=999) == 999
+
+
+@pytest.mark.os_agnostic
+def test_when_tracebacks_are_disabled_the_summary_limit_wins() -> None:
+    assert _call_cli_private("_traceback_limit", False, summary_limit=10, verbose_limit=999) == 10
+
+
+@pytest.mark.os_agnostic
+def test_when_print_exception_runs_the_exit_tools_are_consulted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    notes: dict[str, Any] = {}
+
+    def remember_print(**kwargs: Any) -> None:
+        notes["print"] = kwargs
+
+    def remember_code(exc: BaseException) -> int:
+        notes["exc"] = exc
+        return 55
+
+    monkeypatch.setattr(lib_cli_exit_tools, "print_exception_message", remember_print)
+    monkeypatch.setattr(lib_cli_exit_tools, "get_system_exit_code", remember_code)
+
+    result = _call_cli_private("_print_exception", ValueError("boom"), tracebacks_enabled=True, length_limit=123)
+
+    assert result == 55
+    assert notes["print"] == {"trace_back": True, "length_limit": 123}
+    assert isinstance(notes["exc"], ValueError)
+
+
+@pytest.mark.os_agnostic
+def test_when_cli_invocation_explodes_the_exception_story_is_told(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_traceback_config: None,
+) -> None:
+    monkeypatch.setattr(lib_cli_exit_tools.config, "traceback", True, raising=False)
+    captured: dict[str, Any] = {}
+
+    def explode(_argv: Sequence[str] | None) -> int:
+        raise RuntimeError("boom")
+
+    def record_print(
+        exc: BaseException,
+        *,
+        tracebacks_enabled: bool,
+        length_limit: int,
+    ) -> int:
+        captured["exc"] = exc
+        captured["tracebacks_enabled"] = tracebacks_enabled
+        captured["length_limit"] = length_limit
+        return 99
+
+    monkeypatch.setattr(cli_mod, "_invoke_cli", explode)
+    monkeypatch.setattr(cli_mod, "_print_exception", record_print)
+
+    result = _call_cli_private(
+        "_run_cli_via_exit_tools",
+        None,
+        summary_limit=50,
+        verbose_limit=500,
+    )
+
+    assert result == 99
+    assert isinstance(captured["exc"], RuntimeError)
+    assert captured["tracebacks_enabled"] is True
+    assert captured["length_limit"] == 500
 
 
 @pytest.mark.os_agnostic
@@ -271,6 +452,8 @@ def test_when_info_is_invoked_the_metadata_is_displayed(cli_runner: CliRunner) -
 def test_send_mail_command_uses_env_defaults(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner) -> None:
     monkeypatch.setenv("BTX_MAIL_SMTP_HOSTS", "smtp.example.com:2525")
     monkeypatch.setenv("BTX_MAIL_RECIPIENTS", "first@example.com,second@example.com")
+    monkeypatch.setenv("BTX_MAIL_SMTP_USE_STARTTLS", "false")
+    monkeypatch.setenv("BTX_MAIL_SMTP_TIMEOUT", "12.5")
 
     calls: dict[str, Any] = {}
 
@@ -298,6 +481,7 @@ def test_send_mail_command_uses_env_defaults(monkeypatch: pytest.MonkeyPatch, cl
     assert calls["mail_body_html"] == ""
     assert calls["credentials"] is None
     assert calls["use_starttls"] is False
+    assert calls["timeout"] == 12.5
 
 
 @pytest.mark.os_agnostic
@@ -340,6 +524,8 @@ def test_send_mail_command_honours_cli_overrides(
             "user",
             "--password",
             "pass",
+            "--timeout",
+            "42",
         ],
     )
 
@@ -351,6 +537,7 @@ def test_send_mail_command_honours_cli_overrides(
     assert calls["attachment_file_paths"] == [attachment]
     assert calls["credentials"] == ("user", "pass")
     assert calls["use_starttls"] is True
+    assert calls["timeout"] == 42.0
 
 
 @pytest.mark.os_agnostic

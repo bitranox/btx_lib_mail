@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from collections.abc import Callable
+from dataclasses import dataclass
+import importlib
 import runpy
 import sys
 from typing import TextIO
@@ -162,3 +163,12 @@ def test_when_traceback_flag_is_used_via_module_entry_the_full_poem_is_printed(
 @pytest.mark.os_agnostic
 def test_when_module_entry_imports_cli_the_alias_stays_intact() -> None:
     assert cli_mod.cli.name == cli_mod.cli.name
+
+
+@pytest.mark.os_agnostic
+def test_when_the_module_is_imported_it_remains_composed() -> None:
+    sys.modules.pop("btx_lib_mail.__main__", None)
+
+    module = importlib.import_module("btx_lib_mail.__main__")
+
+    assert module._command_name() == __init__conf__.shell_command
