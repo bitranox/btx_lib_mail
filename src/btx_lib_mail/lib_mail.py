@@ -29,12 +29,15 @@ import re
 import smtplib
 import ssl
 from collections.abc import Iterable, Sequence
-from typing import Any, cast
+from typing import Any, Final, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 logger = logging.getLogger("btx_lib_mail")
+
+EMAIL_PATTERN: Final[re.Pattern[str]] = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b")
+"""Compiled regex used by :func:`_is_valid_email_address`."""
 
 
 @dataclass(frozen=True)
@@ -766,5 +769,4 @@ def _is_valid_email_address(value: str) -> bool:
     False
     """
 
-    pattern = r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"
-    return bool(re.fullmatch(pattern, value))
+    return bool(EMAIL_PATTERN.fullmatch(value))

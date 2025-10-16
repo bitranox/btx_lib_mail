@@ -1,5 +1,10 @@
 # Changelog
 
+## [unreleased] - 2025-10-16
+### Changed
+- Regular expression used for email validation is precompiled at import time,
+  reducing repeated compilation overhead while keeping behaviour identical.
+
 ## [1.0.0] - 2025-10-16
 ### Added
 - Pydantic-powered ``ConfMail`` configuration introduces STARTTLS and optional
