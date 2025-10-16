@@ -178,6 +178,8 @@ variable always overrides `.env`; explicit CLI flags override both.
 > import `btx_lib_mail.send()` directly, configure `btx_lib_mail.conf` yourself
 > (for example via `ConfMail.model_validate`) and pass per-call overrides
 > explicitly.
+> Only the `.env` file in the current working directory is considered; parent
+> directories are not searched.
 
 - Integration testing: set `TEST_SMTP_HOSTS` and `TEST_RECIPIENTS` either in
   your shell environment or the project `.env` file (comma-separated values) to
