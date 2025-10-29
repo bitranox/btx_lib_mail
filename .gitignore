@@ -29,6 +29,8 @@ pnpm-debug.log*
 !.env.example
 todo.md
 tmp_*
+*.bak/
+*.bak
 
 # ====================================
 # IDEs & Editors
@@ -178,3 +180,5 @@ result
 poetry.lock
 pdm.lock
 uv.lock
+/.github_bak/
+/.github.bak/
