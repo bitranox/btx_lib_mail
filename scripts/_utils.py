@@ -149,6 +149,19 @@ def _normalize_slug(value: str) -> str:
     return slug or value.replace("_", "-").lower()
 
 
+def _package_name_to_display(value: str) -> str:
+    """Convert package name to display-friendly app name.
+
+    Examples:
+        "check_zpool_status" -> "Check ZPool Status"
+        "my-cool-app" -> "My Cool App"
+    """
+    # Replace underscores and hyphens with spaces
+    normalized = value.replace("_", " ").replace("-", " ")
+    # Title case each word
+    return " ".join(word.capitalize() for word in normalized.split())
+
+
 def _as_str_mapping(value: object) -> dict[str, object]:
     """Return a shallow copy of mapping entries with string keys."""
 
@@ -421,6 +434,13 @@ author = {_quote(project.author_name)}
 author_email = {_quote(project.author_email)}
 #: Console-script name published by the package.
 shell_command = {_quote(project.shell_command)}
+
+#: Vendor identifier for lib_layered_config paths (macOS/Windows)
+LAYEREDCONF_VENDOR: str = {_quote(project.author_name)}
+#: Application display name for lib_layered_config paths (macOS/Windows)
+LAYEREDCONF_APP: str = {_quote(_package_name_to_display(project.name))}
+#: Configuration slug for lib_layered_config Linux paths and environment variables
+LAYEREDCONF_SLUG: str = {_quote(project.shell_command)}
 
 
 def print_info() -> None:
