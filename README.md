@@ -11,6 +11,7 @@
 [![codecov](https://codecov.io/gh/bitranox/btx_lib_mail/graph/badge.svg?token=UFBaUDIgRk)](https://codecov.io/gh/bitranox/btx_lib_mail)
 [![Maintainability](https://qlty.sh/badges/041ba2c1-37d6-40bb-85a0-ec5a8a0aca0c/maintainability.svg)](https://qlty.sh/gh/bitranox/projects/btx_lib_mail)
 [![Known Vulnerabilities](https://snyk.io/test/github/bitranox/btx_lib_mail/badge.svg)](https://snyk.io/test/github/bitranox/btx_lib_mail)
+[![security: bandit](https://img.shields.io/badge/security-bandit-yellow.svg)](https://github.com/PyCQA/bandit)
 
 Mail Library - send Mails easy
 - TLS by default
