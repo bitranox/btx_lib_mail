@@ -349,7 +349,7 @@ def test_send_real_mail_when_env_configured(tmp_path: Path) -> None:
         assert lib_mail.send(
             mail_from=sender,
             mail_recipients=recipients,
-            mail_subject="btx_lib_mail integration test ✉️",
+            mail_subject="btx_lib_mail integration test 🚀",
             mail_body="This is an automated integration test from btx_lib_mail. 🚀",
             mail_body_html="<p><strong>Integration</strong> test 🚀 with <em>UTF-8</em> emoji.</p>",
             attachment_file_paths=[attachment_path],

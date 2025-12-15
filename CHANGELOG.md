@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.2] - 2025-12-15
+### Fixed
+- Email subjects containing non-ASCII characters are now RFC 2047 encoded via
+  `email.header.Header`, ensuring proper UTF-8 rendering across mail clients.
+
 ## [1.0.1] - 2025-10-16
 ### Changed
 - Regular expression used for email validation is precompiled at import time,

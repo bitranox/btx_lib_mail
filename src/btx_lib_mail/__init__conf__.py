@@ -24,7 +24,7 @@ name = "btx_lib_mail"
 #: Human-readable summary shown in CLI help output.
 title = "Template for python apps with registered cli commands"
 #: Current release version pulled from ``pyproject.toml`` by automation.
-version = "1.0.1"
+version = "1.0.2"
 #: Repository homepage presented to users.
 homepage = "https://github.com/bitranox/btx_lib_mail"
 #: Author attribution surfaced in CLI output.

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from email import encoders
+from email.header import Header
 from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -444,7 +445,7 @@ def _compose_message(
     """
 
     message = MIMEMultipart()
-    message["Subject"] = subject
+    message["Subject"] = Header(subject, "utf-8").encode()
     message["From"] = sender
     message["To"] = recipient
     message["Date"] = formatdate(localtime=True)
