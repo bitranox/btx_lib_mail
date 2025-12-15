@@ -1,9 +1,9 @@
 [project]
 name = "btx_lib_mail"
-version = "1.0.2"
+version = "1.0.3"
 description = "Template for python apps with registered cli commands"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.10"
 dependencies = ["rich-click>=1.9.4", "lib_cli_exit_tools>=2.2.2", "pydantic>=2.12.5"]
 license = { text = "MIT" }
 authors = [{ name = "bitranox", email = "bitranox@gmail.com" }]
@@ -54,7 +54,7 @@ include = ["src/btx_lib_mail/py.typed"]
 
 [tool.ruff]
 line-length = 160
-target-version = "py313"
+target-version = "py310"
 
 [tool.ruff.lint.per-file-ignores]
 # ignore the "unused import sys" in the jupyter notebook - which we need (it is a linter hickup)
@@ -62,7 +62,7 @@ target-version = "py313"
 
 [tool.pyright]
 typeCheckingMode = "strict"
-pythonVersion = "3.13"
+pythonVersion = "3.10"
 extraPaths = [
   "src",
 ]

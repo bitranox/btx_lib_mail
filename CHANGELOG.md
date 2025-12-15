@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.3] - 2025-12-15
+### Changed
+- Lowered minimum Python version from 3.13 to 3.10, broadening compatibility.
+- CI test matrix now covers Python 3.10, 3.11, 3.12, and 3.13.
+- Replaced ``tomllib`` with ``rtoml`` in CI workflows for metadata extraction,
+  enabling consistent TOML parsing across all supported Python versions.
+
 ## [1.0.2] - 2025-12-15
 ### Fixed
 - Email subjects containing non-ASCII characters are now RFC 2047 encoded via
