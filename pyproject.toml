@@ -4,7 +4,7 @@ version = "1.0.1"
 description = "Template for python apps with registered cli commands"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = ["rich-click>=1.9.4", "lib_cli_exit_tools>=2.1.0", "pydantic>=2.12.5"]
+dependencies = ["rich-click>=1.9.4", "lib_cli_exit_tools>=2.2.2", "pydantic>=2.12.5"]
 license = { text = "MIT" }
 authors = [{ name = "bitranox", email = "bitranox@gmail.com" }]
 keywords = ["logging", "rich", "cli", "terminal", "ansi"]
@@ -24,17 +24,18 @@ Issues = "https://github.com/bitranox/btx_lib_mail/issues"
 
 [project.optional-dependencies]
 dev = [
-  "pytest>=9.0.1",
+  "pytest>=9.0.2",
   "pytest-cov>=7.0.0",
-  "ruff>=0.14.7",
+  "ruff>=0.14.9",
   "pyright>=1.1.407",
   "bandit>=1.9.2",
   "build>=1.3.0",
   "twine>=6.2.0",
-  "codecov-cli>=11.2.5",
-  "pip-audit>=2.9.0",
-  "textual>=6.6.0",
-  "import-linter>=2.7"
+  "codecov-cli>=11.2.6",
+  "pip-audit>=2.10.0",
+  "textual>=6.9.0",
+  "import-linter>=2.9",
+  "rtoml>=0.13.0"
 ]
 
 [project.scripts]
