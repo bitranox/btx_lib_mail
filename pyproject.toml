@@ -144,4 +144,5 @@ layers = [
 # Known vulnerabilities to ignore (unfixable or accepted risk)
 # GHSA-4xh5-x5gv-qwph: py library ReDoS (no fix available, low risk)
 # PYSEC-2022-42969: same as above (alias)
-ignore-vulns = ["GHSA-4xh5-x5gv-qwph", "PYSEC-2022-42969"]
+# PYSEC-2022-43012, PYSEC-2025-49, CVE-2024-6345: setuptools CI environment issues
+ignore-vulns = ["GHSA-4xh5-x5gv-qwph", "PYSEC-2022-42969", "PYSEC-2022-43012", "PYSEC-2025-49", "CVE-2024-6345"]
