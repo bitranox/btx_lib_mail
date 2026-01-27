@@ -548,6 +548,54 @@ def test_when_an_unknown_command_is_used_a_helpful_error_appears(cli_runner: Cli
     assert "No such command" in result.output
 
 
+# ---------------------------------------------------------------------------
+# validate-email CLI command
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.os_agnostic
+def test_validate_email_accepts_valid_address(cli_runner: CliRunner) -> None:
+    result: Result = cli_runner.invoke(cli_mod.cli, ["validate-email", "user@example.com"])
+
+    assert result.exit_code == 0
+    assert "Valid email address" in result.output
+
+
+@pytest.mark.os_agnostic
+def test_validate_email_rejects_invalid_address(cli_runner: CliRunner) -> None:
+    result: Result = cli_runner.invoke(cli_mod.cli, ["validate-email", "invalid@"])
+
+    assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# validate-smtp-host CLI command
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.os_agnostic
+def test_validate_smtp_host_accepts_valid_host_port(cli_runner: CliRunner) -> None:
+    result: Result = cli_runner.invoke(cli_mod.cli, ["validate-smtp-host", "smtp.example.com:587"])
+
+    assert result.exit_code == 0
+    assert "Valid SMTP host" in result.output
+
+
+@pytest.mark.os_agnostic
+def test_validate_smtp_host_accepts_ipv6(cli_runner: CliRunner) -> None:
+    result: Result = cli_runner.invoke(cli_mod.cli, ["validate-smtp-host", "[::1]:25"])
+
+    assert result.exit_code == 0
+    assert "Valid SMTP host" in result.output
+
+
+@pytest.mark.os_agnostic
+def test_validate_smtp_host_rejects_invalid(cli_runner: CliRunner) -> None:
+    result: Result = cli_runner.invoke(cli_mod.cli, ["validate-smtp-host", "[::1"])
+
+    assert result.exit_code != 0
+
+
 @pytest.mark.os_agnostic
 def test_when_restore_is_disabled_the_traceback_choice_remains(
     isolated_traceback_config: None,

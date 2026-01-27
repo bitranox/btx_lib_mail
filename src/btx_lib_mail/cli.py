@@ -32,7 +32,7 @@ from click.core import ParameterSource
 
 from . import __init__conf__
 from .behaviors import emit_greeting, noop_main, raise_intentional_failure
-from .lib_mail import conf, send
+from .lib_mail import conf, send, validate_email_address, validate_smtp_host
 
 _DOTENV_PATH = Path(".env")
 _TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -652,6 +652,47 @@ def cli_send_mail(
     )
 
     click.echo(f"Mail sent to {', '.join(resolved_recipients)} via {', '.join(resolved_hosts)}")
+
+
+@cli.command("validate-email", context_settings=CLICK_CONTEXT_SETTINGS)
+@click.argument("address")
+def cli_validate_email(address: str) -> None:
+    """### cli_validate_email(address: str) -> None {#cli-validate-email}
+
+    **Purpose:** Validate that *address* is a syntactically correct email
+    address. Exits successfully when the address is valid; raises when invalid.
+
+    **Parameters:**
+    - `address: str` — Email address to validate.
+
+    **Returns:** `None`.
+
+    **Side Effects:** Echoes a confirmation message on success.
+    """
+
+    validate_email_address(address)
+    click.echo(f"Valid email address: {address}")
+
+
+@cli.command("validate-smtp-host", context_settings=CLICK_CONTEXT_SETTINGS)
+@click.argument("host")
+def cli_validate_smtp_host(host: str) -> None:
+    """### cli_validate_smtp_host(host: str) -> None {#cli-validate-smtp-host}
+
+    **Purpose:** Validate that *host* is a syntactically correct SMTP host
+    string, including IPv6 bracketed addresses. Exits successfully when valid;
+    raises when invalid.
+
+    **Parameters:**
+    - `host: str` — SMTP host string to validate.
+
+    **Returns:** `None`.
+
+    **Side Effects:** Echoes a confirmation message on success.
+    """
+
+    validate_smtp_host(host)
+    click.echo(f"Valid SMTP host: {host}")
 
 
 @cli.command("fail", context_settings=CLICK_CONTEXT_SETTINGS)

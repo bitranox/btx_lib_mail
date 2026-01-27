@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.2.0] - 2026-01-27
+### Added
+- Public `validate_email_address()` for email syntax validation (API + CLI).
+- Public `validate_smtp_host()` for SMTP host format validation with IPv6
+  bracket support (API + CLI).
+- CLI subcommands `validate-email` and `validate-smtp-host`.
+
+### Changed
+- SMTP host validation now supports IPv6 bracketed addresses (`[::1]:25`).
+
+### Removed
+- `_is_valid_email_address()` — replaced by `validate_email_address()`.
+- `_split_host_and_port()` — replaced by `validate_smtp_host()` and `_parse_smtp_host()`.
+
 ## [1.1.0] - 2026-01-27
 ### Added
 - `ConfMail` now validates `smtp_timeout` is positive via a Pydantic

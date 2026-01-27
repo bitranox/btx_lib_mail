@@ -468,3 +468,144 @@ def test_when_mail_from_lacks_domain_the_send_call_rejects() -> None:
             mail_subject="Subject",
             smtphosts=["smtp.example.com"],
         )
+
+
+# ---------------------------------------------------------------------------
+# validate_email_address
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.os_agnostic
+def test_validate_email_address_accepts_valid() -> None:
+    lib_mail.validate_email_address("user@example.com")
+
+
+@pytest.mark.os_agnostic
+def test_validate_email_address_rejects_missing_domain() -> None:
+    with pytest.raises(ValueError, match="invalid email address"):
+        lib_mail.validate_email_address("user@")
+
+
+@pytest.mark.os_agnostic
+def test_validate_email_address_rejects_missing_local_part() -> None:
+    with pytest.raises(ValueError, match="invalid email address"):
+        lib_mail.validate_email_address("@example.com")
+
+
+@pytest.mark.os_agnostic
+def test_validate_email_address_rejects_bare_word() -> None:
+    with pytest.raises(ValueError, match="invalid email address"):
+        lib_mail.validate_email_address("bareword")
+
+
+@pytest.mark.os_agnostic
+def test_validate_email_address_rejects_empty_string() -> None:
+    with pytest.raises(ValueError, match="invalid email address"):
+        lib_mail.validate_email_address("")
+
+
+# ---------------------------------------------------------------------------
+# validate_smtp_host
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.os_agnostic
+def test_validate_smtp_host_accepts_bare_hostname() -> None:
+    lib_mail.validate_smtp_host("smtp.example.com")
+
+
+@pytest.mark.os_agnostic
+def test_validate_smtp_host_accepts_hostname_port() -> None:
+    lib_mail.validate_smtp_host("smtp.example.com:587")
+
+
+@pytest.mark.os_agnostic
+def test_validate_smtp_host_accepts_ipv6_bare() -> None:
+    lib_mail.validate_smtp_host("[::1]")
+
+
+@pytest.mark.os_agnostic
+def test_validate_smtp_host_accepts_ipv6_with_port() -> None:
+    lib_mail.validate_smtp_host("[::1]:25")
+
+
+@pytest.mark.os_agnostic
+def test_validate_smtp_host_accepts_ipv6_full_with_port() -> None:
+    lib_mail.validate_smtp_host("[2001:db8::1]:587")
+
+
+@pytest.mark.os_agnostic
+def test_validate_smtp_host_rejects_missing_bracket() -> None:
+    with pytest.raises(ValueError, match="missing closing bracket"):
+        lib_mail.validate_smtp_host("[::1")
+
+
+@pytest.mark.os_agnostic
+def test_validate_smtp_host_rejects_garbage_after_bracket() -> None:
+    with pytest.raises(ValueError, match="unexpected characters after bracket"):
+        lib_mail.validate_smtp_host("[::1]garbage")
+
+
+@pytest.mark.os_agnostic
+def test_validate_smtp_host_rejects_non_numeric_port() -> None:
+    with pytest.raises(ValueError, match="invalid smtp port"):
+        lib_mail.validate_smtp_host("host:abc")
+
+
+@pytest.mark.os_agnostic
+def test_validate_smtp_host_rejects_port_zero() -> None:
+    with pytest.raises(ValueError, match="port must be 1-65535"):
+        lib_mail.validate_smtp_host("host:0")
+
+
+@pytest.mark.os_agnostic
+def test_validate_smtp_host_rejects_port_over_65535() -> None:
+    with pytest.raises(ValueError, match="port must be 1-65535"):
+        lib_mail.validate_smtp_host("host:99999")
+
+
+@pytest.mark.os_agnostic
+def test_validate_smtp_host_rejects_empty_host() -> None:
+    with pytest.raises(ValueError, match="empty SMTP host"):
+        lib_mail.validate_smtp_host("")
+
+
+@pytest.mark.os_agnostic
+def test_validate_smtp_host_rejects_ipv6_non_numeric_port() -> None:
+    with pytest.raises(ValueError, match="invalid smtp port"):
+        lib_mail.validate_smtp_host("[::1]:abc")
+
+
+@pytest.mark.os_agnostic
+def test_validate_smtp_host_rejects_ipv6_port_out_of_range() -> None:
+    with pytest.raises(ValueError, match="port must be 1-65535"):
+        lib_mail.validate_smtp_host("[::1]:0")
+
+
+# ---------------------------------------------------------------------------
+# IPv6 delivery integration (via _parse_smtp_host -> RecordingSMTP)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.os_agnostic
+def test_ipv6_host_with_port_parses_for_delivery(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = _install_recording_smtp(monkeypatch)
+    lib_mail.send(
+        mail_from="sender@example.com",
+        mail_recipients="recipient@example.com",
+        mail_subject="Subject",
+        smtphosts=["[::1]:2525"],
+    )
+    assert recorder.init_calls[0] == ("::1", 2525, 30.0)
+
+
+@pytest.mark.os_agnostic
+def test_ipv6_host_without_port_parses_for_delivery(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = _install_recording_smtp(monkeypatch)
+    lib_mail.send(
+        mail_from="sender@example.com",
+        mail_recipients="recipient@example.com",
+        mail_subject="Subject",
+        smtphosts=["[::1]"],
+    )
+    assert recorder.init_calls[0] == ("::1", 0, 30.0)

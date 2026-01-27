@@ -142,6 +142,24 @@ stand-in domain.
   exceptions from :func:`send` bubble up to the shared error handlers.
 * **Location:** src/btx_lib_mail/cli.py
 
+### cli.cli_validate_email {#cli-cli-validate-email}
+
+* **Purpose:** CLI subcommand that validates a single email address via
+  :func:`validate_email_address` and echoes a confirmation on success.
+* **Input:** Positional ``ADDRESS`` argument.
+* **Output:** Echoes ``"Valid email address: ..."`` on success; raises
+  ``ValueError`` on invalid input.
+* **Location:** src/btx_lib_mail/cli.py
+
+### cli.cli_validate_smtp_host {#cli-cli-validate-smtp-host}
+
+* **Purpose:** CLI subcommand that validates a single SMTP host string via
+  :func:`validate_smtp_host` and echoes a confirmation on success.
+* **Input:** Positional ``HOST`` argument.
+* **Output:** Echoes ``"Valid SMTP host: ..."`` on success; raises
+  ``ValueError`` on invalid input.
+* **Location:** src/btx_lib_mail/cli.py
+
 ### lib_mail.ConfMail {#lib-mail-confmail}
 
 * **Purpose:** Declarative configuration (via Pydantic) for outbound SMTP
@@ -359,18 +377,27 @@ inputs into SMTP side effects.
 * **Output:** ``list[str]``.
 * **Location:** src/btx_lib_mail/lib_mail.py
 
-### lib_mail._split_host_and_port {#lib-mail-split-host-port}
+### lib_mail.validate_email_address {#lib-mail-validate-email-address}
 
-* **Purpose:** Split ``host:port`` strings while tolerating missing ports.
+* **Purpose:** Raise ``ValueError`` when the address does not match ``EMAIL_PATTERN``.
 * **Inputs:** ``str``.
-* **Output:** ``tuple[str, int | None]``.
+* **Output:** ``None`` (raises on invalid input).
 * **Location:** src/btx_lib_mail/lib_mail.py
 
-### lib_mail._is_valid_email_address {#lib-mail-is-valid-email-address}
+### lib_mail.validate_smtp_host {#lib-mail-validate-smtp-host}
 
-* **Purpose:** Confirm email syntax via regex before delivery attempts.
+* **Purpose:** Raise ``ValueError`` when the host string is not a valid SMTP
+  host, including IPv6 bracketed addresses (``[::1]:25``).
 * **Inputs:** ``str``.
-* **Output:** ``bool``.
+* **Output:** ``None`` (raises on invalid input).
+* **Location:** src/btx_lib_mail/lib_mail.py
+
+### lib_mail._parse_smtp_host {#lib-mail-parse-smtp-host}
+
+* **Purpose:** Validate and split an SMTP host string into hostname and port.
+  Strips IPv6 brackets so ``smtplib.SMTP`` receives a bare address.
+* **Inputs:** ``str``.
+* **Output:** ``tuple[str, int | None]``.
 * **Location:** src/btx_lib_mail/lib_mail.py
 
 ---

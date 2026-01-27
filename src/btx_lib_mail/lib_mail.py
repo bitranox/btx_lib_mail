@@ -38,7 +38,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 logger = logging.getLogger("btx_lib_mail")
 
 EMAIL_PATTERN: Final[re.Pattern[str]] = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b")
-"""Compiled regex used by :func:`_is_valid_email_address`."""
+"""Compiled regex used by :func:`validate_email_address`."""
 
 
 @dataclass(frozen=True)
@@ -230,8 +230,10 @@ def send(
     >>> _ = mock.patch.stopall()
     """
 
-    if not _is_valid_email_address(mail_from):
-        raise ValueError(f"invalid sender address: {mail_from!r}")
+    try:
+        validate_email_address(mail_from)
+    except ValueError:
+        raise ValueError(f"invalid sender address: {mail_from!r}") from None
 
     recipients = _prepare_recipients(mail_recipients)
     attachments = _prepare_attachments(tuple(attachment_file_paths or ()))
@@ -421,7 +423,7 @@ def _deliver_via_host(
     Network I/O, optional STARTTLS handshake, optional authentication.
     """
 
-    hostname, port = _split_host_and_port(host)
+    hostname, port = _parse_smtp_host(host)
     with smtplib.SMTP(hostname, port=port or 0, timeout=delivery.timeout) as smtp_connection:
         if delivery.use_starttls:
             smtp_connection.starttls(context=ssl.create_default_context())
@@ -594,7 +596,7 @@ def _prepare_hosts(hosts: tuple[str, ...]) -> tuple[str, ...]:
     if not unique:
         raise ValueError("no valid smtphost passed")
     for host in unique:
-        _split_host_and_port(host)
+        validate_smtp_host(host)
     return unique
 
 
@@ -635,12 +637,14 @@ def _prepare_recipients(recipients: str | Sequence[str]) -> tuple[str, ...]:
 
     valid: list[str] = []
     for entry in unique:
-        if _is_valid_email_address(entry):
-            valid.append(entry)
+        try:
+            validate_email_address(entry)
+        except ValueError:
+            if conf.raise_on_invalid_recipient:
+                raise ValueError(f"invalid recipient {entry}") from None
+            logger.warning(f"invalid recipient {entry}")
             continue
-        if conf.raise_on_invalid_recipient:
-            raise ValueError(f"invalid recipient {entry}")
-        logger.warning(f"invalid recipient {entry}")
+        valid.append(entry)
 
     if not valid:
         raise ValueError("no valid recipients")
@@ -739,60 +743,23 @@ def _collect_host_inputs(value: Any) -> list[str]:
     raise ValueError("smtphosts must be a string, list of strings, or tuple of strings")
 
 
-def _split_host_and_port(address: str) -> tuple[str, int | None]:
-    """Separate host and port components when specified.
-
-    Why
-        Allows callers to accept ``host:port`` while passing integers to SMTP.
-
-    Inputs
-    ------
-    address:
-        Host string with optional ``:<port>`` suffix.
-
-    What
-        Parses the suffix when present and casts it to ``int``.
-
-    Outputs
-    -------
-    tuple[str, int | None]
-        Hostname and optional port number.
-
-    Side Effects
-    ------------
-    None.
-    """
-
-    if ":" not in address:
-        return address, None
-    host, port_str = address.rsplit(":", 1)
-    try:
-        port = int(port_str)
-    except ValueError as exc:  # pragma: no cover - defensive guard
-        raise ValueError(f'invalid smtp port in "{address}"') from exc
-    if not (1 <= port <= 65535):
-        raise ValueError(f'port must be 1-65535 in "{address}", got {port}')
-    return host, port
-
-
-def _is_valid_email_address(value: str) -> bool:
-    """Return ``True`` when the value matches a simple email pattern.
+def validate_email_address(address: str) -> None:
+    """Raise ``ValueError`` when *address* does not match the email pattern.
 
     Why
         Prevents avoidable SMTP failures by checking syntax early.
 
     What
-        Applies a conservative regex that covers common email formats.
+        Applies :data:`EMAIL_PATTERN` and raises on mismatch.
 
     Inputs
     ------
-    value:
+    address:
         Candidate email string.
 
     Outputs
     -------
-    bool
-        ``True`` when syntax matches; ``False`` otherwise.
+    None
 
     Side Effects
     ------------
@@ -800,10 +767,139 @@ def _is_valid_email_address(value: str) -> bool:
 
     Examples
     --------
-    >>> _is_valid_email_address("user@example.com")
-    True
-    >>> _is_valid_email_address("invalid@")
-    False
+    >>> validate_email_address("user@example.com")
+    >>> validate_email_address("invalid@")
+    Traceback (most recent call last):
+        ...
+    ValueError: invalid email address: 'invalid@'
     """
 
-    return bool(EMAIL_PATTERN.fullmatch(value))
+    if not EMAIL_PATTERN.fullmatch(address):
+        raise ValueError(f"invalid email address: {address!r}")
+
+
+def validate_smtp_host(host: str) -> None:
+    """Raise ``ValueError`` when *host* is not a valid SMTP host string.
+
+    Accepts the following forms:
+
+    - ``hostname``
+    - ``hostname:port``
+    - ``[IPv6]:port``  (e.g. ``[::1]:25``)
+    - ``[IPv6]``       (e.g. ``[::1]``)
+
+    Why
+        Validates SMTP host syntax early so errors surface before delivery.
+
+    Inputs
+    ------
+    host:
+        Host string with optional port and/or IPv6 bracket notation.
+
+    Outputs
+    -------
+    None
+
+    Side Effects
+    ------------
+    None.
+
+    Examples
+    --------
+    >>> validate_smtp_host("smtp.example.com:587")
+    >>> validate_smtp_host("[::1]:25")
+    >>> validate_smtp_host("bad:host:format")
+    Traceback (most recent call last):
+        ...
+    ValueError: invalid smtp port in "bad:host:format"
+    """
+
+    if not host:
+        raise ValueError("empty SMTP host")
+
+    if host.startswith("["):
+        # IPv6 bracketed address: [addr] or [addr]:port
+        bracket_end = host.find("]")
+        if bracket_end == -1:
+            raise ValueError(f'missing closing bracket in "{host}"')
+        remainder = host[bracket_end + 1 :]
+        if remainder == "":
+            # bare [IPv6] — valid, no port
+            return
+        if not remainder.startswith(":"):
+            raise ValueError(f'unexpected characters after bracket in "{host}"')
+        port_str = remainder[1:]
+        _validate_port(port_str, host)
+        return
+
+    if ":" not in host:
+        return
+    _, port_str = host.rsplit(":", 1)
+    _validate_port(port_str, host)
+
+
+def _validate_port(port_str: str, original: str) -> None:
+    """Validate that *port_str* is a numeric port in the 1-65535 range.
+
+    Inputs
+    ------
+    port_str:
+        Raw port substring extracted from the host string.
+    original:
+        The full host string used in error messages.
+
+    Outputs
+    -------
+    None
+
+    Side Effects
+    ------------
+    None.
+    """
+
+    try:
+        port = int(port_str)
+    except ValueError as exc:
+        raise ValueError(f'invalid smtp port in "{original}"') from exc
+    if not (1 <= port <= 65535):
+        raise ValueError(f'port must be 1-65535 in "{original}", got {port}')
+
+
+def _parse_smtp_host(address: str) -> tuple[str, int | None]:
+    """Validate and split an SMTP host string into hostname and port.
+
+    Calls :func:`validate_smtp_host` first, then extracts the components.
+    IPv6 brackets are stripped so ``smtplib.SMTP`` receives a bare address.
+
+    Why
+        Delivery helpers need separate hostname and port values.
+
+    Inputs
+    ------
+    address:
+        Host string validated by :func:`validate_smtp_host`.
+
+    Outputs
+    -------
+    tuple[str, int | None]
+        Hostname (bare for IPv6) and optional port number.
+
+    Side Effects
+    ------------
+    None.
+    """
+
+    validate_smtp_host(address)
+
+    if address.startswith("["):
+        bracket_end = address.find("]")
+        ipv6_addr = address[1:bracket_end]
+        remainder = address[bracket_end + 1 :]
+        if remainder.startswith(":"):
+            return ipv6_addr, int(remainder[1:])
+        return ipv6_addr, None
+
+    if ":" not in address:
+        return address, None
+    host, port_str = address.rsplit(":", 1)
+    return host, int(port_str)
