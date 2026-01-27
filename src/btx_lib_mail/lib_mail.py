@@ -122,6 +122,33 @@ class ConfMail(BaseModel):
 
         return _collect_host_inputs(value)
 
+    @field_validator("smtp_timeout", mode="after")
+    @classmethod
+    def _validate_smtp_timeout(cls, value: float) -> float:
+        """Reject non-positive timeout values at configuration time.
+
+        Why
+            A zero or negative socket timeout is never valid for SMTP connections.
+
+        Inputs
+        ------
+        value:
+            Timeout in seconds after Pydantic type coercion.
+
+        Outputs
+        -------
+        float
+            The validated positive timeout.
+
+        Side Effects
+        ------------
+        None.
+        """
+
+        if value <= 0:
+            raise ValueError(f"smtp_timeout must be positive, got {value}")
+        return value
+
     def resolved_credentials(self) -> tuple[str, str] | None:
         """### resolved_credentials() -> tuple[str, str] | None {#lib-mail-confmail-resolved-credentials}
 
@@ -202,6 +229,9 @@ def send(
     True
     >>> _ = mock.patch.stopall()
     """
+
+    if not _is_valid_email_address(mail_from):
+        raise ValueError(f"invalid sender address: {mail_from!r}")
 
     recipients = _prepare_recipients(mail_recipients)
     attachments = _prepare_attachments(tuple(attachment_file_paths or ()))
@@ -284,6 +314,8 @@ def _resolve_delivery_options(
     credentials = explicit_credentials or conf.resolved_credentials()
     use_starttls = bool(explicit_starttls if explicit_starttls is not None else conf.smtp_use_starttls)
     timeout = float(explicit_timeout if explicit_timeout is not None else conf.smtp_timeout)
+    if timeout <= 0:
+        raise ValueError(f"smtp_timeout must be positive, got {timeout}")
     return DeliveryOptions(credentials=credentials, use_starttls=use_starttls, timeout=timeout)
 
 
@@ -561,6 +593,8 @@ def _prepare_hosts(hosts: tuple[str, ...]) -> tuple[str, ...]:
     unique = tuple(dict.fromkeys(filtered))
     if not unique:
         raise ValueError("no valid smtphost passed")
+    for host in unique:
+        _split_host_and_port(host)
     return unique
 
 
@@ -736,6 +770,8 @@ def _split_host_and_port(address: str) -> tuple[str, int | None]:
         port = int(port_str)
     except ValueError as exc:  # pragma: no cover - defensive guard
         raise ValueError(f'invalid smtp port in "{address}"') from exc
+    if not (1 <= port <= 65535):
+        raise ValueError(f'port must be 1-65535 in "{address}", got {port}')
     return host, port
 
 

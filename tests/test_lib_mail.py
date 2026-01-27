@@ -357,3 +357,114 @@ def test_send_real_mail_when_env_configured(tmp_path: Path) -> None:
     finally:
         for key, value in conf_snapshot.model_dump().items():
             setattr(lib_mail.conf, key, value)
+
+
+# ---------------------------------------------------------------------------
+# smtp_timeout validation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.os_agnostic
+def test_when_conf_receives_negative_timeout_it_rejects() -> None:
+    with pytest.raises(ValidationError, match="smtp_timeout must be positive"):
+        ConfMail(smtp_timeout=-5.0)
+
+
+@pytest.mark.os_agnostic
+def test_when_conf_receives_zero_timeout_it_rejects() -> None:
+    with pytest.raises(ValidationError, match="smtp_timeout must be positive"):
+        ConfMail(smtp_timeout=0.0)
+
+
+@pytest.mark.os_agnostic
+def test_when_conf_receives_positive_timeout_it_accepts() -> None:
+    config = ConfMail(smtp_timeout=0.5)
+    assert config.smtp_timeout == 0.5
+
+
+@pytest.mark.os_agnostic
+def test_when_conf_timeout_assigned_negative_it_rejects() -> None:
+    config = ConfMail()
+    with pytest.raises(ValidationError, match="smtp_timeout must be positive"):
+        cast(Any, config).smtp_timeout = -1.0
+
+
+@pytest.mark.os_agnostic
+def test_when_explicit_timeout_is_negative_the_send_call_rejects(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_recording_smtp(monkeypatch)
+    with pytest.raises(ValueError, match="smtp_timeout must be positive"):
+        lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients="recipient@example.com",
+            mail_subject="Subject",
+            smtphosts=["smtp.example.com"],
+            timeout=-1.0,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Port range validation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.os_agnostic
+def test_when_port_is_zero_the_send_call_rejects(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_recording_smtp(monkeypatch)
+    with pytest.raises(ValueError, match="port must be 1-65535"):
+        lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients="recipient@example.com",
+            mail_subject="Subject",
+            smtphosts=["host:0"],
+        )
+
+
+@pytest.mark.os_agnostic
+def test_when_port_exceeds_65535_the_send_call_rejects(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_recording_smtp(monkeypatch)
+    with pytest.raises(ValueError, match="port must be 1-65535"):
+        lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients="recipient@example.com",
+            mail_subject="Subject",
+            smtphosts=["host:99999"],
+        )
+
+
+@pytest.mark.os_agnostic
+def test_when_port_is_valid_it_passes_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = _install_recording_smtp(monkeypatch)
+    lib_mail.send(
+        mail_from="sender@example.com",
+        mail_recipients="recipient@example.com",
+        mail_subject="Subject",
+        smtphosts=["host:587"],
+    )
+    assert recorder.init_calls[0] == ("host", 587, 30.0)
+
+
+# ---------------------------------------------------------------------------
+# mail_from validation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.os_agnostic
+def test_when_mail_from_is_invalid_the_send_call_rejects() -> None:
+    with pytest.raises(ValueError, match="invalid sender address"):
+        lib_mail.send(
+            mail_from="not-an-email",
+            mail_recipients="recipient@example.com",
+            mail_subject="Subject",
+            smtphosts=["smtp.example.com"],
+        )
+
+
+@pytest.mark.os_agnostic
+def test_when_mail_from_lacks_domain_the_send_call_rejects() -> None:
+    with pytest.raises(ValueError, match="invalid sender address"):
+        lib_mail.send(
+            mail_from="user@",
+            mail_recipients="recipient@example.com",
+            mail_subject="Subject",
+            smtphosts=["smtp.example.com"],
+        )

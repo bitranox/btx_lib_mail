@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.0] - 2026-01-27
+### Added
+- `ConfMail` now validates `smtp_timeout` is positive via a Pydantic
+  `field_validator`; zero or negative values raise `ValidationError`.
+- Per-call `timeout` overrides passed to `send()` are also validated,
+  raising `ValueError` for non-positive values.
+- `_split_host_and_port()` rejects port numbers outside the 1-65535 range.
+- `_prepare_hosts()` eagerly validates port syntax so errors surface before
+  the delivery retry loop.
+- `send()` validates `mail_from` with the existing `_is_valid_email_address()`
+  regex, raising `ValueError` for syntactically invalid sender addresses.
+
 ## [1.0.3] - 2025-12-15
 ### Changed
 - Lowered minimum Python version from 3.13 to 3.10, broadening compatibility.
