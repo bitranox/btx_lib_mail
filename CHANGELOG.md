@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.2.1] - 2026-01-28
+### Fixed
+- Removed unnecessary `cast(Any, …)` from the `smtp_timeout` assignment test;
+  pyright already accepts `float → float` without suppression.
+
+### Changed
+- Clarified the `cast(Any, …)` comment in `test_conf_mail_assignment_validates`
+  to document it as a deliberate type-mismatch bypass for Pydantic's runtime
+  field-validator coercion (`str → list[str]`), not a missing-stub workaround.
+
 ## [1.2.0] - 2026-01-27
 ### Added
 - Public `validate_email_address()` for email syntax validation (API + CLI).

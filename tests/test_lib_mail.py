@@ -60,6 +60,11 @@ def test_conf_mail_accepts_iterable_hosts() -> None:
 
 
 def test_conf_mail_assignment_validates() -> None:
+    # cast(Any, …) is required here because this test intentionally assigns
+    # a plain str to a list[str] field to exercise the field_validator
+    # coercion that runs at runtime via validate_assignment=True.  Pyright
+    # correctly rejects ``config.smtphosts = "…"`` (str is not list[str]);
+    # the cast silences the diagnostic for this deliberate type mismatch.
     config = ConfMail()
     cast(Any, config).smtphosts = "smtp.example.com"
     assert config.smtphosts == ["smtp.example.com"]
@@ -386,7 +391,7 @@ def test_when_conf_receives_positive_timeout_it_accepts() -> None:
 def test_when_conf_timeout_assigned_negative_it_rejects() -> None:
     config = ConfMail()
     with pytest.raises(ValidationError, match="smtp_timeout must be positive"):
-        cast(Any, config).smtp_timeout = -1.0
+        config.smtp_timeout = -1.0
 
 
 @pytest.mark.os_agnostic
