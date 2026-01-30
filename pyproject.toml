@@ -80,7 +80,7 @@ markers = [
   "os_macos: test exercises macOS-only behavior",
   "os_posix: test exercises behavior requiring POSIX semantics",
   "os_linux: test exercises Linux-only behavior",
-  "integration: sends a real SMTP message when TEST_SMTP_* env vars are set",
+  "local_only: test requires local environment (e.g., real SMTP via TEST_SMTP_* env vars)",
 ]
 
 [tool.coverage.run]

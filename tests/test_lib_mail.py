@@ -164,6 +164,7 @@ def test_when_an_attachment_is_missing_strict_mode_raises(tmp_path: Path) -> Non
             mail_subject="Subject",
             smtphosts=["smtp.example.com"],
             attachment_file_paths=[missing],
+            attachment_blocked_directories=frozenset(),  # Disable for macOS /var/folders
         )
 
 
@@ -185,6 +186,7 @@ def test_when_missing_attachments_are_allowed_a_warning_is_logged(
         mail_subject="Subject",
         smtphosts=["smtp.example.com"],
         attachment_file_paths=[ghost],
+        attachment_blocked_directories=frozenset(),  # Disable for macOS /var/folders
     )
 
     assert result is True
@@ -264,6 +266,7 @@ def test_send_handles_utf8_and_credentials(monkeypatch: pytest.MonkeyPatch, tmp_
         credentials=("user", "pass"),
         use_starttls=True,
         timeout=12.5,
+        attachment_blocked_directories=frozenset(),  # Disable for macOS /var/folders
     )
 
     assert result is True
@@ -320,7 +323,7 @@ def test_send_raises_when_all_hosts_fail(monkeypatch: pytest.MonkeyPatch) -> Non
     assert recorder.send_attempts == ["fail.example.com"]
 
 
-@pytest.mark.integration
+@pytest.mark.local_only
 @pytest.mark.os_agnostic
 def test_send_real_mail_when_env_configured(tmp_path: Path) -> None:
     hosts_env = _configured_value("TEST_SMTP_HOSTS")
@@ -724,6 +727,7 @@ class TestPathTraversalPrevention:
             smtphosts=["smtp.example.com"],
             attachment_file_paths=[safe_file],
             attachment_blocked_extensions=frozenset(),  # Allow .txt
+            attachment_blocked_directories=frozenset(),  # Disable for macOS /var/folders
         )
         assert result is True
 
@@ -764,6 +768,7 @@ class TestSymlinkHandling:
             smtphosts=["smtp.example.com"],
             attachment_file_paths=[symlink_file],
             attachment_blocked_extensions=frozenset(),
+            attachment_blocked_directories=frozenset(),  # Disable for macOS /var/folders
             attachment_allow_symlinks=True,
         )
         assert result is True
@@ -775,8 +780,9 @@ class TestExtensionBlocking:
     @pytest.mark.os_agnostic
     def test_blocked_extension_raises_by_default(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         _install_recording_smtp(monkeypatch)
-        script_file = tmp_path / "malicious.sh"
-        script_file.write_text("#!/bin/bash\necho 'pwned'")
+        # Use .js which is blocked on both POSIX and Windows
+        script_file = tmp_path / "malicious.js"
+        script_file.write_text("console.log('pwned')")
 
         with pytest.raises(lib_mail.AttachmentSecurityError, match="extension.*is blocked"):
             lib_mail.send(
@@ -785,6 +791,7 @@ class TestExtensionBlocking:
                 mail_subject="Subject",
                 smtphosts=["smtp.example.com"],
                 attachment_file_paths=[script_file],
+                attachment_blocked_directories=frozenset(),  # Disable for macOS /var/folders
             )
 
     @pytest.mark.os_agnostic
@@ -800,6 +807,7 @@ class TestExtensionBlocking:
             smtphosts=["smtp.example.com"],
             attachment_file_paths=[pdf_file],
             attachment_allowed_extensions=frozenset({".pdf", ".txt"}),
+            attachment_blocked_directories=frozenset(),  # Disable for macOS /var/folders
         )
         assert result is True
 
@@ -817,6 +825,7 @@ class TestExtensionBlocking:
                 smtphosts=["smtp.example.com"],
                 attachment_file_paths=[doc_file],
                 attachment_allowed_extensions=frozenset({".pdf", ".txt"}),
+                attachment_blocked_directories=frozenset(),  # Disable for macOS /var/folders
             )
 
 
@@ -901,6 +910,7 @@ class TestSizeLimit:
                 attachment_file_paths=[large_file],
                 attachment_max_size_bytes=500,
                 attachment_blocked_extensions=frozenset(),
+                attachment_blocked_directories=frozenset(),  # Disable for macOS /var/folders
             )
 
     @pytest.mark.os_agnostic
@@ -917,6 +927,7 @@ class TestSizeLimit:
             attachment_file_paths=[small_file],
             attachment_max_size_bytes=500,
             attachment_blocked_extensions=frozenset(),
+            attachment_blocked_directories=frozenset(),  # Disable for macOS /var/folders
         )
         assert result is True
 
@@ -980,6 +991,7 @@ class TestSecurityViolationWarningMode:
             attachment_file_paths=[script_file, safe_file],
             attachment_raise_on_security_violation=False,
             attachment_allowed_extensions=frozenset({".pdf"}),
+            attachment_blocked_directories=frozenset(),  # Disable for macOS /var/folders
         )
 
         assert result is True
@@ -993,8 +1005,9 @@ class TestAttachmentSecurityErrorAttributes:
     @pytest.mark.os_agnostic
     def test_exception_has_path_and_reason(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         _install_recording_smtp(monkeypatch)
-        script_file = tmp_path / "script.sh"
-        script_file.write_text("#!/bin/bash")
+        # Use .js which is blocked on both POSIX and Windows
+        script_file = tmp_path / "script.js"
+        script_file.write_text("console.log('test')")
 
         try:
             lib_mail.send(
@@ -1003,23 +1016,25 @@ class TestAttachmentSecurityErrorAttributes:
                 mail_subject="Subject",
                 smtphosts=["smtp.example.com"],
                 attachment_file_paths=[script_file],
+                attachment_blocked_directories=frozenset(),  # Disable for macOS /var/folders
             )
             pytest.fail("Expected AttachmentSecurityError")
         except lib_mail.AttachmentSecurityError as exc:
             assert exc.path == script_file.resolve()
             assert exc.violation_type == "extension"
-            assert ".sh" in exc.reason
+            assert ".js" in exc.reason
 
     @pytest.mark.os_agnostic
     def test_exception_str_contains_all_info(self) -> None:
+        test_path = Path("/test/file.exe")
         exc = lib_mail.AttachmentSecurityError(
-            path=Path("/test/file.exe"),
+            path=test_path,
             reason="extension blocked",
             violation_type="extension",
         )
         exc_str = str(exc)
         assert "extension" in exc_str
-        assert "/test/file.exe" in exc_str
+        assert "file.exe" in exc_str  # Check filename, not full path (OS-agnostic)
         assert "blocked" in exc_str
 
 
@@ -1065,6 +1080,7 @@ class TestPerCallSecurityOverrides:
             smtphosts=["smtp.example.com"],
             attachment_file_paths=[script_file],
             attachment_blocked_extensions=frozenset(),  # No blocked extensions
+            attachment_blocked_directories=frozenset(),  # Disable for macOS /var/folders
         )
         assert result is True
 
@@ -1083,5 +1099,6 @@ class TestPerCallSecurityOverrides:
             attachment_file_paths=[large_file],
             attachment_max_size_bytes=10_000,  # Override to 10KB
             attachment_blocked_extensions=frozenset(),
+            attachment_blocked_directories=frozenset(),  # Disable for macOS /var/folders
         )
         assert result is True
