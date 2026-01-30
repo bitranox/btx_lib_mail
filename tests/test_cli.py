@@ -607,3 +607,143 @@ def test_when_restore_is_disabled_the_traceback_choice_remains(
 
     assert lib_cli_exit_tools.config.traceback is True
     assert lib_cli_exit_tools.config.traceback_force_color is True
+
+
+# ---------------------------------------------------------------------------
+# CLI Attachment Security Options
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.os_agnostic
+def test_send_command_passes_security_options_via_cli(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner, tmp_path: Path) -> None:
+    attachment = tmp_path / "document.pdf"
+    attachment.write_bytes(b"%PDF-1.4 content")
+
+    calls: dict[str, Any] = {}
+
+    def fake_send(**kwargs: Any) -> bool:
+        calls.update(kwargs)
+        return True
+
+    monkeypatch.setattr(cli_mod, "send", fake_send)
+
+    result = cli_runner.invoke(
+        cli_mod.cli,
+        [
+            "send",
+            "--host",
+            "smtp.example.com",
+            "--recipient",
+            "test@example.com",
+            "--subject",
+            "Test",
+            "--body",
+            "Test body",
+            "--attachment",
+            str(attachment),
+            "--attachment-allowed-ext",
+            ".pdf,.txt",
+            "--attachment-max-size",
+            "50000000",
+            "--attachment-allow-symlinks",
+            "--attachment-warn",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls["attachment_allowed_extensions"] == frozenset({".pdf", ".txt"})
+    assert calls["attachment_max_size_bytes"] == 50_000_000
+    assert calls["attachment_allow_symlinks"] is True
+    assert calls["attachment_raise_on_security_violation"] is False
+
+
+@pytest.mark.os_agnostic
+def test_send_command_passes_security_options_via_env(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner, tmp_path: Path) -> None:
+    monkeypatch.setenv("BTX_MAIL_SMTP_HOSTS", "smtp.example.com")
+    monkeypatch.setenv("BTX_MAIL_RECIPIENTS", "test@example.com")
+    monkeypatch.setenv("BTX_MAIL_ATTACHMENT_ALLOWED_EXT", ".docx,.xlsx")
+    monkeypatch.setenv("BTX_MAIL_ATTACHMENT_MAX_SIZE", "10000000")
+    monkeypatch.setenv("BTX_MAIL_ATTACHMENT_ALLOW_SYMLINKS", "true")
+
+    calls: dict[str, Any] = {}
+
+    def fake_send(**kwargs: Any) -> bool:
+        calls.update(kwargs)
+        return True
+
+    monkeypatch.setattr(cli_mod, "send", fake_send)
+
+    result = cli_runner.invoke(
+        cli_mod.cli,
+        [
+            "send",
+            "--subject",
+            "Test",
+            "--body",
+            "Test body",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls["attachment_allowed_extensions"] == frozenset({".docx", ".xlsx"})
+    assert calls["attachment_max_size_bytes"] == 10_000_000
+    assert calls["attachment_allow_symlinks"] is True
+
+
+@pytest.mark.os_agnostic
+def test_resolve_extensions_normalises_input() -> None:
+    """Test that extension resolution normalises to lowercase with dots."""
+    result = _call_cli_private("_resolve_extensions", "PDF,TXT,.docx", "NONEXISTENT_ENV")
+    assert result == frozenset({".pdf", ".txt", ".docx"})
+
+
+@pytest.mark.os_agnostic
+def test_resolve_extensions_returns_none_when_empty() -> None:
+    """Test that empty extension input returns None."""
+    result = _call_cli_private("_resolve_extensions", None, "NONEXISTENT_ENV")
+    assert result is None
+
+
+@pytest.mark.os_agnostic
+def test_resolve_directories_handles_multiple_values() -> None:
+    """Test that directory resolution handles multiple values."""
+    result = _call_cli_private("_resolve_directories", ["/tmp", "/var"], "NONEXISTENT_ENV")
+    assert result == frozenset({Path("/tmp"), Path("/var")})
+
+
+@pytest.mark.os_agnostic
+def test_resolve_optional_bool_parses_true_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that optional bool correctly parses true values."""
+    monkeypatch.setenv("TEST_BOOL", "yes")
+    result = _call_cli_private("_resolve_optional_bool", None, "TEST_BOOL")
+    assert result is True
+
+
+@pytest.mark.os_agnostic
+def test_resolve_optional_bool_returns_none_when_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that optional bool returns None when env var is empty."""
+    result = _call_cli_private("_resolve_optional_bool", None, "NONEXISTENT_ENV")
+    assert result is None
+
+
+@pytest.mark.os_agnostic
+def test_resolve_int_parses_env_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that int resolution parses environment values."""
+    monkeypatch.setenv("TEST_INT", "12345")
+    result = _call_cli_private("_resolve_int", None, "TEST_INT")
+    assert result == 12345
+
+
+@pytest.mark.os_agnostic
+def test_resolve_int_returns_none_when_empty() -> None:
+    """Test that int resolution returns None when not set."""
+    result = _call_cli_private("_resolve_int", None, "NONEXISTENT_ENV")
+    assert result is None
+
+
+@pytest.mark.os_agnostic
+def test_resolve_int_raises_on_invalid_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that int resolution raises on invalid values."""
+    monkeypatch.setenv("TEST_INT", "not_a_number")
+    with pytest.raises(click.BadParameter, match="Unrecognised int value"):
+        _call_cli_private("_resolve_int", None, "TEST_INT")

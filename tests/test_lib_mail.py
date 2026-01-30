@@ -614,3 +614,474 @@ def test_ipv6_host_without_port_parses_for_delivery(monkeypatch: pytest.MonkeyPa
         smtphosts=["[::1]"],
     )
     assert recorder.init_calls[0] == ("::1", 0, 30.0)
+
+
+# ---------------------------------------------------------------------------
+# Attachment Security: Configuration Field Tests
+# ---------------------------------------------------------------------------
+
+
+class TestExtensionNormalisation:
+    """Tests for extension field validation and normalisation."""
+
+    @pytest.mark.os_agnostic
+    def test_extensions_are_lowercased(self) -> None:
+        config = ConfMail(attachment_blocked_extensions=frozenset({".EXE", ".BAT"}))
+        assert ".exe" in config.attachment_blocked_extensions
+        assert ".bat" in config.attachment_blocked_extensions
+
+    @pytest.mark.os_agnostic
+    def test_extensions_get_leading_dot(self) -> None:
+        config = ConfMail(attachment_blocked_extensions=frozenset({"exe", "bat"}))
+        assert ".exe" in config.attachment_blocked_extensions
+        assert ".bat" in config.attachment_blocked_extensions
+
+    @pytest.mark.os_agnostic
+    def test_empty_extensions_are_filtered(self) -> None:
+        config = ConfMail(attachment_blocked_extensions=frozenset({".exe", "", "  "}))
+        assert config.attachment_blocked_extensions == frozenset({".exe"})
+
+    @pytest.mark.os_agnostic
+    def test_none_allowed_extensions_means_blacklist_mode(self) -> None:
+        config = ConfMail(attachment_allowed_extensions=None)
+        assert config.attachment_allowed_extensions is None
+
+
+class TestDirectoryNormalisation:
+    """Tests for directory field validation and normalisation."""
+
+    @pytest.mark.os_agnostic
+    def test_string_directories_are_converted_to_paths(self) -> None:
+        # Use list to test conversion from strings
+        config = ConfMail(attachment_blocked_directories=["/etc", "/var"])  # type: ignore[arg-type]
+        assert Path("/etc") in config.attachment_blocked_directories
+        assert Path("/var") in config.attachment_blocked_directories
+
+    @pytest.mark.os_agnostic
+    def test_path_directories_remain_paths(self) -> None:
+        config = ConfMail(attachment_blocked_directories=frozenset({Path("/etc")}))
+        assert Path("/etc") in config.attachment_blocked_directories
+
+
+class TestSizeLimitValidation:
+    """Tests for attachment size limit validation."""
+
+    @pytest.mark.os_agnostic
+    def test_positive_size_limit_is_accepted(self) -> None:
+        config = ConfMail(attachment_max_size_bytes=1024)
+        assert config.attachment_max_size_bytes == 1024
+
+    @pytest.mark.os_agnostic
+    def test_none_size_limit_disables_check(self) -> None:
+        config = ConfMail(attachment_max_size_bytes=None)
+        assert config.attachment_max_size_bytes is None
+
+    @pytest.mark.os_agnostic
+    def test_zero_size_limit_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="attachment_max_size_bytes must be positive"):
+            ConfMail(attachment_max_size_bytes=0)
+
+    @pytest.mark.os_agnostic
+    def test_negative_size_limit_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="attachment_max_size_bytes must be positive"):
+            ConfMail(attachment_max_size_bytes=-1)
+
+
+# ---------------------------------------------------------------------------
+# Attachment Security: Validation Function Tests
+# ---------------------------------------------------------------------------
+
+
+class TestPathTraversalPrevention:
+    """Tests for path traversal attack prevention."""
+
+    @pytest.mark.os_agnostic
+    def test_path_with_dotdot_is_rejected(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _install_recording_smtp(monkeypatch)
+        # Create a file to attach
+        safe_file = tmp_path / "safe.txt"
+        safe_file.write_text("content")
+
+        with pytest.raises(lib_mail.AttachmentSecurityError, match="path contains traversal sequence"):
+            lib_mail.send(
+                mail_from="sender@example.com",
+                mail_recipients="recipient@example.com",
+                mail_subject="Subject",
+                smtphosts=["smtp.example.com"],
+                attachment_file_paths=[Path("../../../etc/passwd")],
+            )
+
+    @pytest.mark.os_agnostic
+    def test_path_without_traversal_is_allowed(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _install_recording_smtp(monkeypatch)
+        safe_file = tmp_path / "safe.txt"
+        safe_file.write_text("content")
+
+        result = lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients="recipient@example.com",
+            mail_subject="Subject",
+            smtphosts=["smtp.example.com"],
+            attachment_file_paths=[safe_file],
+            attachment_blocked_extensions=frozenset(),  # Allow .txt
+        )
+        assert result is True
+
+
+class TestSymlinkHandling:
+    """Tests for symlink security handling."""
+
+    @pytest.mark.os_agnostic
+    def test_symlink_is_rejected_by_default(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _install_recording_smtp(monkeypatch)
+        real_file = tmp_path / "real.txt"
+        real_file.write_text("content")
+        symlink_file = tmp_path / "link.txt"
+        symlink_file.symlink_to(real_file)
+
+        with pytest.raises(lib_mail.AttachmentSecurityError, match="symlink detected"):
+            lib_mail.send(
+                mail_from="sender@example.com",
+                mail_recipients="recipient@example.com",
+                mail_subject="Subject",
+                smtphosts=["smtp.example.com"],
+                attachment_file_paths=[symlink_file],
+                attachment_blocked_extensions=frozenset(),
+            )
+
+    @pytest.mark.os_agnostic
+    def test_symlink_is_allowed_when_enabled(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _install_recording_smtp(monkeypatch)
+        real_file = tmp_path / "real.txt"
+        real_file.write_text("content")
+        symlink_file = tmp_path / "link.txt"
+        symlink_file.symlink_to(real_file)
+
+        result = lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients="recipient@example.com",
+            mail_subject="Subject",
+            smtphosts=["smtp.example.com"],
+            attachment_file_paths=[symlink_file],
+            attachment_blocked_extensions=frozenset(),
+            attachment_allow_symlinks=True,
+        )
+        assert result is True
+
+
+class TestExtensionBlocking:
+    """Tests for extension-based filtering."""
+
+    @pytest.mark.os_agnostic
+    def test_blocked_extension_raises_by_default(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _install_recording_smtp(monkeypatch)
+        script_file = tmp_path / "malicious.sh"
+        script_file.write_text("#!/bin/bash\necho 'pwned'")
+
+        with pytest.raises(lib_mail.AttachmentSecurityError, match="extension.*is blocked"):
+            lib_mail.send(
+                mail_from="sender@example.com",
+                mail_recipients="recipient@example.com",
+                mail_subject="Subject",
+                smtphosts=["smtp.example.com"],
+                attachment_file_paths=[script_file],
+            )
+
+    @pytest.mark.os_agnostic
+    def test_allowed_extension_passes_whitelist_mode(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _install_recording_smtp(monkeypatch)
+        pdf_file = tmp_path / "document.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4 fake pdf content")
+
+        result = lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients="recipient@example.com",
+            mail_subject="Subject",
+            smtphosts=["smtp.example.com"],
+            attachment_file_paths=[pdf_file],
+            attachment_allowed_extensions=frozenset({".pdf", ".txt"}),
+        )
+        assert result is True
+
+    @pytest.mark.os_agnostic
+    def test_non_allowed_extension_fails_whitelist_mode(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _install_recording_smtp(monkeypatch)
+        doc_file = tmp_path / "document.docx"
+        doc_file.write_bytes(b"fake docx content")
+
+        with pytest.raises(lib_mail.AttachmentSecurityError, match="extension.*not in allowed list"):
+            lib_mail.send(
+                mail_from="sender@example.com",
+                mail_recipients="recipient@example.com",
+                mail_subject="Subject",
+                smtphosts=["smtp.example.com"],
+                attachment_file_paths=[doc_file],
+                attachment_allowed_extensions=frozenset({".pdf", ".txt"}),
+            )
+
+
+class TestDirectoryBlocking:
+    """Tests for directory-based filtering."""
+
+    @pytest.mark.os_agnostic
+    def test_blocked_directory_raises(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _install_recording_smtp(monkeypatch)
+        blocked_dir = tmp_path / "blocked"
+        blocked_dir.mkdir()
+        blocked_file = blocked_dir / "document.txt"
+        blocked_file.write_text("content in blocked dir")
+
+        with pytest.raises(lib_mail.AttachmentSecurityError, match="path under blocked directory"):
+            lib_mail.send(
+                mail_from="sender@example.com",
+                mail_recipients="recipient@example.com",
+                mail_subject="Subject",
+                smtphosts=["smtp.example.com"],
+                attachment_file_paths=[blocked_file],
+                attachment_blocked_directories=frozenset({blocked_dir}),
+                attachment_blocked_extensions=frozenset(),
+            )
+
+    @pytest.mark.os_agnostic
+    def test_allowed_directory_whitelist_mode(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _install_recording_smtp(monkeypatch)
+        allowed_dir = tmp_path / "allowed"
+        allowed_dir.mkdir()
+        allowed_file = allowed_dir / "document.txt"
+        allowed_file.write_text("safe content")
+
+        result = lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients="recipient@example.com",
+            mail_subject="Subject",
+            smtphosts=["smtp.example.com"],
+            attachment_file_paths=[allowed_file],
+            attachment_allowed_directories=frozenset({allowed_dir}),
+            attachment_blocked_extensions=frozenset(),
+        )
+        assert result is True
+
+    @pytest.mark.os_agnostic
+    def test_non_allowed_directory_fails_whitelist_mode(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _install_recording_smtp(monkeypatch)
+        allowed_dir = tmp_path / "allowed"
+        allowed_dir.mkdir()
+        other_dir = tmp_path / "other"
+        other_dir.mkdir()
+        other_file = other_dir / "document.txt"
+        other_file.write_text("content")
+
+        with pytest.raises(lib_mail.AttachmentSecurityError, match="not under any allowed directory"):
+            lib_mail.send(
+                mail_from="sender@example.com",
+                mail_recipients="recipient@example.com",
+                mail_subject="Subject",
+                smtphosts=["smtp.example.com"],
+                attachment_file_paths=[other_file],
+                attachment_allowed_directories=frozenset({allowed_dir}),
+                attachment_blocked_extensions=frozenset(),
+            )
+
+
+class TestSizeLimit:
+    """Tests for attachment size limit enforcement."""
+
+    @pytest.mark.os_agnostic
+    def test_oversized_attachment_raises(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _install_recording_smtp(monkeypatch)
+        large_file = tmp_path / "large.txt"
+        large_file.write_bytes(b"x" * 1000)  # 1000 bytes
+
+        with pytest.raises(lib_mail.AttachmentSecurityError, match="file size.*exceeds limit"):
+            lib_mail.send(
+                mail_from="sender@example.com",
+                mail_recipients="recipient@example.com",
+                mail_subject="Subject",
+                smtphosts=["smtp.example.com"],
+                attachment_file_paths=[large_file],
+                attachment_max_size_bytes=500,
+                attachment_blocked_extensions=frozenset(),
+            )
+
+    @pytest.mark.os_agnostic
+    def test_small_attachment_passes(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _install_recording_smtp(monkeypatch)
+        small_file = tmp_path / "small.txt"
+        small_file.write_bytes(b"x" * 100)
+
+        result = lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients="recipient@example.com",
+            mail_subject="Subject",
+            smtphosts=["smtp.example.com"],
+            attachment_file_paths=[small_file],
+            attachment_max_size_bytes=500,
+            attachment_blocked_extensions=frozenset(),
+        )
+        assert result is True
+
+
+class TestSensitivePatterns:
+    """Tests for sensitive path pattern detection."""
+
+    @pytest.mark.os_agnostic
+    def test_ssh_key_path_is_blocked(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _install_recording_smtp(monkeypatch)
+        ssh_dir = tmp_path / ".ssh"
+        ssh_dir.mkdir()
+        key_file = ssh_dir / "id_rsa"
+        key_file.write_text("fake private key")
+
+        with pytest.raises(lib_mail.AttachmentSecurityError, match="sensitive pattern"):
+            lib_mail.send(
+                mail_from="sender@example.com",
+                mail_recipients="recipient@example.com",
+                mail_subject="Subject",
+                smtphosts=["smtp.example.com"],
+                attachment_file_paths=[key_file],
+                attachment_blocked_extensions=frozenset(),
+            )
+
+    @pytest.mark.os_agnostic
+    def test_env_file_is_blocked(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _install_recording_smtp(monkeypatch)
+        env_file = tmp_path / ".env"
+        env_file.write_text("SECRET_KEY=supersecret")
+
+        with pytest.raises(lib_mail.AttachmentSecurityError, match="sensitive pattern"):
+            lib_mail.send(
+                mail_from="sender@example.com",
+                mail_recipients="recipient@example.com",
+                mail_subject="Subject",
+                smtphosts=["smtp.example.com"],
+                attachment_file_paths=[env_file],
+                attachment_blocked_extensions=frozenset(),
+            )
+
+
+class TestSecurityViolationWarningMode:
+    """Tests for warn-only mode (raise_on_security_violation=False)."""
+
+    @pytest.mark.os_agnostic
+    def test_violation_logs_warning_and_continues(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        _install_recording_smtp(monkeypatch)
+        caplog.set_level("WARNING")
+
+        script_file = tmp_path / "script.sh"
+        script_file.write_text("#!/bin/bash")
+        safe_file = tmp_path / "document.pdf"
+        safe_file.write_bytes(b"%PDF-1.4 content")
+
+        result = lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients="recipient@example.com",
+            mail_subject="Subject",
+            smtphosts=["smtp.example.com"],
+            attachment_file_paths=[script_file, safe_file],
+            attachment_raise_on_security_violation=False,
+            attachment_allowed_extensions=frozenset({".pdf"}),
+        )
+
+        assert result is True
+        assert "Attachment security violation" in caplog.text
+        assert "extension" in caplog.text
+
+
+class TestAttachmentSecurityErrorAttributes:
+    """Tests for AttachmentSecurityError exception attributes."""
+
+    @pytest.mark.os_agnostic
+    def test_exception_has_path_and_reason(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _install_recording_smtp(monkeypatch)
+        script_file = tmp_path / "script.sh"
+        script_file.write_text("#!/bin/bash")
+
+        try:
+            lib_mail.send(
+                mail_from="sender@example.com",
+                mail_recipients="recipient@example.com",
+                mail_subject="Subject",
+                smtphosts=["smtp.example.com"],
+                attachment_file_paths=[script_file],
+            )
+            pytest.fail("Expected AttachmentSecurityError")
+        except lib_mail.AttachmentSecurityError as exc:
+            assert exc.path == script_file.resolve()
+            assert exc.violation_type == "extension"
+            assert ".sh" in exc.reason
+
+    @pytest.mark.os_agnostic
+    def test_exception_str_contains_all_info(self) -> None:
+        exc = lib_mail.AttachmentSecurityError(
+            path=Path("/test/file.exe"),
+            reason="extension blocked",
+            violation_type="extension",
+        )
+        exc_str = str(exc)
+        assert "extension" in exc_str
+        assert "/test/file.exe" in exc_str
+        assert "blocked" in exc_str
+
+
+class TestDefaultSecuritySettings:
+    """Tests for default security settings."""
+
+    @pytest.mark.os_agnostic
+    def test_default_blocked_extensions_include_common_dangers(self) -> None:
+        config = ConfMail()
+        # Check some common dangerous extensions
+        assert ".sh" in config.attachment_blocked_extensions or ".exe" in config.attachment_blocked_extensions
+
+    @pytest.mark.os_agnostic
+    def test_default_symlinks_disabled(self) -> None:
+        config = ConfMail()
+        assert config.attachment_allow_symlinks is False
+
+    @pytest.mark.os_agnostic
+    def test_default_raise_on_violation_enabled(self) -> None:
+        config = ConfMail()
+        assert config.attachment_raise_on_security_violation is True
+
+    @pytest.mark.os_agnostic
+    def test_default_max_size_is_25mib(self) -> None:
+        config = ConfMail()
+        assert config.attachment_max_size_bytes == 26_214_400
+
+
+class TestPerCallSecurityOverrides:
+    """Tests for per-call security parameter overrides."""
+
+    @pytest.mark.os_agnostic
+    def test_can_override_blocked_extensions_per_call(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _install_recording_smtp(monkeypatch)
+        script_file = tmp_path / "script.sh"
+        script_file.write_text("#!/bin/bash")
+
+        # Override to allow .sh for this call
+        result = lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients="recipient@example.com",
+            mail_subject="Subject",
+            smtphosts=["smtp.example.com"],
+            attachment_file_paths=[script_file],
+            attachment_blocked_extensions=frozenset(),  # No blocked extensions
+        )
+        assert result is True
+
+    @pytest.mark.os_agnostic
+    def test_can_override_size_limit_per_call(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        _install_recording_smtp(monkeypatch)
+        large_file = tmp_path / "large.txt"
+        large_file.write_bytes(b"x" * 1000)
+
+        # Default would fail (assuming default < 1000), but override allows it
+        result = lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients="recipient@example.com",
+            mail_subject="Subject",
+            smtphosts=["smtp.example.com"],
+            attachment_file_paths=[large_file],
+            attachment_max_size_bytes=10_000,  # Override to 10KB
+            attachment_blocked_extensions=frozenset(),
+        )
+        assert result is True

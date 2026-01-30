@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.3.0] - 2026-01-30
+
+### Added
+- **Attachment security validation** with multiple protection layers:
+  - Path traversal prevention (rejects `..` sequences)
+  - Symlink handling (rejected by default, configurable via `attachment_allow_symlinks`)
+  - Sensitive pattern detection (`/.ssh/`, `/id_rsa`, `/.env`, `/.aws/credentials`, etc.)
+  - OS-specific dangerous extension blocking (`.sh`, `.py`, `.exe`, `.bat`, `.ps1`, etc.)
+  - OS-specific system directory blocking (`/etc`, `/var`, `C:\Windows`, etc.)
+  - Size limit enforcement (default 25 MiB)
+- `AttachmentSecurityError` exception with `path`, `reason`, and `violation_type` attributes.
+- Public constants for extending or replacing defaults:
+  - `DANGEROUS_EXTENSIONS_POSIX` / `DANGEROUS_EXTENSIONS_WINDOWS`
+  - `DANGEROUS_DIRECTORIES_POSIX` / `DANGEROUS_DIRECTORIES_WINDOWS`
+  - `SENSITIVE_PATH_PATTERNS`
+- `ConfMail` fields for attachment security configuration:
+  - `attachment_allowed_extensions` / `attachment_blocked_extensions`
+  - `attachment_allowed_directories` / `attachment_blocked_directories`
+  - `attachment_max_size_bytes`, `attachment_allow_symlinks`
+  - `attachment_raise_on_security_violation` (raise vs warn-and-skip)
+- Per-call security overrides in `send()` function.
+- CLI options for attachment security (`--attachment-allowed-ext`, `--attachment-blocked-ext`,
+  `--attachment-allowed-dir`, `--attachment-blocked-dir`, `--attachment-max-size`,
+  `--attachment-allow-symlinks`/`--attachment-no-symlinks`, `--attachment-strict`/`--attachment-warn`).
+- Environment variables for attachment security (`BTX_MAIL_ATTACHMENT_*`).
+- README documentation for attachment security with configuration examples and
+  OS-specific default values.
+
 ## [1.2.1] - 2026-01-28
 ### Fixed
 - Removed unnecessary `cast(Any, …)` from the `smtp_timeout` assignment test;

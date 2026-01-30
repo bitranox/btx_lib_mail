@@ -29,9 +29,9 @@ For alternative install paths (pipx, uv, source builds, etc.), see
 [INSTALL.md](INSTALL.md). All supported methods register both the
 `btx_lib_mail` and `btx-lib-mail` commands on your PATH.
 
-### Python 3.13+ Baseline
+### Python 3.10+ Baseline
 
-- The project targets **Python 3.13 and newer only**. Helpers freely rely on conveniences
+- The project targets **Python 3.10 and newer only**. Helpers freely rely on conveniences
   such as `Path.unlink(missing_ok=True)` and modern `contextlib` utilities.
 - **Dependency audit (October 16, 2025):** runtime requirements continue to
   match the latest stable releases (`rich-click>=1.9.3`,
@@ -152,6 +152,77 @@ Key behaviours:
   value via the `timeout=` argument, the `--timeout` CLI flag, or the
   `BTX_MAIL_SMTP_TIMEOUT` environment variable / `.env` entry.
 
+## Attachment Security
+
+Attachments are validated against multiple security checks before being
+included in outgoing mail. This prevents accidental (or malicious) attachment
+of sensitive files, dangerous executables, or oversized payloads.
+
+### Security Checks
+
+1. **Path Traversal Prevention** — Paths containing `..` sequences are rejected
+   to prevent escaping the intended directory.
+2. **Symlink Handling** — Symlinks are rejected by default to prevent following
+   links to sensitive files. Enable via `attachment_allow_symlinks=True`.
+3. **Sensitive Pattern Detection** — Paths matching patterns like `/.ssh/`,
+   `/id_rsa`, `/.env`, `/credentials`, `/.aws/credentials` are always blocked.
+4. **Directory Restrictions** — By default, files from system directories
+   (`/etc`, `/var`, `/root`, etc. on POSIX; `C:\Windows`, etc. on Windows) are
+   blocked. Use `attachment_allowed_directories` for whitelist mode.
+5. **Extension Filtering** — Dangerous extensions (`.sh`, `.exe`, `.bat`, `.py`,
+   etc.) are blocked by default. Use `attachment_allowed_extensions` for
+   whitelist mode or `attachment_blocked_extensions` to customize the blacklist.
+6. **Size Limit** — Files larger than 25 MiB (default) are rejected. Override
+   via `attachment_max_size_bytes`.
+
+### Configuration Example
+
+```python
+from btx_lib_mail import conf, send, DANGEROUS_EXTENSIONS_POSIX
+
+# Global configuration (applies to all send() calls)
+conf.attachment_max_size_bytes = 50_000_000  # 50 MiB
+conf.attachment_allow_symlinks = True
+conf.attachment_blocked_extensions = DANGEROUS_EXTENSIONS_POSIX | {".custom"}
+
+# Per-call override (whitelist mode)
+send(
+    mail_from="sender@example.com",
+    mail_recipients="recipient@example.com",
+    mail_subject="Report",
+    mail_body="See attached.",
+    attachment_file_paths=[Path("report.pdf")],
+    attachment_allowed_extensions=frozenset({".pdf", ".txt", ".docx"}),
+    attachment_max_size_bytes=100_000_000,  # 100 MiB for this call only
+)
+```
+
+### Warn-Only Mode
+
+By default, security violations raise `AttachmentSecurityError`. To log a
+warning and skip the offending attachment instead:
+
+```python
+send(
+    ...,
+    attachment_raise_on_security_violation=False,
+)
+```
+
+### Public Constants
+
+The library exports OS-specific defaults that can be extended or replaced:
+
+```python
+from btx_lib_mail import (
+    DANGEROUS_EXTENSIONS_POSIX,    # frozenset: .sh, .py, .so, etc.
+    DANGEROUS_EXTENSIONS_WINDOWS,  # frozenset: .exe, .bat, .ps1, etc.
+    DANGEROUS_DIRECTORIES_POSIX,   # frozenset[Path]: /etc, /var, /root, etc.
+    DANGEROUS_DIRECTORIES_WINDOWS, # frozenset[Path]: C:\Windows, etc.
+    SENSITIVE_PATH_PATTERNS,       # tuple[str]: /.ssh/, /id_rsa, /.env, etc.
+)
+```
+
 ## Public API Reference {#public-api}
 
 All public interfaces are documented in
@@ -168,6 +239,8 @@ not supply per-call overrides. Update it directly or replace it wholesale with
 
 #### `ConfMail` fields {#public-api-confmail-fields}
 
+**SMTP Settings:**
+
 | Field                          | Type          | Default | Description                                                                                                                             |
 |--------------------------------|---------------|---------|-----------------------------------------------------------------------------------------------------------------------------------------|
 | `smtphosts`                    | `list[str]`   | `[]`    | Ordered SMTP hosts (`"host[:port]"`). An empty list requires callers to supply `smtphosts` when sending.                                |
@@ -177,6 +250,18 @@ not supply per-call overrides. Update it directly or replace it wholesale with
 | `smtp_password`                | `str \| None` | `None`  | Password paired with `smtp_username`. Ignored when either value is missing.                                                             |
 | `smtp_use_starttls`            | `bool`        | `True`  | Enables `STARTTLS` negotiation before authentication. Set to `False` for servers that do not support STARTTLS.                          |
 | `smtp_timeout`                 | `float`       | `30.0`  | Socket timeout in seconds applied to SMTP connections.                                                                                  |
+
+**Attachment Security Settings:**
+
+| Field                                    | Type                      | Default               | Description                                                                                                                     |
+|------------------------------------------|---------------------------|-----------------------|---------------------------------------------------------------------------------------------------------------------------------|
+| `attachment_allowed_extensions`          | `frozenset[str] \| None`  | `None`                | When set, only these extensions are allowed (whitelist mode). `None` uses blacklist mode.                                       |
+| `attachment_blocked_extensions`          | `frozenset[str]`          | OS-specific dangers   | Extensions to reject. Ignored when `attachment_allowed_extensions` is set. Defaults to dangerous extensions for the current OS. |
+| `attachment_allowed_directories`         | `frozenset[Path] \| None` | `None`                | When set, attachments must reside under one of these directories (whitelist mode).                                              |
+| `attachment_blocked_directories`         | `frozenset[Path]`         | OS-specific sensitive | Directories from which attachments cannot be read. Defaults to sensitive system directories.                                    |
+| `attachment_max_size_bytes`              | `int \| None`             | `26_214_400` (25 MiB) | Maximum attachment size in bytes. `None` disables size checking.                                                                |
+| `attachment_allow_symlinks`              | `bool`                    | `False`               | When `False`, symlinks are rejected; when `True`, symlinks are resolved and validated.                                          |
+| `attachment_raise_on_security_violation` | `bool`                    | `True`                | When `True`, security violations raise `AttachmentSecurityError`; when `False`, they log a warning and skip the attachment.     |
 
 Common helpers:
 
@@ -210,26 +295,78 @@ subcommand), ensuring the scaffold remains predictable.
 #### `send(...) -> bool` {#public-api-send}
 
 Entry point for SMTP delivery. Returns `True` when all recipients succeed and
-raises when every host fails for at least one recipient. Parameters:
+raises when every host fails for at least one recipient.
 
-| Parameter               | Type                    | Default        | Notes                                                                                                    |
-|-------------------------|-------------------------|----------------|----------------------------------------------------------------------------------------------------------|
-| `mail_from`             | `str`                   | —              | Envelope sender address (`local@domain`).                                                                |
-| `mail_recipients`       | `str                    | Sequence[str]` | Deduplicated, validated recipient addresses.                                                             |
-| `mail_subject`          | `str`                   | —              | UTF-8 subject line.                                                                                      |
-| `mail_body`             | `str`                   | `""`           | Optional plain-text body.                                                                                |
-| `mail_body_html`        | `str`                   | `""`           | Optional HTML body (UTF-8).                                                                              |
-| `smtphosts`             | `Sequence[str]          | None`          | Host override. Falls back to `conf.smtphosts`.                                                           |
-| `attachment_file_paths` | `Sequence[pathlib.Path] | None`          | Iterable of attachment paths. Missing files raise unless `conf.raise_on_missing_attachments` is `False`. |
-| `credentials`           | `tuple[str, str]        | None`          | `(username, password)` override. Defaults to `conf.resolved_credentials()`.                              |
-| `use_starttls`          | `bool                   | None`          | When `None`, the helper uses `conf.smtp_use_starttls`.                                                   |
-| `timeout`               | `float                  | None`          | When `None`, the helper uses `conf.smtp_timeout`.                                                        |
+**Core Parameters:**
+
+| Parameter               | Type                              | Default | Notes                                                                                                    |
+|-------------------------|-----------------------------------|---------|----------------------------------------------------------------------------------------------------------|
+| `mail_from`             | `str`                             | —       | Envelope sender address (`local@domain`).                                                                |
+| `mail_recipients`       | `str \| Sequence[str]`            | —       | Deduplicated, validated recipient addresses.                                                             |
+| `mail_subject`          | `str`                             | —       | UTF-8 subject line.                                                                                      |
+| `mail_body`             | `str`                             | `""`    | Optional plain-text body.                                                                                |
+| `mail_body_html`        | `str`                             | `""`    | Optional HTML body (UTF-8).                                                                              |
+| `smtphosts`             | `Sequence[str] \| None`           | `None`  | Host override. Falls back to `conf.smtphosts`.                                                           |
+| `attachment_file_paths` | `Sequence[pathlib.Path] \| None`  | `None`  | Iterable of attachment paths. Missing files raise unless `conf.raise_on_missing_attachments` is `False`. |
+| `credentials`           | `tuple[str, str] \| None`         | `None`  | `(username, password)` override. Defaults to `conf.resolved_credentials()`.                              |
+| `use_starttls`          | `bool \| None`                    | `None`  | When `None`, the helper uses `conf.smtp_use_starttls`.                                                   |
+| `timeout`               | `float \| None`                   | `None`  | When `None`, the helper uses `conf.smtp_timeout`.                                                        |
+
+**Attachment Security Parameters (keyword-only):**
+
+| Parameter                                | Type                      | Default                          | Notes                                                                    |
+|------------------------------------------|---------------------------|----------------------------------|--------------------------------------------------------------------------|
+| `attachment_allowed_extensions`          | `frozenset[str] \| None`  | `None` (blacklist mode)          | Override allowed extensions (whitelist mode). `None` uses blocked list.  |
+| `attachment_blocked_extensions`          | `frozenset[str] \| None`  | OS-specific dangerous extensions | Override blocked extensions. `None` uses conf default.                   |
+| `attachment_allowed_directories`         | `frozenset[Path] \| None` | `None` (blacklist mode)          | Override allowed directories (whitelist mode). `None` uses blocked list. |
+| `attachment_blocked_directories`         | `frozenset[Path] \| None` | OS-specific sensitive dirs       | Override blocked directories. `None` uses conf default.                  |
+| `attachment_max_size_bytes`              | `int \| None`             | `26_214_400` (25 MiB)            | Override max attachment size. `None` uses conf default.                  |
+| `attachment_allow_symlinks`              | `bool \| None`            | `False`                          | Override symlink policy. `None` uses conf default.                       |
+| `attachment_raise_on_security_violation` | `bool \| None`            | `True`                           | Override security violation behaviour. `None` uses conf default.         |
+
+#### Default Blocked Extensions
+
+**POSIX (Linux/macOS):**
+```
+.sh, .bash, .zsh, .ksh, .csh, .py, .pyw, .pyc, .pyo, .pl, .pm, .rb, .php,
+.js, .mjs, .cjs, .so, .dylib, .bin, .run, .appimage, .elf, .out,
+.jar, .war, .ear, .deb, .rpm, .apk
+```
+
+**Windows:**
+```
+.exe, .com, .bat, .cmd, .msi, .msp, .msc, .ps1, .ps2, .psc1, .psc2,
+.vbs, .vbe, .js, .jse, .ws, .wsf, .wsc, .wsh, .scr, .pif, .hta,
+.cpl, .inf, .reg, .dll, .ocx, .sys, .drv, .lnk, .scf, .url,
+.gadget, .application, .jar, .war, .ear
+```
+
+#### Default Blocked Directories
+
+**POSIX (Linux/macOS):**
+```
+/etc, /var, /root, /boot, /sys, /proc, /dev, /usr/bin, /usr/sbin, /bin, /sbin
+```
+
+**Windows:**
+```
+C:\Windows, C:\Windows\System32, C:\Program Files, C:\Program Files (x86), C:\ProgramData
+```
+
+#### Sensitive Path Patterns (always blocked, all platforms)
+```
+/.ssh/, /id_rsa, /id_ed25519, /id_ecdsa, /authorized_keys, /known_hosts,
+/.gnupg/, /private.key, /secret, /.env, /credentials, /password, /token,
+/.aws/credentials, /.kube/config
+```
 
 **Raises:**
 
 - `ValueError` — after validation if no valid recipients remain.
 - `FileNotFoundError` — when a required attachment is missing and
   `raise_on_missing_attachments` is `True`.
+- `AttachmentSecurityError` — when an attachment violates security policies and
+  `attachment_raise_on_security_violation` is `True`.
 - `RuntimeError` — when every configured host fails for a recipient (the error
   lists recipients and host roster).
 
@@ -237,12 +374,44 @@ raises when every host fails for at least one recipient. Parameters:
 
 The CLI wraps the same behaviour through rich-click. Highlights:
 
-| Command              | Purpose                                                      | Key Options                                                                                                                                                                                                                                        |
-|----------------------|--------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `btx_lib_mail info`  | Print project metadata via `print_info()`.                   | —                                                                                                                                                                                                                                                  |
-| `btx_lib_mail hello` | Emit the canonical greeting.                                 | —                                                                                                                                                                                                                                                  |
-| `btx_lib_mail fail`  | Trigger `raise_intentional_failure()` to inspect tracebacks. | `--traceback/--no-traceback` toggles verbosity.                                                                                                                                                                                                    |
-| `btx_lib_mail send`  | Deliver an email using `send()`.                             | `--host`, `--recipient`, `--sender`, `--subject`, `--body`, `--html-body`, `--attachment`, `--starttls/--no-starttls`, `--username`, `--password`, `--timeout`. Each flag defaults to the matching `BTX_MAIL_*` environment variable when omitted. |
+| Command                           | Purpose                                                      |
+|-----------------------------------|--------------------------------------------------------------|
+| `btx_lib_mail info`               | Print project metadata via `print_info()`.                   |
+| `btx_lib_mail hello`              | Emit the canonical greeting.                                 |
+| `btx_lib_mail fail`               | Trigger `raise_intentional_failure()` to inspect tracebacks. |
+| `btx_lib_mail send`               | Deliver an email using `send()`.                             |
+| `btx_lib_mail validate-email`     | Validate email address syntax.                               |
+| `btx_lib_mail validate-smtp-host` | Validate SMTP host format (IPv6-aware).                      |
+
+#### `send` Command Options
+
+**Core Options:**
+
+| Option                     | Description                                                                |
+|----------------------------|----------------------------------------------------------------------------|
+| `--host HOST`              | SMTP host (repeat or comma-separated). Env: `BTX_MAIL_SMTP_HOSTS`.         |
+| `--recipient EMAIL`        | Recipient address (repeat or comma-separated). Env: `BTX_MAIL_RECIPIENTS`. |
+| `--sender EMAIL`           | Envelope sender. Env: `BTX_MAIL_SENDER`.                                   |
+| `--subject TEXT`           | Mail subject line (required).                                              |
+| `--body TEXT`              | Plain-text email body (required).                                          |
+| `--html-body TEXT`         | Optional HTML body content.                                                |
+| `--attachment PATH`        | Attachment file path (repeat for multiple).                                |
+| `--starttls/--no-starttls` | Force STARTTLS negotiation. Env: `BTX_MAIL_SMTP_USE_STARTTLS`.             |
+| `--username TEXT`          | SMTP username. Env: `BTX_MAIL_SMTP_USERNAME`.                              |
+| `--password TEXT`          | SMTP password. Env: `BTX_MAIL_SMTP_PASSWORD`.                              |
+| `--timeout FLOAT`          | Socket timeout in seconds. Env: `BTX_MAIL_SMTP_TIMEOUT`.                   |
+
+**Attachment Security Options:**
+
+| Option                                                 | Description                                                                                                              |
+|--------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------|
+| `--attachment-allowed-ext EXTS`                        | Allowed extensions (comma-separated, e.g., `.pdf,.txt`). Enables whitelist mode. Env: `BTX_MAIL_ATTACHMENT_ALLOWED_EXT`. |
+| `--attachment-blocked-ext EXTS`                        | Blocked extensions (comma-separated). Overrides defaults. Env: `BTX_MAIL_ATTACHMENT_BLOCKED_EXT`.                        |
+| `--attachment-allowed-dir PATH`                        | Allowed directory (repeat for multiple). Enables whitelist mode. Env: `BTX_MAIL_ATTACHMENT_ALLOWED_DIRS`.                |
+| `--attachment-blocked-dir PATH`                        | Blocked directory (repeat for multiple). Overrides defaults. Env: `BTX_MAIL_ATTACHMENT_BLOCKED_DIRS`.                    |
+| `--attachment-max-size BYTES`                          | Max attachment size in bytes. Env: `BTX_MAIL_ATTACHMENT_MAX_SIZE`.                                                       |
+| `--attachment-allow-symlinks/--attachment-no-symlinks` | Allow or reject symlinked attachments. Env: `BTX_MAIL_ATTACHMENT_ALLOW_SYMLINKS`.                                        |
+| `--attachment-strict/--attachment-warn`                | Raise on security violation (strict) or log warning and skip (warn). Env: `BTX_MAIL_ATTACHMENT_RAISE_ON_SECURITY`.       |
 
 `python -m btx_lib_mail` delegates to the same command group, so the examples
 above apply verbatim.
@@ -257,6 +426,8 @@ The CLI and library coordinate configuration using the following precedence:
 
 Environment variables understood by the CLI:
 
+**SMTP Settings:**
+
 | Variable                     | Purpose                                                      | Example                                   |
 |------------------------------|--------------------------------------------------------------|-------------------------------------------|
 | `BTX_MAIL_SMTP_HOSTS`        | Comma-separated list of SMTP hosts (each `host[:port]`).     | `smtp1.example.com:587,smtp2.example.com` |
@@ -266,6 +437,18 @@ Environment variables understood by the CLI:
 | `BTX_MAIL_SMTP_USERNAME`     | Username used when STARTTLS/authentication is required.      | `smtp-user`                               |
 | `BTX_MAIL_SMTP_PASSWORD`     | Password paired with the SMTP username.                      | `s3cr3t`                                  |
 | `BTX_MAIL_SMTP_TIMEOUT`      | Socket timeout in seconds (defaults to `30`).                | `12.5`                                    |
+
+**Attachment Security Settings:**
+
+| Variable                                | Purpose                                                   | Example                |
+|-----------------------------------------|-----------------------------------------------------------|------------------------|
+| `BTX_MAIL_ATTACHMENT_ALLOWED_EXT`       | Comma-separated allowed extensions (whitelist mode).      | `.pdf,.txt,.docx`      |
+| `BTX_MAIL_ATTACHMENT_BLOCKED_EXT`       | Comma-separated blocked extensions (overrides defaults).  | `.exe,.bat,.sh`        |
+| `BTX_MAIL_ATTACHMENT_ALLOWED_DIRS`      | Comma-separated allowed directories (whitelist mode).     | `/home/user/docs,/tmp` |
+| `BTX_MAIL_ATTACHMENT_BLOCKED_DIRS`      | Comma-separated blocked directories (overrides defaults). | `/etc,/root`           |
+| `BTX_MAIL_ATTACHMENT_MAX_SIZE`          | Max attachment size in bytes.                             | `26214400`             |
+| `BTX_MAIL_ATTACHMENT_ALLOW_SYMLINKS`    | Boolean flag allowing symlinks.                           | `false`                |
+| `BTX_MAIL_ATTACHMENT_RAISE_ON_SECURITY` | Boolean flag to raise on violations (vs. warn and skip).  | `true`                 |
 
 `.env` files are optional. When present, the CLI trims whitespace, honours
 quoted values, and treats empty strings as unset. Exporting an environment

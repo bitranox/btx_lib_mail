@@ -17,6 +17,7 @@ configuration flow and delivery flow separated.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from email import encoders
 from email.header import Header
@@ -38,6 +39,198 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 logger = logging.getLogger("btx_lib_mail")
 
 EMAIL_PATTERN: Final[re.Pattern[str]] = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b")
+
+
+# ---------------------------------------------------------------------------
+# Attachment Security: Public Constants
+# ---------------------------------------------------------------------------
+
+DANGEROUS_EXTENSIONS_POSIX: Final[frozenset[str]] = frozenset(
+    {
+        ".sh",
+        ".bash",
+        ".zsh",
+        ".ksh",
+        ".csh",
+        ".py",
+        ".pyw",
+        ".pyc",
+        ".pyo",
+        ".pl",
+        ".pm",
+        ".rb",
+        ".php",
+        ".js",
+        ".mjs",
+        ".cjs",
+        ".so",
+        ".dylib",
+        ".bin",
+        ".run",
+        ".appimage",
+        ".elf",
+        ".out",
+        ".jar",
+        ".war",
+        ".ear",
+        ".deb",
+        ".rpm",
+        ".apk",
+    }
+)
+"""Dangerous file extensions for POSIX systems (Linux/macOS)."""
+
+DANGEROUS_EXTENSIONS_WINDOWS: Final[frozenset[str]] = frozenset(
+    {
+        ".exe",
+        ".com",
+        ".bat",
+        ".cmd",
+        ".msi",
+        ".msp",
+        ".msc",
+        ".ps1",
+        ".ps2",
+        ".psc1",
+        ".psc2",
+        ".vbs",
+        ".vbe",
+        ".js",
+        ".jse",
+        ".ws",
+        ".wsf",
+        ".wsc",
+        ".wsh",
+        ".scr",
+        ".pif",
+        ".hta",
+        ".cpl",
+        ".inf",
+        ".reg",
+        ".dll",
+        ".ocx",
+        ".sys",
+        ".drv",
+        ".lnk",
+        ".scf",
+        ".url",
+        ".gadget",
+        ".application",
+        ".jar",
+        ".war",
+        ".ear",
+    }
+)
+"""Dangerous file extensions for Windows systems."""
+
+DANGEROUS_DIRECTORIES_POSIX: Final[frozenset[pathlib.Path]] = frozenset(
+    {
+        pathlib.Path("/etc"),
+        pathlib.Path("/var"),
+        pathlib.Path("/root"),
+        pathlib.Path("/boot"),
+        pathlib.Path("/sys"),
+        pathlib.Path("/proc"),
+        pathlib.Path("/dev"),
+        pathlib.Path("/usr/bin"),
+        pathlib.Path("/usr/sbin"),
+        pathlib.Path("/bin"),
+        pathlib.Path("/sbin"),
+    }
+)
+"""Sensitive directories blocked by default on POSIX systems."""
+
+DANGEROUS_DIRECTORIES_WINDOWS: Final[frozenset[pathlib.Path]] = frozenset(
+    {
+        pathlib.Path("C:/Windows"),
+        pathlib.Path("C:/Windows/System32"),
+        pathlib.Path("C:/Program Files"),
+        pathlib.Path("C:/Program Files (x86)"),
+        pathlib.Path("C:/ProgramData"),
+    }
+)
+"""Sensitive directories blocked by default on Windows systems."""
+
+SENSITIVE_PATH_PATTERNS: Final[tuple[str, ...]] = (
+    "/.ssh/",
+    "/id_rsa",
+    "/id_ed25519",
+    "/id_ecdsa",
+    "/authorized_keys",
+    "/known_hosts",
+    "/.gnupg/",
+    "/private.key",
+    "/secret",
+    "/.env",
+    "/credentials",
+    "/password",
+    "/token",
+    "/.aws/credentials",
+    "/.kube/config",
+)
+"""Path patterns that indicate sensitive files (always blocked)."""
+
+
+def _default_blocked_extensions() -> frozenset[str]:
+    """Return the OS-appropriate set of dangerous file extensions.
+
+    Why
+        Provides sensible defaults without requiring manual configuration.
+
+    Outputs
+    -------
+    frozenset[str]
+        Dangerous extensions for the current operating system.
+    """
+    if sys.platform == "win32":
+        return DANGEROUS_EXTENSIONS_WINDOWS
+    return DANGEROUS_EXTENSIONS_POSIX
+
+
+def _default_blocked_directories() -> frozenset[pathlib.Path]:
+    """Return the OS-appropriate set of dangerous directories.
+
+    Why
+        Provides sensible defaults without requiring manual configuration.
+
+    Outputs
+    -------
+    frozenset[pathlib.Path]
+        Dangerous directories for the current operating system.
+    """
+    if sys.platform == "win32":
+        return DANGEROUS_DIRECTORIES_WINDOWS
+    return DANGEROUS_DIRECTORIES_POSIX
+
+
+# ---------------------------------------------------------------------------
+# Attachment Security: Exception
+# ---------------------------------------------------------------------------
+
+
+class AttachmentSecurityError(Exception):
+    """Raised when an attachment violates security policies.
+
+    **Purpose:** Provide a structured exception for attachment security
+    violations so callers can handle or report them appropriately.
+
+    **Fields:**
+    - `path: pathlib.Path` — The offending attachment path.
+    - `reason: str` — Human-readable description of the violation.
+    - `violation_type: str` — Category of the violation (e.g., 'path_traversal',
+      'symlink', 'extension', 'directory', 'size', 'sensitive_pattern').
+    """
+
+    def __init__(self, path: pathlib.Path, reason: str, violation_type: str) -> None:
+        super().__init__(reason)
+        self.path = path
+        self.reason = reason
+        self.violation_type = violation_type
+
+    def __str__(self) -> str:
+        return f"Attachment security violation ({self.violation_type}): {self.reason} [path={self.path}]"
+
+
 """Compiled regex used by :func:`validate_email_address`."""
 
 
@@ -82,6 +275,24 @@ class ConfMail(BaseModel):
       authentication when supported by the server.
     - `smtp_timeout: float = 30.0` — Socket timeout in seconds applied to SMTP
       connections.
+    - `attachment_allowed_extensions: frozenset[str] | None = None` — When set,
+      only these extensions are allowed (whitelist mode). When `None`, the
+      blocked extensions list applies instead.
+    - `attachment_blocked_extensions: frozenset[str]` — Extensions to reject.
+      Ignored when `attachment_allowed_extensions` is set. Defaults to
+      OS-specific dangerous extensions.
+    - `attachment_allowed_directories: frozenset[pathlib.Path] | None = None` —
+      When set, attachments must reside under one of these directories.
+    - `attachment_blocked_directories: frozenset[pathlib.Path]` — Directories
+      from which attachments cannot be read. Defaults to OS-specific sensitive
+      directories.
+    - `attachment_max_size_bytes: int | None = 26_214_400` — Maximum attachment
+      size in bytes (default 25 MiB). `None` disables size checking.
+    - `attachment_allow_symlinks: bool = False` — When `False`, symlinks are
+      rejected; when `True`, symlinks are resolved and validated.
+    - `attachment_raise_on_security_violation: bool = True` — When `True`,
+      security violations raise `AttachmentSecurityError`; when `False`, they
+      log a warning and skip the attachment.
 
     **Interactions:** The CLI resolves its defaults through this model, and
     `send` reads resolved values when per-call overrides are absent.
@@ -95,7 +306,16 @@ class ConfMail(BaseModel):
     smtp_use_starttls: bool = True
     smtp_timeout: float = 30.0
 
-    model_config = ConfigDict(validate_assignment=True)
+    # Attachment security settings
+    attachment_allowed_extensions: frozenset[str] | None = None
+    attachment_blocked_extensions: frozenset[str] = Field(default_factory=_default_blocked_extensions)
+    attachment_allowed_directories: frozenset[pathlib.Path] | None = None
+    attachment_blocked_directories: frozenset[pathlib.Path] = Field(default_factory=_default_blocked_directories)
+    attachment_max_size_bytes: int | None = 26_214_400  # 25 MiB
+    attachment_allow_symlinks: bool = False
+    attachment_raise_on_security_violation: bool = True
+
+    model_config = ConfigDict(validate_assignment=True, arbitrary_types_allowed=True)
 
     @field_validator("smtphosts", mode="before")
     @classmethod
@@ -149,6 +369,104 @@ class ConfMail(BaseModel):
             raise ValueError(f"smtp_timeout must be positive, got {value}")
         return value
 
+    @field_validator("attachment_allowed_extensions", "attachment_blocked_extensions", mode="before")
+    @classmethod
+    def _normalise_extensions(cls, value: Any) -> frozenset[str] | None:  # noqa: ANN401
+        """Normalise extension sets to lowercase with leading dots.
+
+        Why
+            Extensions should compare case-insensitively and consistently.
+
+        Inputs
+        ------
+        value:
+            Raw extension set (None, set, frozenset, or iterable of strings).
+
+        Outputs
+        -------
+        frozenset[str] | None
+            Normalised extension set with lowercase, dot-prefixed extensions.
+        """
+        if value is None:
+            return None
+        if callable(value):
+            # Handle default_factory case
+            value = value()
+        if not isinstance(value, (frozenset, set, list, tuple)):
+            raise ValueError("extensions must be a set, frozenset, list, or tuple of strings")
+        raw_list: list[object] = list(value)  # pyright: ignore[reportUnknownArgumentType]
+
+        normalised: set[str] = set()
+        for ext in raw_list:
+            if not isinstance(ext, str):  # pyright: ignore[reportUnnecessaryIsInstance]
+                raise ValueError(f"extension must be a string, got {type(ext).__name__}")
+            ext_lower = ext.lower().strip()
+            if not ext_lower:
+                continue
+            if not ext_lower.startswith("."):
+                ext_lower = "." + ext_lower
+            normalised.add(ext_lower)
+        return frozenset(normalised)
+
+    @field_validator("attachment_allowed_directories", "attachment_blocked_directories", mode="before")
+    @classmethod
+    def _normalise_directories(cls, value: Any) -> frozenset[pathlib.Path] | None:  # noqa: ANN401
+        """Normalise directory sets to resolved Path objects.
+
+        Why
+            Directories should be resolved for consistent comparison.
+
+        Inputs
+        ------
+        value:
+            Raw directory set (None, set, frozenset, or iterable of paths/strings).
+
+        Outputs
+        -------
+        frozenset[pathlib.Path] | None
+            Normalised directory set.
+        """
+        if value is None:
+            return None
+        if callable(value):
+            # Handle default_factory case
+            value = value()
+        if not isinstance(value, (frozenset, set, list, tuple)):
+            raise ValueError("directories must be a set, frozenset, list, or tuple")
+        raw_list: list[object] = list(value)  # pyright: ignore[reportUnknownArgumentType]
+
+        normalised: set[pathlib.Path] = set()
+        for directory in raw_list:
+            if isinstance(directory, str):
+                normalised.add(pathlib.Path(directory))
+            elif isinstance(directory, pathlib.Path):  # pyright: ignore[reportUnnecessaryIsInstance]
+                normalised.add(directory)
+            else:
+                raise ValueError(f"directory must be a string or Path, got {type(directory).__name__}")
+        return frozenset(normalised)
+
+    @field_validator("attachment_max_size_bytes", mode="after")
+    @classmethod
+    def _validate_max_size(cls, value: int | None) -> int | None:
+        """Validate that max size is positive when set.
+
+        Why
+            A zero or negative size limit would reject all attachments.
+
+        Inputs
+        ------
+        value:
+            Max size in bytes (None to disable checking).
+
+        Outputs
+        -------
+        int | None
+            The validated size limit.
+        """
+        if value is not None and value <= 0:
+            raise ValueError(f"attachment_max_size_bytes must be positive, got {value}")
+        return value
+
     def resolved_credentials(self) -> tuple[str, str] | None:
         """### resolved_credentials() -> tuple[str, str] | None {#lib-mail-confmail-resolved-credentials}
 
@@ -180,6 +498,14 @@ def send(
     credentials: tuple[str, str] | None = None,
     use_starttls: bool | None = None,
     timeout: float | None = None,
+    # Attachment security parameters
+    attachment_allowed_extensions: frozenset[str] | None = None,
+    attachment_blocked_extensions: frozenset[str] | None = None,
+    attachment_allowed_directories: frozenset[pathlib.Path] | None = None,
+    attachment_blocked_directories: frozenset[pathlib.Path] | None = None,
+    attachment_max_size_bytes: int | None = None,
+    attachment_allow_symlinks: bool | None = None,
+    attachment_raise_on_security_violation: bool | None = None,
 ) -> bool:
     """### send(...) -> bool {#lib-mail-send}
 
@@ -205,6 +531,20 @@ def send(
       `None`, the helper uses `conf.smtp_use_starttls`.
     - `timeout: float | None = None` — Override socket timeout in seconds. When
       `None`, the helper uses `conf.smtp_timeout`.
+    - `attachment_allowed_extensions: frozenset[str] | None = None` — Override
+      allowed extensions (whitelist mode). When `None`, uses `conf` default.
+    - `attachment_blocked_extensions: frozenset[str] | None = None` — Override
+      blocked extensions. When `None`, uses `conf` default.
+    - `attachment_allowed_directories: frozenset[pathlib.Path] | None = None` —
+      Override allowed directories. When `None`, uses `conf` default.
+    - `attachment_blocked_directories: frozenset[pathlib.Path] | None = None` —
+      Override blocked directories. When `None`, uses `conf` default.
+    - `attachment_max_size_bytes: int | None = None` — Override max attachment
+      size in bytes. When `None`, uses `conf` default.
+    - `attachment_allow_symlinks: bool | None = None` — Override symlink policy.
+      When `None`, uses `conf` default.
+    - `attachment_raise_on_security_violation: bool | None = None` — Override
+      security violation behaviour. When `None`, uses `conf` default.
 
     **Returns:** `bool` — Always `True` when all deliveries succeed. A failure
     raises instead of returning `False`.
@@ -213,6 +553,8 @@ def send(
     - `ValueError` — When no valid recipients remain after validation.
     - `FileNotFoundError` — When required attachments are missing and
       `conf.raise_on_missing_attachments` is `True`.
+    - `AttachmentSecurityError` — When an attachment violates security policies
+      and `attachment_raise_on_security_violation` is `True`.
     - `RuntimeError` — When every SMTP host fails for a recipient; the error
       lists the affected recipients and host set.
 
@@ -236,7 +578,19 @@ def send(
         raise ValueError(f"invalid sender address: {mail_from!r}") from None
 
     recipients = _prepare_recipients(mail_recipients)
-    attachments = _prepare_attachments(tuple(attachment_file_paths or ()))
+
+    # Resolve security options
+    security = _resolve_attachment_security_options(
+        explicit_allowed_extensions=attachment_allowed_extensions,
+        explicit_blocked_extensions=attachment_blocked_extensions,
+        explicit_allowed_directories=attachment_allowed_directories,
+        explicit_blocked_directories=attachment_blocked_directories,
+        explicit_max_size_bytes=attachment_max_size_bytes,
+        explicit_allow_symlinks=attachment_allow_symlinks,
+        explicit_raise_on_violation=attachment_raise_on_security_violation,
+    )
+
+    attachments = _prepare_attachments(tuple(attachment_file_paths or ()), security)
     hosts = _prepare_hosts(tuple(smtphosts or conf.smtphosts))
 
     delivery = _resolve_delivery_options(
@@ -321,6 +675,92 @@ def _resolve_delivery_options(
     return DeliveryOptions(credentials=credentials, use_starttls=use_starttls, timeout=timeout)
 
 
+@dataclass(frozen=True)
+class AttachmentSecurityOptions:
+    """### AttachmentSecurityOptions {#lib-mail-attachmentsecurityoptions}
+
+    **Purpose:** Capture the resolved attachment security options for a single
+    send operation so validation helpers receive one immutable object.
+
+    **Fields:**
+    - `allowed_extensions: frozenset[str] | None` — When set, only these
+      extensions are allowed (whitelist mode).
+    - `blocked_extensions: frozenset[str]` — Extensions to reject (ignored
+      when whitelist is active).
+    - `allowed_directories: frozenset[pathlib.Path] | None` — When set,
+      attachments must reside under one of these directories.
+    - `blocked_directories: frozenset[pathlib.Path]` — Directories from which
+      attachments cannot be read.
+    - `max_size_bytes: int | None` — Maximum attachment size in bytes.
+    - `allow_symlinks: bool` — Whether symlinks are permitted.
+    - `raise_on_violation: bool` — Whether violations raise or just warn.
+    """
+
+    allowed_extensions: frozenset[str] | None
+    blocked_extensions: frozenset[str]
+    allowed_directories: frozenset[pathlib.Path] | None
+    blocked_directories: frozenset[pathlib.Path]
+    max_size_bytes: int | None
+    allow_symlinks: bool
+    raise_on_violation: bool
+
+
+def _resolve_attachment_security_options(
+    *,
+    explicit_allowed_extensions: frozenset[str] | None,
+    explicit_blocked_extensions: frozenset[str] | None,
+    explicit_allowed_directories: frozenset[pathlib.Path] | None,
+    explicit_blocked_directories: frozenset[pathlib.Path] | None,
+    explicit_max_size_bytes: int | None,
+    explicit_allow_symlinks: bool | None,
+    explicit_raise_on_violation: bool | None,
+) -> AttachmentSecurityOptions:
+    """Resolve per-call security overrides against configuration defaults.
+
+    Why
+        Centralises security option resolution so callers remain declarative.
+
+    Inputs
+    ------
+    explicit_allowed_extensions / explicit_blocked_extensions / ... :
+        Optional overrides supplied by :func:`send`. When `None`, the
+        corresponding `conf` default is used.
+
+    Note
+    ----
+    For extension and directory sets, `None` means "use the default" while an
+    empty frozenset means "no restrictions". To distinguish, pass an explicit
+    empty frozenset to override the default.
+
+    Outputs
+    -------
+    AttachmentSecurityOptions
+        Frozen options object consumed by security validation.
+
+    Side Effects
+    ------------
+    None; pure function.
+    """
+    # Use sentinel pattern: None means "use default", explicit value overrides
+    allowed_ext = explicit_allowed_extensions if explicit_allowed_extensions is not None else conf.attachment_allowed_extensions
+    blocked_ext = explicit_blocked_extensions if explicit_blocked_extensions is not None else conf.attachment_blocked_extensions
+    allowed_dirs = explicit_allowed_directories if explicit_allowed_directories is not None else conf.attachment_allowed_directories
+    blocked_dirs = explicit_blocked_directories if explicit_blocked_directories is not None else conf.attachment_blocked_directories
+    max_size = explicit_max_size_bytes if explicit_max_size_bytes is not None else conf.attachment_max_size_bytes
+    allow_symlinks = explicit_allow_symlinks if explicit_allow_symlinks is not None else conf.attachment_allow_symlinks
+    raise_on_violation = explicit_raise_on_violation if explicit_raise_on_violation is not None else conf.attachment_raise_on_security_violation
+
+    return AttachmentSecurityOptions(
+        allowed_extensions=allowed_ext,
+        blocked_extensions=blocked_ext,
+        allowed_directories=allowed_dirs,
+        blocked_directories=blocked_dirs,
+        max_size_bytes=max_size,
+        allow_symlinks=allow_symlinks,
+        raise_on_violation=raise_on_violation,
+    )
+
+
 def _deliver_to_any_host(
     *,
     sender: str,
@@ -373,7 +813,12 @@ def _deliver_to_any_host(
                 attachments=attachments,
                 delivery=delivery,
             )
-            logger.debug(f'mail sent to "{recipient}" via host "{host}"')
+            logger.debug(
+                'mail sent to "%s" via host "%s"',
+                recipient,
+                host,
+                extra={"sender": sender, "recipient": recipient, "host": host},
+            )
             return True
         except Exception:
             logger.warning(
@@ -381,6 +826,7 @@ def _deliver_to_any_host(
                 recipient,
                 host,
                 exc_info=True,
+                extra={"sender": sender, "recipient": recipient, "host": host},
             )
     return False
 
@@ -525,44 +971,363 @@ def _render_attachment(attachment: AttachmentPayload) -> MIMEBase:
     return part
 
 
-def _prepare_attachments(paths: tuple[pathlib.Path, ...]) -> tuple[AttachmentPayload, ...]:
-    """Normalise attachment paths into frozen payloads.
+# ---------------------------------------------------------------------------
+# Attachment Security: Validation Functions
+# ---------------------------------------------------------------------------
+
+
+def _check_path_traversal(path: pathlib.Path, original_str: str) -> None:
+    """Detect path traversal attempts in the original path string.
 
     Why
-        Validates attachment existence before SMTP attempts begin.
+        Path traversal sequences like `../` can escape intended directories.
+
+    Inputs
+    ------
+    path:
+        The path object (for error reporting).
+    original_str:
+        The original string representation of the path.
+
+    Side Effects
+    ------------
+    Raises AttachmentSecurityError if traversal is detected.
+    """
+    # Check the original string for traversal patterns before resolution
+    if ".." in original_str:
+        raise AttachmentSecurityError(
+            path=path,
+            reason=f'path contains traversal sequence: "{original_str}"',
+            violation_type="path_traversal",
+        )
+
+
+def _check_symlink(path: pathlib.Path, allow_symlinks: bool) -> pathlib.Path:
+    """Check symlink status and return the resolved path.
+
+    Why
+        Symlinks can point to sensitive files outside intended directories.
+
+    Inputs
+    ------
+    path:
+        The path to check.
+    allow_symlinks:
+        Whether symlinks are permitted.
+
+    Outputs
+    -------
+    pathlib.Path
+        The resolved path (follows symlinks if allowed).
+
+    Side Effects
+    ------------
+    Raises AttachmentSecurityError if symlink is rejected.
+    """
+    if path.is_symlink():
+        if not allow_symlinks:
+            raise AttachmentSecurityError(
+                path=path,
+                reason=f'symlink detected and not allowed: "{path}"',
+                violation_type="symlink",
+            )
+        # Follow the symlink and return the resolved target
+        return path.resolve()
+    return path.resolve()
+
+
+def _check_sensitive_patterns(path: pathlib.Path) -> None:
+    """Check if the path matches any sensitive patterns.
+
+    Why
+        Some paths (SSH keys, credentials) should never be attached.
+
+    Inputs
+    ------
+    path:
+        The resolved path to check.
+
+    Side Effects
+    ------------
+    Raises AttachmentSecurityError if sensitive pattern is matched.
+    """
+    path_str = str(path)
+    # Normalise to forward slashes for consistent matching
+    path_str_normalised = path_str.replace("\\", "/")
+
+    for pattern in SENSITIVE_PATH_PATTERNS:
+        if pattern in path_str_normalised:
+            raise AttachmentSecurityError(
+                path=path,
+                reason=f'path matches sensitive pattern "{pattern}": "{path}"',
+                violation_type="sensitive_pattern",
+            )
+
+
+def _check_directory_restrictions(
+    path: pathlib.Path,
+    allowed: frozenset[pathlib.Path] | None,
+    blocked: frozenset[pathlib.Path],
+) -> None:
+    """Check directory whitelist/blacklist restrictions.
+
+    Why
+        Restrict which directories attachments can be read from.
+
+    Inputs
+    ------
+    path:
+        The resolved path to check.
+    allowed:
+        When set, path must be under one of these directories.
+    blocked:
+        Path must not be under any of these directories.
+
+    Side Effects
+    ------------
+    Raises AttachmentSecurityError if directory restriction is violated.
+    """
+    resolved_path = path.resolve()
+
+    if allowed is not None:
+        # Whitelist mode: path must be under an allowed directory
+        is_allowed = False
+        for allowed_dir in allowed:
+            try:
+                resolved_path.relative_to(allowed_dir.resolve())
+                is_allowed = True
+                break
+            except ValueError:
+                continue
+        if not is_allowed:
+            raise AttachmentSecurityError(
+                path=path,
+                reason=f'path not under any allowed directory: "{path}"',
+                violation_type="directory",
+            )
+    else:
+        # Blacklist mode: path must not be under a blocked directory
+        for blocked_dir in blocked:
+            try:
+                resolved_path.relative_to(blocked_dir.resolve())
+                raise AttachmentSecurityError(
+                    path=path,
+                    reason=f'path under blocked directory "{blocked_dir}": "{path}"',
+                    violation_type="directory",
+                )
+            except ValueError:
+                continue
+
+
+def _check_extension(
+    path: pathlib.Path,
+    allowed: frozenset[str] | None,
+    blocked: frozenset[str],
+) -> None:
+    """Check extension whitelist/blacklist restrictions.
+
+    Why
+        Prevent attachment of dangerous executable file types.
+
+    Inputs
+    ------
+    path:
+        The path to check.
+    allowed:
+        When set, only these extensions are permitted (whitelist mode).
+    blocked:
+        Extensions to reject (ignored when whitelist is active).
+
+    Side Effects
+    ------------
+    Raises AttachmentSecurityError if extension is not allowed.
+    """
+    ext = path.suffix.lower()
+
+    if allowed is not None:
+        # Whitelist mode: only allowed extensions pass
+        if ext not in allowed:
+            raise AttachmentSecurityError(
+                path=path,
+                reason=f'extension "{ext}" not in allowed list: "{path}"',
+                violation_type="extension",
+            )
+    else:
+        # Blacklist mode: block only blacklisted extensions
+        if ext in blocked:
+            raise AttachmentSecurityError(
+                path=path,
+                reason=f'extension "{ext}" is blocked: "{path}"',
+                violation_type="extension",
+            )
+
+
+def _check_file_size(path: pathlib.Path, max_size: int | None) -> None:
+    """Check that the file size does not exceed the limit.
+
+    Why
+        Prevent memory exhaustion from excessively large attachments.
+
+    Inputs
+    ------
+    path:
+        The resolved path to check.
+    max_size:
+        Maximum allowed size in bytes (None to skip check).
+
+    Side Effects
+    ------------
+    Raises AttachmentSecurityError if file exceeds size limit.
+    """
+    if max_size is None:
+        return
+
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        raise AttachmentSecurityError(
+            path=path,
+            reason=f'cannot stat file: "{path}" ({exc})',
+            violation_type="size",
+        ) from exc
+
+    if size > max_size:
+        raise AttachmentSecurityError(
+            path=path,
+            reason=f'file size {size} bytes exceeds limit {max_size} bytes: "{path}"',
+            violation_type="size",
+        )
+
+
+def _validate_attachment_security(
+    path: pathlib.Path,
+    original_path_str: str,
+    security: AttachmentSecurityOptions,
+) -> pathlib.Path:
+    """Orchestrate all security checks for a single attachment.
+
+    Why
+        Provides a single entry point for attachment security validation.
+
+    Inputs
+    ------
+    path:
+        The path object to validate.
+    original_path_str:
+        The original string representation (for traversal detection).
+    security:
+        Resolved security options.
+
+    Outputs
+    -------
+    pathlib.Path
+        The resolved path (after symlink resolution if applicable).
+
+    Side Effects
+    ------------
+    Raises AttachmentSecurityError if any check fails. Note that file
+    existence is NOT checked here - that's handled by _prepare_attachments
+    after security validation completes.
+    """
+    # 1. Check path traversal (before any I/O)
+    _check_path_traversal(path, original_path_str)
+
+    # 2. Check symlink handling
+    resolved_path = _check_symlink(path, security.allow_symlinks)
+
+    # 3. Check sensitive patterns
+    _check_sensitive_patterns(resolved_path)
+
+    # 4. Check directory restrictions
+    _check_directory_restrictions(
+        resolved_path,
+        security.allowed_directories,
+        security.blocked_directories,
+    )
+
+    # 5. Check extension
+    _check_extension(
+        resolved_path,
+        security.allowed_extensions,
+        security.blocked_extensions,
+    )
+
+    # 6. Check file size (only if file exists)
+    # Note: File existence check comes later in _prepare_attachments
+    if resolved_path.exists():
+        _check_file_size(resolved_path, security.max_size_bytes)
+
+    return resolved_path
+
+
+def _prepare_attachments(
+    paths: tuple[pathlib.Path, ...],
+    security: AttachmentSecurityOptions,
+) -> tuple[AttachmentPayload, ...]:
+    """Normalise attachment paths into frozen payloads with security validation.
+
+    Why
+        Validates attachment existence and security before SMTP attempts begin.
 
     Inputs
     ------
     paths:
         Tuple of candidate filesystem paths (may be empty).
+    security:
+        Resolved security options for validation.
 
     What
-        Resolves existing files and emits immutable payloads.
+        Resolves existing files, validates security, and emits immutable payloads.
 
     Outputs
     -------
     tuple[AttachmentPayload, ...]
-        Resolved payloads.
+        Resolved payloads that passed security validation.
 
     Side Effects
     ------------
-    Reads file bytes when paths exist; logs or raises when missing.
+    Reads file bytes when paths exist and pass security checks; logs or raises
+    when missing or security violations occur.
     """
-
     prepared: list[AttachmentPayload] = []
     for path in paths:
-        absolute_path = path.resolve()
-        if absolute_path.is_file():
-            prepared.append(
-                AttachmentPayload(
-                    filename=absolute_path.name,
-                    content=absolute_path.read_bytes(),
-                )
+        original_path_str = str(path)
+
+        # Security validation (before reading file contents)
+        try:
+            validated_path = _validate_attachment_security(path, original_path_str, security)
+        except AttachmentSecurityError as exc:
+            if security.raise_on_violation:
+                raise
+            logger.warning(
+                "Attachment security violation: %s",
+                exc.reason,
+                extra={
+                    "attachment_path": original_path_str,
+                    "violation_type": exc.violation_type,
+                },
             )
             continue
-        if conf.raise_on_missing_attachments:
-            raise FileNotFoundError(f'Attachment File "{absolute_path}" can not be found')
-        logger.warning(f'Attachment File "{absolute_path}" can not be found')
+
+        # Check file existence
+        if not validated_path.is_file():
+            if conf.raise_on_missing_attachments:
+                raise FileNotFoundError(f'Attachment File "{validated_path}" can not be found')
+            logger.warning(
+                'Attachment File "%s" can not be found',
+                validated_path,
+                extra={"attachment_path": str(validated_path)},
+            )
+            continue
+
+        # Read and prepare the attachment
+        prepared.append(
+            AttachmentPayload(
+                filename=validated_path.name,
+                content=validated_path.read_bytes(),
+            )
+        )
+
     return tuple(prepared)
 
 
@@ -642,7 +1407,7 @@ def _prepare_recipients(recipients: str | Sequence[str]) -> tuple[str, ...]:
         except ValueError:
             if conf.raise_on_invalid_recipient:
                 raise ValueError(f"invalid recipient {entry}") from None
-            logger.warning(f"invalid recipient {entry}")
+            logger.warning("invalid recipient %s", entry, extra={"recipient": entry})
             continue
         valid.append(entry)
 

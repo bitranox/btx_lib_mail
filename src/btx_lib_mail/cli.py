@@ -140,6 +140,138 @@ def _resolve_float(cli_value: float | None, env_key: str, *, default: float) -> 
         raise click.BadParameter(f"Unrecognised float value for {env_key}: {env_raw!r}") from exc
 
 
+def _resolve_int(cli_value: int | None, env_key: str) -> int | None:
+    """Return the int value provided via CLI, environment, or None.
+
+    Why
+        Keeps size limit resolution readable while surfacing friendly errors.
+
+    Inputs
+    ------
+    cli_value:
+        Value supplied on the CLI (``None`` when flag omitted).
+    env_key:
+        Environment variable consulted when CLI value is absent.
+
+    Outputs
+    -------
+    int | None
+        Parsed int value honouring the precedence chain, or None if not set.
+    """
+    if cli_value is not None:
+        return cli_value
+    env_raw = _configured_value(env_key)
+    if env_raw is None or env_raw.strip() == "":
+        return None
+    try:
+        return int(env_raw.strip())
+    except ValueError as exc:
+        raise click.BadParameter(f"Unrecognised int value for {env_key}: {env_raw!r}") from exc
+
+
+def _resolve_extensions(cli_value: str | None, env_key: str) -> frozenset[str] | None:
+    """Resolve extension set from CLI, env, or return None for default.
+
+    Why
+        Handles comma-separated extension lists with proper normalisation.
+
+    Inputs
+    ------
+    cli_value:
+        Comma-separated extension string from CLI (``None`` when omitted).
+    env_key:
+        Environment variable consulted when CLI value is absent.
+
+    Outputs
+    -------
+    frozenset[str] | None
+        Normalised extension set, or None to use configuration default.
+    """
+    raw = cli_value or _configured_value(env_key)
+    if raw is None or raw.strip() == "":
+        return None
+
+    extensions: set[str] = set()
+    for ext in raw.split(","):
+        ext = ext.strip().lower()
+        if not ext:
+            continue
+        if not ext.startswith("."):
+            ext = "." + ext
+        extensions.add(ext)
+
+    return frozenset(extensions) if extensions else None
+
+
+def _resolve_directories(cli_values: Sequence[str], env_key: str) -> frozenset[Path] | None:
+    """Resolve directory set from CLI, env, or return None for default.
+
+    Why
+        Handles multiple directory options with proper path resolution.
+
+    Inputs
+    ------
+    cli_values:
+        Sequence of directory paths from CLI (repeat options or comma-separated).
+    env_key:
+        Environment variable consulted when CLI values are absent.
+
+    Outputs
+    -------
+    frozenset[Path] | None
+        Normalised directory set, or None to use configuration default.
+    """
+    # Flatten CLI values (support both repeat and comma-separated)
+    flattened = _split_values(cli_values)
+
+    if not flattened:
+        env_raw = _configured_value(env_key)
+        if env_raw:
+            flattened = _split_values([env_raw])
+
+    if not flattened:
+        return None
+
+    directories: set[Path] = set()
+    for dir_str in flattened:
+        dir_str = dir_str.strip()
+        if dir_str:
+            directories.add(Path(dir_str))
+
+    return frozenset(directories) if directories else None
+
+
+def _resolve_optional_bool(cli_flag: bool | None, env_key: str) -> bool | None:
+    """Return the bool value provided via CLI, environment, or None for default.
+
+    Why
+        Similar to _resolve_bool but returns None instead of a default.
+
+    Inputs
+    ------
+    cli_flag:
+        Value supplied on the CLI (``None`` when flag omitted).
+    env_key:
+        Environment variable consulted when CLI value is absent.
+
+    Outputs
+    -------
+    bool | None
+        Parsed bool value, or None to use configuration default.
+    """
+    if cli_flag is not None:
+        return cli_flag
+    env_raw = _configured_value(env_key)
+    if env_raw is None or env_raw.strip() == "":
+        return None
+    lowered = env_raw.strip().lower()
+    if lowered in _TRUE_VALUES:
+        return True
+    if lowered in _FALSE_VALUES:
+        return False
+    raise click.BadParameter(f"Unrecognised boolean value for {env_key}: {env_raw!r}")
+
+
 #: Shared Click context flags so help output stays consistent across commands.
 CLICK_CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}  # noqa: C408
 """Click context settings ensuring every command honours `-h/--help`."""
@@ -586,6 +718,50 @@ def cli_hello() -> None:
     default=None,
     help="Socket timeout in seconds (overrides environment).",
 )
+# Attachment security options
+@click.option(
+    "--attachment-allowed-ext",
+    "attachment_allowed_ext",
+    default=None,
+    help="Allowed extensions (comma-separated, e.g., .pdf,.txt). Enables whitelist mode.",
+)
+@click.option(
+    "--attachment-blocked-ext",
+    "attachment_blocked_ext",
+    default=None,
+    help="Blocked extensions (comma-separated). Overrides default dangerous extensions.",
+)
+@click.option(
+    "--attachment-allowed-dir",
+    "attachment_allowed_dirs",
+    multiple=True,
+    help="Allowed directories (repeat for multiple). Enables whitelist mode.",
+)
+@click.option(
+    "--attachment-blocked-dir",
+    "attachment_blocked_dirs",
+    multiple=True,
+    help="Blocked directories (repeat for multiple). Overrides default sensitive directories.",
+)
+@click.option(
+    "--attachment-max-size",
+    "attachment_max_size",
+    type=int,
+    default=None,
+    help="Max attachment size in bytes (default: 25 MiB).",
+)
+@click.option(
+    "--attachment-allow-symlinks/--attachment-no-symlinks",
+    "attachment_allow_symlinks",
+    default=None,
+    help="Allow or reject symlinked attachments (default: reject).",
+)
+@click.option(
+    "--attachment-strict/--attachment-warn",
+    "attachment_raise_on_security",
+    default=None,
+    help="Raise on security violation (strict) or log warning and skip (warn).",
+)
 def cli_send_mail(
     *,
     hosts: Sequence[str],
@@ -599,6 +775,13 @@ def cli_send_mail(
     username: str | None,
     password: str | None,
     timeout: float | None,
+    attachment_allowed_ext: str | None,
+    attachment_blocked_ext: str | None,
+    attachment_allowed_dirs: Sequence[str],
+    attachment_blocked_dirs: Sequence[str],
+    attachment_max_size: int | None,
+    attachment_allow_symlinks: bool | None,
+    attachment_raise_on_security: bool | None,
 ) -> None:
     """### cli_send_mail(...) -> None {#cli-send-mail}
 
@@ -638,6 +821,15 @@ def cli_send_mail(
     credentials = _resolve_credentials(username_value, password_value)
     timeout_value = _resolve_float(timeout, "BTX_MAIL_SMTP_TIMEOUT", default=conf.smtp_timeout)
 
+    # Resolve attachment security options
+    resolved_allowed_ext = _resolve_extensions(attachment_allowed_ext, "BTX_MAIL_ATTACHMENT_ALLOWED_EXT")
+    resolved_blocked_ext = _resolve_extensions(attachment_blocked_ext, "BTX_MAIL_ATTACHMENT_BLOCKED_EXT")
+    resolved_allowed_dirs = _resolve_directories(attachment_allowed_dirs, "BTX_MAIL_ATTACHMENT_ALLOWED_DIRS")
+    resolved_blocked_dirs = _resolve_directories(attachment_blocked_dirs, "BTX_MAIL_ATTACHMENT_BLOCKED_DIRS")
+    resolved_max_size = _resolve_int(attachment_max_size, "BTX_MAIL_ATTACHMENT_MAX_SIZE")
+    resolved_allow_symlinks = _resolve_optional_bool(attachment_allow_symlinks, "BTX_MAIL_ATTACHMENT_ALLOW_SYMLINKS")
+    resolved_raise_on_security = _resolve_optional_bool(attachment_raise_on_security, "BTX_MAIL_ATTACHMENT_RAISE_ON_SECURITY")
+
     send(
         mail_from=sender_value,
         mail_recipients=resolved_recipients,
@@ -649,6 +841,13 @@ def cli_send_mail(
         credentials=credentials,
         use_starttls=use_starttls,
         timeout=timeout_value,
+        attachment_allowed_extensions=resolved_allowed_ext,
+        attachment_blocked_extensions=resolved_blocked_ext,
+        attachment_allowed_directories=resolved_allowed_dirs,
+        attachment_blocked_directories=resolved_blocked_dirs,
+        attachment_max_size_bytes=resolved_max_size,
+        attachment_allow_symlinks=resolved_allow_symlinks,
+        attachment_raise_on_security_violation=resolved_raise_on_security,
     )
 
     click.echo(f"Mail sent to {', '.join(resolved_recipients)} via {', '.join(resolved_hosts)}")
