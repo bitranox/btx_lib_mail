@@ -1,10 +1,10 @@
 [project]
 name = "btx_lib_mail"
-version = "1.3.0"
+version = "1.3.1"
 description = "Template for python apps with registered cli commands"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["rich-click>=1.9.6", "lib_cli_exit_tools>=2.2.4", "pydantic>=2.12.5"]
+dependencies = ["rich-click>=1.9.7", "lib_cli_exit_tools>=2.2.4", "pydantic>=2.12.5"]
 license = { text = "MIT" }
 authors = [{ name = "bitranox", email = "bitranox@gmail.com" }]
 keywords = ["logging", "rich", "cli", "terminal", "ansi"]

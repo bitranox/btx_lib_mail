@@ -1102,3 +1102,182 @@ class TestPerCallSecurityOverrides:
             attachment_blocked_directories=frozenset(),  # Disable for macOS /var/folders
         )
         assert result is True
+
+
+# ---------------------------------------------------------------------------
+# Per-call Error Handling Parameter Overrides
+# ---------------------------------------------------------------------------
+
+
+class TestRaiseOnMissingAttachmentsParameter:
+    """Tests for raise_on_missing_attachments per-call override."""
+
+    @pytest.mark.os_agnostic
+    def test_parameter_true_raises_when_conf_false(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """Override to raise even when conf says don't."""
+        _install_recording_smtp(monkeypatch)
+        lib_mail.conf.raise_on_missing_attachments = False
+        missing_file = tmp_path / "missing.txt"
+
+        with pytest.raises(FileNotFoundError, match="Attachment File"):
+            lib_mail.send(
+                mail_from="sender@example.com",
+                mail_recipients="recipient@example.com",
+                mail_subject="Subject",
+                smtphosts=["smtp.example.com"],
+                attachment_file_paths=[missing_file],
+                attachment_blocked_directories=frozenset(),
+                raise_on_missing_attachments=True,  # Override
+            )
+
+    @pytest.mark.os_agnostic
+    def test_parameter_false_warns_when_conf_true(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Override to warn even when conf says raise."""
+        recorder = _install_recording_smtp(monkeypatch)
+        caplog.set_level("WARNING")
+        lib_mail.conf.raise_on_missing_attachments = True
+        missing_file = tmp_path / "missing.txt"
+
+        result = lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients="recipient@example.com",
+            mail_subject="Subject",
+            smtphosts=["smtp.example.com"],
+            attachment_file_paths=[missing_file],
+            attachment_blocked_directories=frozenset(),
+            raise_on_missing_attachments=False,  # Override
+        )
+
+        assert result is True
+        assert "Attachment File" in caplog.text
+        assert recorder.created[0].sent_messages[0][2]
+
+    @pytest.mark.os_agnostic
+    def test_parameter_none_uses_conf_default_true(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """When None, fall back to conf which is True."""
+        _install_recording_smtp(monkeypatch)
+        lib_mail.conf.raise_on_missing_attachments = True
+        missing_file = tmp_path / "missing.txt"
+
+        with pytest.raises(FileNotFoundError, match="Attachment File"):
+            lib_mail.send(
+                mail_from="sender@example.com",
+                mail_recipients="recipient@example.com",
+                mail_subject="Subject",
+                smtphosts=["smtp.example.com"],
+                attachment_file_paths=[missing_file],
+                attachment_blocked_directories=frozenset(),
+                raise_on_missing_attachments=None,  # Use default
+            )
+
+    @pytest.mark.os_agnostic
+    def test_parameter_none_uses_conf_default_false(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """When None, fall back to conf which is False."""
+        recorder = _install_recording_smtp(monkeypatch)
+        caplog.set_level("WARNING")
+        lib_mail.conf.raise_on_missing_attachments = False
+        missing_file = tmp_path / "missing.txt"
+
+        result = lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients="recipient@example.com",
+            mail_subject="Subject",
+            smtphosts=["smtp.example.com"],
+            attachment_file_paths=[missing_file],
+            attachment_blocked_directories=frozenset(),
+            raise_on_missing_attachments=None,  # Use default
+        )
+
+        assert result is True
+        assert "Attachment File" in caplog.text
+        assert recorder.created[0].sent_messages[0][2]
+
+
+class TestRaiseOnInvalidRecipientParameter:
+    """Tests for raise_on_invalid_recipient per-call override."""
+
+    @pytest.mark.os_agnostic
+    def test_parameter_true_raises_when_conf_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Override to raise even when conf says don't."""
+        _install_recording_smtp(monkeypatch)
+        lib_mail.conf.raise_on_invalid_recipient = False
+
+        with pytest.raises(ValueError, match="invalid recipient"):
+            lib_mail.send(
+                mail_from="sender@example.com",
+                mail_recipients="invalid@",
+                mail_subject="Subject",
+                smtphosts=["smtp.example.com"],
+                raise_on_invalid_recipient=True,  # Override
+            )
+
+    @pytest.mark.os_agnostic
+    def test_parameter_false_warns_when_conf_true(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Override to warn even when conf says raise."""
+        recorder = _install_recording_smtp(monkeypatch)
+        caplog.set_level("WARNING")
+        lib_mail.conf.raise_on_invalid_recipient = True
+
+        result = lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients=["invalid@", "valid@example.com"],
+            mail_subject="Subject",
+            smtphosts=["smtp.example.com"],
+            raise_on_invalid_recipient=False,  # Override
+        )
+
+        assert result is True
+        assert "invalid recipient invalid@" in caplog.text
+        assert recorder.created[0].sent_messages[0][1] == "valid@example.com"
+
+    @pytest.mark.os_agnostic
+    def test_parameter_none_uses_conf_default_true(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When None, fall back to conf which is True."""
+        _install_recording_smtp(monkeypatch)
+        lib_mail.conf.raise_on_invalid_recipient = True
+
+        with pytest.raises(ValueError, match="invalid recipient"):
+            lib_mail.send(
+                mail_from="sender@example.com",
+                mail_recipients="invalid@",
+                mail_subject="Subject",
+                smtphosts=["smtp.example.com"],
+                raise_on_invalid_recipient=None,  # Use default
+            )
+
+    @pytest.mark.os_agnostic
+    def test_parameter_none_uses_conf_default_false(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """When None, fall back to conf which is False."""
+        recorder = _install_recording_smtp(monkeypatch)
+        caplog.set_level("WARNING")
+        lib_mail.conf.raise_on_invalid_recipient = False
+
+        result = lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients=["invalid@", "valid@example.com"],
+            mail_subject="Subject",
+            smtphosts=["smtp.example.com"],
+            raise_on_invalid_recipient=None,  # Use default
+        )
+
+        assert result is True
+        assert "invalid recipient invalid@" in caplog.text
+        assert recorder.created[0].sent_messages[0][1] == "valid@example.com"

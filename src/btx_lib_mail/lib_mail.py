@@ -506,6 +506,9 @@ def send(
     attachment_max_size_bytes: int | None = None,
     attachment_allow_symlinks: bool | None = None,
     attachment_raise_on_security_violation: bool | None = None,
+    # Error handling parameters
+    raise_on_missing_attachments: bool | None = None,
+    raise_on_invalid_recipient: bool | None = None,
 ) -> bool:
     """### send(...) -> bool {#lib-mail-send}
 
@@ -545,6 +548,12 @@ def send(
       When `None`, uses `conf` default.
     - `attachment_raise_on_security_violation: bool | None = None` — Override
       security violation behaviour. When `None`, uses `conf` default.
+    - `raise_on_missing_attachments: bool | None = None` — Override
+      `conf.raise_on_missing_attachments`. When `None`, uses `conf` default;
+      `True` raises on missing, `False` logs warning and skips.
+    - `raise_on_invalid_recipient: bool | None = None` — Override
+      `conf.raise_on_invalid_recipient`. When `None`, uses `conf` default;
+      `True` raises on invalid, `False` logs warning and skips.
 
     **Returns:** `bool` — Always `True` when all deliveries succeed. A failure
     raises instead of returning `False`.
@@ -577,7 +586,11 @@ def send(
     except ValueError:
         raise ValueError(f"invalid sender address: {mail_from!r}") from None
 
-    recipients = _prepare_recipients(mail_recipients)
+    # Resolve error handling parameters
+    resolved_raise_on_missing = raise_on_missing_attachments if raise_on_missing_attachments is not None else conf.raise_on_missing_attachments
+    resolved_raise_on_invalid = raise_on_invalid_recipient if raise_on_invalid_recipient is not None else conf.raise_on_invalid_recipient
+
+    recipients = _prepare_recipients(mail_recipients, raise_on_invalid=resolved_raise_on_invalid)
 
     # Resolve security options
     security = _resolve_attachment_security_options(
@@ -590,7 +603,11 @@ def send(
         explicit_raise_on_violation=attachment_raise_on_security_violation,
     )
 
-    attachments = _prepare_attachments(tuple(attachment_file_paths or ()), security)
+    attachments = _prepare_attachments(
+        tuple(attachment_file_paths or ()),
+        security,
+        raise_on_missing=resolved_raise_on_missing,
+    )
     hosts = _prepare_hosts(tuple(smtphosts or conf.smtphosts))
 
     delivery = _resolve_delivery_options(
@@ -1263,6 +1280,8 @@ def _validate_attachment_security(
 def _prepare_attachments(
     paths: tuple[pathlib.Path, ...],
     security: AttachmentSecurityOptions,
+    *,
+    raise_on_missing: bool,
 ) -> tuple[AttachmentPayload, ...]:
     """Normalise attachment paths into frozen payloads with security validation.
 
@@ -1275,6 +1294,9 @@ def _prepare_attachments(
         Tuple of candidate filesystem paths (may be empty).
     security:
         Resolved security options for validation.
+    raise_on_missing:
+        When ``True``, missing files raise ``FileNotFoundError``; when ``False``,
+        a warning is logged and the attachment is skipped.
 
     What
         Resolves existing files, validates security, and emits immutable payloads.
@@ -1311,7 +1333,7 @@ def _prepare_attachments(
 
         # Check file existence
         if not validated_path.is_file():
-            if conf.raise_on_missing_attachments:
+            if raise_on_missing:
                 raise FileNotFoundError(f'Attachment File "{validated_path}" can not be found')
             logger.warning(
                 'Attachment File "%s" can not be found',
@@ -1365,7 +1387,11 @@ def _prepare_hosts(hosts: tuple[str, ...]) -> tuple[str, ...]:
     return unique
 
 
-def _prepare_recipients(recipients: str | Sequence[str]) -> tuple[str, ...]:
+def _prepare_recipients(
+    recipients: str | Sequence[str],
+    *,
+    raise_on_invalid: bool,
+) -> tuple[str, ...]:
     """Return a deduplicated tuple of valid, lower-cased recipient addresses.
 
     Why
@@ -1375,6 +1401,9 @@ def _prepare_recipients(recipients: str | Sequence[str]) -> tuple[str, ...]:
     ------
     recipients:
         Single email or sequence of emails supplied by callers.
+    raise_on_invalid:
+        When ``True``, invalid recipients raise ``ValueError``; when ``False``,
+        a warning is logged and the address is skipped.
 
     What
         Produces a ready-to-send tuple after validation and deduplication.
@@ -1405,7 +1434,7 @@ def _prepare_recipients(recipients: str | Sequence[str]) -> tuple[str, ...]:
         try:
             validate_email_address(entry)
         except ValueError:
-            if conf.raise_on_invalid_recipient:
+            if raise_on_invalid:
                 raise ValueError(f"invalid recipient {entry}") from None
             logger.warning("invalid recipient %s", entry, extra={"recipient": entry})
             continue

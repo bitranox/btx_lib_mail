@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.3.1] - 2026-02-01
+
+### Added
+- Per-call `raise_on_missing_attachments` parameter in `send()` to override
+  `conf.raise_on_missing_attachments` on a per-call basis (`None` uses default,
+  `True` raises on missing, `False` logs warning and skips).
+- Per-call `raise_on_invalid_recipient` parameter in `send()` to override
+  `conf.raise_on_invalid_recipient` on a per-call basis (`None` uses default,
+  `True` raises on invalid, `False` logs warning and skips).
+
+### Changed
+- `_prepare_recipients()` and `_prepare_attachments()` now accept explicit
+  parameters instead of reading directly from the global `conf` object,
+  enabling per-call override behaviour.
+
 ## [1.3.0] - 2026-01-30
 
 ### Added
