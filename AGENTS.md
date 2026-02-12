@@ -8,10 +8,10 @@
   - bash_clean_code.md
   - bash_small_functions.md
   - python_solid_architecture_enforcer.md
-  - use skill `python_clean_architecture`
+  - use skill `bx-python-clean-architecture`
   - python_clean_code.md
   - python_small_functions_style.md
-  - python_libraries_to_use.md
+  - use skill `bx-python-libraries-to-use`
   - python_structure_template.md
   - self_documenting.md
   - self_documenting_template.md
@@ -32,10 +32,10 @@ when writing or refracturing Bash scripts, apply those Rules :
 when writing or refracturing Python scripts, apply those Rules :
 - core_programming_solid.md
 - python_solid_architecture_enforcer.md
-- use skill `python_clean_architecture`
+- use skill `bx-python-clean-architecture`
 - python_clean_code.md
 - python_small_functions_style.md
-- python_libraries_to_use.md
+- use skill `bx-python-libraries-to-use`
 - python_lib_structure_template.md
 
 ## Project Structure & Module Organization
@@ -81,7 +81,7 @@ when writing or refracturing Python scripts, apply those Rules :
 ## Commit & Pull Request Guidelines
 
 ## Architecture Overview
-  - use skill `python_clean_architecture`
+  - use skill `bx-python-clean-architecture`
 
 ## Security & Configuration Tips
 - `.env` is only for local tooling (CodeCov tokens, etc.); do not commit secrets.
