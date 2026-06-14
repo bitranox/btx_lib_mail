@@ -33,6 +33,7 @@ from click.core import ParameterSource
 from . import __init__conf__
 from .behaviors import emit_greeting, noop_main, raise_intentional_failure
 from .lib_mail import conf, send, validate_email_address, validate_smtp_host
+from .typed_click import argument, option, version_option
 
 _DOTENV_PATH = Path(".env")
 _TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -583,12 +584,12 @@ def _run_cli_via_exit_tools(
     context_settings=CLICK_CONTEXT_SETTINGS,
     invoke_without_command=True,
 )
-@click.version_option(
+@version_option(
     version=__init__conf__.version,
     prog_name=__init__conf__.shell_command,
     message=f"{__init__conf__.shell_command} version {__init__conf__.version}",
 )
-@click.option(
+@option(
     "--traceback/--no-traceback",
     is_flag=True,
     default=False,
@@ -679,84 +680,84 @@ def cli_hello() -> None:
 
 
 @cli.command("send", context_settings=CLICK_CONTEXT_SETTINGS)
-@click.option(
+@option(
     "--host",
     "hosts",
     multiple=True,
     help="SMTP host to use (repeat or provide comma-separated values).",
     metavar="HOST",
 )
-@click.option(
+@option(
     "--recipient",
     "recipients",
     multiple=True,
     help="Recipient email address (repeat or provide comma-separated values).",
     metavar="EMAIL",
 )
-@click.option("--sender", help="Envelope sender address.")
-@click.option("--subject", required=True, help="Mail subject line.")
-@click.option("--body", required=True, help="Plain-text email body.")
-@click.option("--html-body", help="Optional HTML body content.")
-@click.option(
+@option("--sender", help="Envelope sender address.")
+@option("--subject", required=True, help="Mail subject line.")
+@option("--body", required=True, help="Plain-text email body.")
+@option("--html-body", help="Optional HTML body content.")
+@option(
     "--attachment",
     "attachments",
     type=click.Path(path_type=Path),
     multiple=True,
     help="Attachment file path (repeat for multiple files).",
 )
-@click.option(
+@option(
     "--starttls/--no-starttls",
     "starttls",
     default=None,
     help="Force STARTTLS negotiation (overrides environment).",
 )
-@click.option("--username", help="SMTP username.")
-@click.option("--password", help="SMTP password.")
-@click.option(
+@option("--username", help="SMTP username.")
+@option("--password", help="SMTP password.")
+@option(
     "--timeout",
     type=float,
     default=None,
     help="Socket timeout in seconds (overrides environment).",
 )
 # Attachment security options
-@click.option(
+@option(
     "--attachment-allowed-ext",
     "attachment_allowed_ext",
     default=None,
     help="Allowed extensions (comma-separated, e.g., .pdf,.txt). Enables whitelist mode.",
 )
-@click.option(
+@option(
     "--attachment-blocked-ext",
     "attachment_blocked_ext",
     default=None,
     help="Blocked extensions (comma-separated). Overrides default dangerous extensions.",
 )
-@click.option(
+@option(
     "--attachment-allowed-dir",
     "attachment_allowed_dirs",
     multiple=True,
     help="Allowed directories (repeat for multiple). Enables whitelist mode.",
 )
-@click.option(
+@option(
     "--attachment-blocked-dir",
     "attachment_blocked_dirs",
     multiple=True,
     help="Blocked directories (repeat for multiple). Overrides default sensitive directories.",
 )
-@click.option(
+@option(
     "--attachment-max-size",
     "attachment_max_size",
     type=int,
     default=None,
     help="Max attachment size in bytes (default: 25 MiB).",
 )
-@click.option(
+@option(
     "--attachment-allow-symlinks/--attachment-no-symlinks",
     "attachment_allow_symlinks",
     default=None,
     help="Allow or reject symlinked attachments (default: reject).",
 )
-@click.option(
+@option(
     "--attachment-strict/--attachment-warn",
     "attachment_raise_on_security",
     default=None,
@@ -854,7 +855,7 @@ def cli_send_mail(
 
 
 @cli.command("validate-email", context_settings=CLICK_CONTEXT_SETTINGS)
-@click.argument("address")
+@argument("address")
 def cli_validate_email(address: str) -> None:
     """### cli_validate_email(address: str) -> None {#cli-validate-email}
 
@@ -874,7 +875,7 @@ def cli_validate_email(address: str) -> None:
 
 
 @cli.command("validate-smtp-host", context_settings=CLICK_CONTEXT_SETTINGS)
-@click.argument("host")
+@argument("host")
 def cli_validate_smtp_host(host: str) -> None:
     """### cli_validate_smtp_host(host: str) -> None {#cli-validate-smtp-host}
 

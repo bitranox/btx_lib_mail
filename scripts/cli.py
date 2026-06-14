@@ -23,6 +23,7 @@ from ._utils import get_default_remote
 from .bump_major import bump_major
 from .bump_minor import bump_minor
 from .bump_patch import bump_patch
+from .typed_click import argument, option
 
 __all__ = ["main"]
 
@@ -106,34 +107,34 @@ def help_command() -> None:
 
 
 @main.command(name="install", help="Editable install: pip install -e .")
-@click.option("--dry-run", is_flag=True, help="Print commands only")
+@option("--dry-run", is_flag=True, help="Print commands only")
 def install_command(dry_run: bool) -> None:
     install_module.install(dry_run=dry_run)
 
 
 @main.command(name="dev", help="Install with development extras: pip install -e .[dev]")
-@click.option("--dry-run", is_flag=True, help="Print commands only")
+@option("--dry-run", is_flag=True, help="Print commands only")
 def dev_command(dry_run: bool) -> None:
     dev_module.install_dev(dry_run=dry_run)
 
 
 @main.command(name="clean", help="Remove caches and build artefacts")
-@click.option("--pattern", "patterns", multiple=True, help="Additional glob patterns to delete")
+@option("--pattern", "patterns", multiple=True, help="Additional glob patterns to delete")
 def clean_command(patterns: tuple[str, ...]) -> None:
     target_patterns = clean_module.DEFAULT_PATTERNS + tuple(patterns)
     clean_module.clean(target_patterns)
 
 
 @main.command(name="run", help="Run the project CLI and forward extra arguments")
-@click.argument("args", nargs=-1, type=click.UNPROCESSED)
+@argument("args", nargs=-1, type=click.UNPROCESSED)
 def run_command(args: Sequence[str]) -> None:
     raise SystemExit(run_cli_module.run_cli(args))
 
 
 @main.command(name="test", help="Run lint, type-check, tests, and coverage upload")
-@click.option("--coverage", type=click.Choice(sorted(_COVERAGE_MODES)), default=None, show_default=False)
-@click.option("--verbose", is_flag=True, help="Print executed commands")
-@click.option("--strict-format/--no-strict-format", default=None, help="Control ruff format behaviour")
+@option("--coverage", type=click.Choice(sorted(_COVERAGE_MODES)), default=None, show_default=False)
+@option("--verbose", is_flag=True, help="Print executed commands")
+@option("--strict-format/--no-strict-format", default=None, help="Control ruff format behaviour")
 def test_command(coverage: str | None, verbose: bool, strict_format: bool | None) -> None:
     resolved_coverage = coverage_choice(coverage)
     test_module.run_tests(
@@ -144,7 +145,7 @@ def test_command(coverage: str | None, verbose: bool, strict_format: bool | None
 
 
 @main.command(name="coverage", help="Run python -m coverage run -m pytest -vv (no PATH shim needed)")
-@click.option("--verbose", is_flag=True, help="Print executed commands and stdout/stderr")
+@option("--verbose", is_flag=True, help="Print executed commands and stdout/stderr")
 def coverage_command(verbose: bool) -> None:
     test_module.run_coverage(verbose=verbose)
 
@@ -155,15 +156,15 @@ def build_command() -> None:
 
 
 @main.command(name="release", help="Create git tag and optional GitHub release")
-@click.option("--remote", default=None, show_default=False)
+@option("--remote", default=None, show_default=False)
 def release_command(remote: str | None) -> None:
     resolved_remote = remote_choice(remote)
     release_module.release(remote=resolved_remote)
 
 
 @main.command(name="push", help="Run checks, commit, and push current branch")
-@click.option("--remote", default=None, show_default=False)
-@click.option("--message", "message", type=str, default=None, help="Commit message (overrides prompt)")
+@option("--remote", default=None, show_default=False)
+@option("--message", "message", type=str, default=None, help="Commit message (overrides prompt)")
 def push_command(remote: str | None, message: str | None) -> None:
     resolved_remote = remote_choice(remote)
     commit_message = message if message is not None else env_token("COMMIT_MESSAGE")
@@ -171,16 +172,16 @@ def push_command(remote: str | None, message: str | None) -> None:
 
 
 @main.command(name="version-current", help="Print current version from pyproject.toml")
-@click.option("--pyproject", type=click.Path(path_type=Path), default=Path("pyproject.toml"))
+@option("--pyproject", type=click.Path(path_type=Path), default=Path("pyproject.toml"))
 def version_command(pyproject: Path) -> None:
     click.echo(version_module.print_current_version(pyproject))
 
 
 @main.command(name="bump", help="Bump version and changelog")
-@click.option("--version", "version_", type=str, help="Explicit version X.Y.Z")
-@click.option("--part", type=click.Choice(["major", "minor", "patch"]), default=None)
-@click.option("--pyproject", type=click.Path(path_type=Path), default=Path("pyproject.toml"))
-@click.option("--changelog", type=click.Path(path_type=Path), default=Path("CHANGELOG.md"))
+@option("--version", "version_", type=str, help="Explicit version X.Y.Z")
+@option("--part", type=click.Choice(["major", "minor", "patch"]), default=None)
+@option("--pyproject", type=click.Path(path_type=Path), default=Path("pyproject.toml"))
+@option("--changelog", type=click.Path(path_type=Path), default=Path("CHANGELOG.md"))
 def bump_command(
     version_: str | None,
     part: str | None,
@@ -208,17 +209,17 @@ def bump_patch_command() -> None:
 
 
 @main.command(name="dependencies", help="Check dependencies against latest PyPI versions")
-@click.option("--verbose", "-v", is_flag=True, help="Show all dependencies, not just outdated")
-@click.option("--update", "-u", is_flag=True, help="Update outdated dependencies to latest versions")
-@click.option("--dry-run", is_flag=True, help="Show what would be updated without making changes")
-@click.option("--pyproject", type=click.Path(path_type=Path), default=Path("pyproject.toml"))
+@option("--verbose", "-v", is_flag=True, help="Show all dependencies, not just outdated")
+@option("--update", "-u", is_flag=True, help="Update outdated dependencies to latest versions")
+@option("--dry-run", is_flag=True, help="Show what would be updated without making changes")
+@option("--pyproject", type=click.Path(path_type=Path), default=Path("pyproject.toml"))
 def dependencies_command(verbose: bool, update: bool, dry_run: bool, pyproject: Path) -> None:
     raise SystemExit(dependencies_module.main(verbose=verbose, update=update, dry_run=dry_run, pyproject=pyproject))
 
 
 @main.command(name="dependencies-update", help="Update all outdated dependencies to latest versions")
-@click.option("--dry-run", is_flag=True, help="Show what would be updated without making changes")
-@click.option("--pyproject", type=click.Path(path_type=Path), default=Path("pyproject.toml"))
+@option("--dry-run", is_flag=True, help="Show what would be updated without making changes")
+@option("--pyproject", type=click.Path(path_type=Path), default=Path("pyproject.toml"))
 def dependencies_update_command(dry_run: bool, pyproject: Path) -> None:
     raise SystemExit(dependencies_module.main(verbose=False, update=True, dry_run=dry_run, pyproject=pyproject))
 
