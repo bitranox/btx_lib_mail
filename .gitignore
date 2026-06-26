@@ -182,3 +182,6 @@ pdm.lock
 uv.lock
 /.github_bak/
 /.github.bak/
+
+# Local, per-developer settings (Claude Code etc.) - never commit
+*.local.json
