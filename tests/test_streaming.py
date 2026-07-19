@@ -108,10 +108,12 @@ class _BdatController(Controller):
         return _BdatSMTP(self.handler)
 
 
-# ready_timeout is generous because busy CI runners (macOS especially) can take
-# more than aiosmtpd's 1.0s default to report the server ready, which otherwise
-# raises "SMTP server started, but not responding within allotted time".
-_SERVER_READY_TIMEOUT = 30.0
+# A working server reports ready in well under a second; this ceiling only bounds
+# how long a doomed start (seen on some macOS CI runners) waits before we retry on
+# a fresh port. Kept small so a runner that cannot start the server skips quickly
+# rather than burning minutes.
+_SERVER_READY_TIMEOUT = 8.0
+_SERVER_START_ATTEMPTS = 3
 
 
 def _run_server(handler: Any, *, controller_cls: type[Controller] = Controller, **controller_kwargs: Any) -> Controller:
@@ -120,7 +122,7 @@ def _run_server(handler: Any, *, controller_cls: type[Controller] = Controller, 
     # TIME_WAIT makes the readiness probe hang. Retry on a fresh port instead of
     # failing the test for an environment flake.
     last_error: Exception | None = None
-    for _attempt in range(5):
+    for _attempt in range(_SERVER_START_ATTEMPTS):
         controller = controller_cls(
             handler,
             hostname="127.0.0.1",
