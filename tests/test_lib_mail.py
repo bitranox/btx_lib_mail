@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+# Tests deliberately reach into module internals (the injected transport seam,
+# host parser, context builder), which is the tests' job, not an API leak.
+# pyright: reportPrivateUsage=false
+
 import os
 import ssl
 from pathlib import Path
-from email import message_from_string
+from email import message_from_bytes
 from email.message import EmailMessage
 from email.policy import default as default_policy
-from typing import Any, Generator, cast
+from typing import IO, Any, Generator, cast
 
 import pytest
 from pydantic import SecretStr, ValidationError
@@ -118,45 +122,76 @@ def test_when_conf_receives_an_illegal_host_type_it_objects() -> None:
         ConfMail.model_validate({"smtphosts": 123})
 
 
-class RecordingSMTP:
-    created: list["RecordingSMTP"] = []
-    init_calls: list[tuple[str, int | None, float | None]] = []
+class _RecordedDelivery:
+    """One captured ``Transport.deliver`` call, exposing the resolved delivery
+    options the orchestration layer forwarded (STARTTLS/credentials) and the raw
+    message bytes streamed to the host."""
+
+    def __init__(
+        self,
+        *,
+        host: str,
+        port: int,
+        timeout: float | None,
+        started_tls: bool,
+        starttls_verify: bool,
+        logged_in: tuple[str, str] | None,
+    ) -> None:
+        self.host = host
+        self.port = port
+        self.timeout = timeout
+        self.started_tls = started_tls
+        self.starttls_verify = starttls_verify
+        self.logged_in = logged_in
+        self.closed = True
+        self.sent_messages: list[tuple[str, str, bytes]] = []
+
+
+class FakeTransport:
+    """Real in-memory :class:`~btx_lib_mail.lib_mail.Transport` double.
+
+    Injected via the ``transport`` seam instead of monkeypatching ``smtplib``,
+    so orchestration tests (failover order, resolved STARTTLS/credentials, which
+    host each recipient reached) assert against captured data. Actual socket,
+    TLS, and BDAT/DATA wire behaviour is covered separately by the real-server
+    e2e tests in ``test_streaming.py``.
+    """
+
+    created: list[_RecordedDelivery] = []
+    init_calls: list[tuple[str, int, float | None]] = []
     fail_on_send: set[str] = set()
     fail_on_init: set[str] = set()
     send_attempts: list[str] = []
 
-    def __init__(self, host: str, *, port: int | None = None, timeout: float | None = None) -> None:
-        self.host = host
-        self.port = port
-        self.timeout = timeout
-        self.started_tls = False
-        self.starttls_context: Any = None
-        self.logged_in: tuple[str, str] | None = None
-        self.sent_messages: list[tuple[str, str, str]] = []
-        self.closed = False
-        RecordingSMTP.init_calls.append((host, port, timeout))
-        if host in RecordingSMTP.fail_on_init:
+    def deliver(
+        self,
+        *,
+        host: str,
+        sender: str,
+        recipient: str,
+        message: IO[bytes],
+        delivery: Any,  # noqa: ANN401 - lib_mail.DeliveryOptions, kept loose for the double
+    ) -> None:
+        hostname, port = lib_mail._parse_smtp_host(host)
+        FakeTransport.init_calls.append((hostname, port or 0, delivery.timeout))
+        # A host in fail_on_init never establishes a connection, so it records no
+        # send attempt (matches a real connect failure feeding host failover).
+        if hostname in FakeTransport.fail_on_init or host in FakeTransport.fail_on_init:
             raise ConnectionError("initialisation failed")
-
-    def __enter__(self) -> "RecordingSMTP":
-        RecordingSMTP.created.append(self)
-        return self
-
-    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
-        self.closed = True
-
-    def starttls(self, *, context: Any) -> None:  # noqa: ANN401 - test helper
-        self.started_tls = True
-        self.starttls_context = context
-
-    def login(self, username: str, password: str) -> None:
-        self.logged_in = (username, password)
-
-    def sendmail(self, from_addr: str, to_addr: str, message: str) -> None:
-        RecordingSMTP.send_attempts.append(self.host)
-        if self.host in RecordingSMTP.fail_on_send:
+        FakeTransport.send_attempts.append(host)
+        record = _RecordedDelivery(
+            host=hostname,
+            port=port or 0,
+            timeout=delivery.timeout,
+            started_tls=delivery.use_starttls,
+            starttls_verify=delivery.starttls_verify,
+            logged_in=delivery.credentials,
+        )
+        FakeTransport.created.append(record)
+        if hostname in FakeTransport.fail_on_send or host in FakeTransport.fail_on_send:
             raise RuntimeError("boom")
-        self.sent_messages.append((from_addr, to_addr, message))
+        message.seek(0)
+        record.sent_messages.append((sender, recipient, message.read()))
 
     @classmethod
     def reset(cls) -> None:
@@ -167,10 +202,10 @@ class RecordingSMTP:
         cls.send_attempts = []
 
 
-def _install_recording_smtp(monkeypatch: pytest.MonkeyPatch) -> type[RecordingSMTP]:
-    RecordingSMTP.reset()
-    monkeypatch.setattr(lib_mail.smtplib, "SMTP", RecordingSMTP)
-    return RecordingSMTP
+def _install_fake_transport(monkeypatch: pytest.MonkeyPatch) -> type[FakeTransport]:
+    FakeTransport.reset()
+    monkeypatch.setattr(lib_mail, "_DEFAULT_TRANSPORT", FakeTransport())
+    return FakeTransport
 
 
 @pytest.mark.os_agnostic
@@ -194,7 +229,7 @@ def test_when_missing_attachments_are_allowed_a_warning_is_logged(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    recorder = _install_recording_smtp(monkeypatch)
+    recorder = _install_fake_transport(monkeypatch)
     caplog.set_level("WARNING")
     ghost = tmp_path / "ghost.txt"
 
@@ -241,7 +276,7 @@ def test_when_invalid_recipients_are_tolerated_a_warning_is_emitted(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    recorder = _install_recording_smtp(monkeypatch)
+    recorder = _install_fake_transport(monkeypatch)
     caplog.set_level("WARNING")
     lib_mail.conf.raise_on_invalid_recipient = False
 
@@ -271,7 +306,7 @@ def test_when_every_recipient_is_invalid_the_call_still_fails() -> None:
 
 
 def test_send_handles_utf8_and_credentials(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
-    _install_recording_smtp(monkeypatch)
+    _install_fake_transport(monkeypatch)
     attachment = tmp_path / "document.txt"
     attachment.write_text("payload", encoding="utf-8")
 
@@ -290,23 +325,29 @@ def test_send_handles_utf8_and_credentials(monkeypatch: pytest.MonkeyPatch, tmp_
     )
 
     assert result is True
-    instance = RecordingSMTP.created[0]
+    instance = FakeTransport.created[0]
     assert instance.started_tls is True
     assert instance.logged_in == ("user", "pass")
     assert instance.closed is True
     sent = instance.sent_messages[0]
-    parsed_message = message_from_string(sent[2], policy=default_policy)
+    # The wire message is now raw bytes streamed from the spool, not a str.
+    parsed_message = message_from_bytes(sent[2], policy=default_policy)
     assert isinstance(parsed_message, EmailMessage)
-    parts = list(parsed_message.iter_parts())
-    plain_part = parts[0]
-    html_part = parts[1]
-    plain_payload = plain_part.get_payload(decode=True)
-    html_payload = html_part.get_payload(decode=True)
-    assert isinstance(plain_payload, (bytes, bytearray))
-    assert isinstance(html_payload, (bytes, bytearray))
-    assert "Grüße 😊" in plain_payload.decode("utf-8")
-    assert "Grüße 😊" in html_payload.decode("utf-8")
-    assert RecordingSMTP.init_calls[0] == ("smtp.example.com", 2525, 12.5)
+    plain_payload: bytes | None = None
+    html_payload: bytes | None = None
+    attachment_names: list[str] = []
+    for part in parsed_message.walk():
+        filename = part.get_filename()
+        if filename:
+            attachment_names.append(filename)
+        elif part.get_content_type() == "text/plain":
+            plain_payload = cast("bytes | None", part.get_payload(decode=True))
+        elif part.get_content_type() == "text/html":
+            html_payload = cast("bytes | None", part.get_payload(decode=True))
+    assert plain_payload is not None and "Grüße 😊" in plain_payload.decode("utf-8")
+    assert html_payload is not None and "Grüße 😊" in html_payload.decode("utf-8")
+    assert "document.txt" in attachment_names
+    assert FakeTransport.init_calls[0] == ("smtp.example.com", 2525, 12.5)
 
 
 @pytest.mark.os_agnostic
@@ -316,7 +357,7 @@ def test_conf_starttls_verify_defaults_to_true() -> None:
 
 @pytest.mark.os_agnostic
 def test_starttls_uses_a_verifying_context_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    recorder = _install_recording_smtp(monkeypatch)
+    recorder = _install_fake_transport(monkeypatch)
 
     lib_mail.send(
         mail_from="sender@example.com",
@@ -327,14 +368,14 @@ def test_starttls_uses_a_verifying_context_by_default(monkeypatch: pytest.Monkey
         use_starttls=True,
     )
 
-    context = recorder.created[0].starttls_context
-    assert context.check_hostname is True
-    assert context.verify_mode == ssl.CERT_REQUIRED
+    delivered = recorder.created[0]
+    assert delivered.started_tls is True
+    assert delivered.starttls_verify is True
 
 
 @pytest.mark.os_agnostic
 def test_starttls_can_skip_certificate_verification(monkeypatch: pytest.MonkeyPatch) -> None:
-    recorder = _install_recording_smtp(monkeypatch)
+    recorder = _install_fake_transport(monkeypatch)
 
     lib_mail.send(
         mail_from="sender@example.com",
@@ -348,14 +389,12 @@ def test_starttls_can_skip_certificate_verification(monkeypatch: pytest.MonkeyPa
 
     instance = recorder.created[0]
     assert instance.started_tls is True
-    context = instance.starttls_context
-    assert context.check_hostname is False
-    assert context.verify_mode == ssl.CERT_NONE
+    assert instance.starttls_verify is False
 
 
 @pytest.mark.os_agnostic
 def test_starttls_verify_falls_back_to_conf(monkeypatch: pytest.MonkeyPatch) -> None:
-    recorder = _install_recording_smtp(monkeypatch)
+    recorder = _install_fake_transport(monkeypatch)
     lib_mail.conf.smtp_starttls_verify = False
 
     lib_mail.send(
@@ -367,13 +406,25 @@ def test_starttls_verify_falls_back_to_conf(monkeypatch: pytest.MonkeyPatch) -> 
         use_starttls=True,
     )
 
-    context = recorder.created[0].starttls_context
+    assert recorder.created[0].starttls_verify is False
+
+
+@pytest.mark.os_agnostic
+def test_build_starttls_context_verifies_by_default() -> None:
+    context = lib_mail._build_starttls_context(verify=True)
+    assert context.check_hostname is True
+    assert context.verify_mode == ssl.CERT_REQUIRED
+
+
+@pytest.mark.os_agnostic
+def test_build_starttls_context_can_disable_verification() -> None:
+    context = lib_mail._build_starttls_context(verify=False)
     assert context.check_hostname is False
     assert context.verify_mode == ssl.CERT_NONE
 
 
 def test_send_attempts_next_host_on_failure(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
-    recorder = _install_recording_smtp(monkeypatch)
+    recorder = _install_fake_transport(monkeypatch)
     recorder.fail_on_init = {"primary.example.com"}
 
     lib_mail.conf.smtp_use_starttls = False
@@ -392,7 +443,7 @@ def test_send_attempts_next_host_on_failure(monkeypatch: pytest.MonkeyPatch, cap
 
 
 def test_send_raises_when_all_hosts_fail(monkeypatch: pytest.MonkeyPatch) -> None:
-    recorder = _install_recording_smtp(monkeypatch)
+    recorder = _install_fake_transport(monkeypatch)
     recorder.fail_on_send = {"fail.example.com"}
 
     with pytest.raises(RuntimeError):
@@ -482,7 +533,7 @@ def test_when_conf_timeout_assigned_negative_it_rejects() -> None:
 
 @pytest.mark.os_agnostic
 def test_when_explicit_timeout_is_negative_the_send_call_rejects(monkeypatch: pytest.MonkeyPatch) -> None:
-    _install_recording_smtp(monkeypatch)
+    _install_fake_transport(monkeypatch)
     with pytest.raises(ValueError, match="smtp_timeout must be positive"):
         lib_mail.send(
             mail_from="sender@example.com",
@@ -500,7 +551,7 @@ def test_when_explicit_timeout_is_negative_the_send_call_rejects(monkeypatch: py
 
 @pytest.mark.os_agnostic
 def test_when_port_is_zero_the_send_call_rejects(monkeypatch: pytest.MonkeyPatch) -> None:
-    _install_recording_smtp(monkeypatch)
+    _install_fake_transport(monkeypatch)
     with pytest.raises(ValueError, match="port must be 1-65535"):
         lib_mail.send(
             mail_from="sender@example.com",
@@ -512,7 +563,7 @@ def test_when_port_is_zero_the_send_call_rejects(monkeypatch: pytest.MonkeyPatch
 
 @pytest.mark.os_agnostic
 def test_when_port_exceeds_65535_the_send_call_rejects(monkeypatch: pytest.MonkeyPatch) -> None:
-    _install_recording_smtp(monkeypatch)
+    _install_fake_transport(monkeypatch)
     with pytest.raises(ValueError, match="port must be 1-65535"):
         lib_mail.send(
             mail_from="sender@example.com",
@@ -524,7 +575,7 @@ def test_when_port_exceeds_65535_the_send_call_rejects(monkeypatch: pytest.Monke
 
 @pytest.mark.os_agnostic
 def test_when_port_is_valid_it_passes_through(monkeypatch: pytest.MonkeyPatch) -> None:
-    recorder = _install_recording_smtp(monkeypatch)
+    recorder = _install_fake_transport(monkeypatch)
     lib_mail.send(
         mail_from="sender@example.com",
         mail_recipients="recipient@example.com",
@@ -681,13 +732,13 @@ def test_validate_smtp_host_rejects_ipv6_port_out_of_range() -> None:
 
 
 # ---------------------------------------------------------------------------
-# IPv6 delivery integration (via _parse_smtp_host -> RecordingSMTP)
+# IPv6 delivery integration (via _parse_smtp_host -> FakeTransport)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.os_agnostic
 def test_ipv6_host_with_port_parses_for_delivery(monkeypatch: pytest.MonkeyPatch) -> None:
-    recorder = _install_recording_smtp(monkeypatch)
+    recorder = _install_fake_transport(monkeypatch)
     lib_mail.send(
         mail_from="sender@example.com",
         mail_recipients="recipient@example.com",
@@ -699,7 +750,7 @@ def test_ipv6_host_with_port_parses_for_delivery(monkeypatch: pytest.MonkeyPatch
 
 @pytest.mark.os_agnostic
 def test_ipv6_host_without_port_parses_for_delivery(monkeypatch: pytest.MonkeyPatch) -> None:
-    recorder = _install_recording_smtp(monkeypatch)
+    recorder = _install_fake_transport(monkeypatch)
     lib_mail.send(
         mail_from="sender@example.com",
         mail_recipients="recipient@example.com",
@@ -790,7 +841,7 @@ class TestPathTraversalPrevention:
 
     @pytest.mark.os_agnostic
     def test_path_with_dotdot_is_rejected(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        _install_recording_smtp(monkeypatch)
+        _install_fake_transport(monkeypatch)
         # Create a file to attach
         safe_file = tmp_path / "safe.txt"
         safe_file.write_text("content")
@@ -806,7 +857,7 @@ class TestPathTraversalPrevention:
 
     @pytest.mark.os_agnostic
     def test_path_without_traversal_is_allowed(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        _install_recording_smtp(monkeypatch)
+        _install_fake_transport(monkeypatch)
         safe_file = tmp_path / "safe.txt"
         safe_file.write_text("content")
 
@@ -827,7 +878,7 @@ class TestSymlinkHandling:
 
     @pytest.mark.os_agnostic
     def test_symlink_is_rejected_by_default(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        _install_recording_smtp(monkeypatch)
+        _install_fake_transport(monkeypatch)
         real_file = tmp_path / "real.txt"
         real_file.write_text("content")
         symlink_file = tmp_path / "link.txt"
@@ -845,7 +896,7 @@ class TestSymlinkHandling:
 
     @pytest.mark.os_agnostic
     def test_symlink_is_allowed_when_enabled(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        _install_recording_smtp(monkeypatch)
+        _install_fake_transport(monkeypatch)
         real_file = tmp_path / "real.txt"
         real_file.write_text("content")
         symlink_file = tmp_path / "link.txt"
@@ -869,7 +920,7 @@ class TestExtensionBlocking:
 
     @pytest.mark.os_agnostic
     def test_blocked_extension_raises_by_default(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        _install_recording_smtp(monkeypatch)
+        _install_fake_transport(monkeypatch)
         # Use .js which is blocked on both POSIX and Windows
         script_file = tmp_path / "malicious.js"
         script_file.write_text("console.log('pwned')")
@@ -886,7 +937,7 @@ class TestExtensionBlocking:
 
     @pytest.mark.os_agnostic
     def test_allowed_extension_passes_whitelist_mode(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        _install_recording_smtp(monkeypatch)
+        _install_fake_transport(monkeypatch)
         pdf_file = tmp_path / "document.pdf"
         pdf_file.write_bytes(b"%PDF-1.4 fake pdf content")
 
@@ -903,7 +954,7 @@ class TestExtensionBlocking:
 
     @pytest.mark.os_agnostic
     def test_non_allowed_extension_fails_whitelist_mode(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        _install_recording_smtp(monkeypatch)
+        _install_fake_transport(monkeypatch)
         doc_file = tmp_path / "document.docx"
         doc_file.write_bytes(b"fake docx content")
 
@@ -924,7 +975,7 @@ class TestDirectoryBlocking:
 
     @pytest.mark.os_agnostic
     def test_blocked_directory_raises(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        _install_recording_smtp(monkeypatch)
+        _install_fake_transport(monkeypatch)
         blocked_dir = tmp_path / "blocked"
         blocked_dir.mkdir()
         blocked_file = blocked_dir / "document.txt"
@@ -943,7 +994,7 @@ class TestDirectoryBlocking:
 
     @pytest.mark.os_agnostic
     def test_allowed_directory_whitelist_mode(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        _install_recording_smtp(monkeypatch)
+        _install_fake_transport(monkeypatch)
         allowed_dir = tmp_path / "allowed"
         allowed_dir.mkdir()
         allowed_file = allowed_dir / "document.txt"
@@ -962,7 +1013,7 @@ class TestDirectoryBlocking:
 
     @pytest.mark.os_agnostic
     def test_non_allowed_directory_fails_whitelist_mode(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        _install_recording_smtp(monkeypatch)
+        _install_fake_transport(monkeypatch)
         allowed_dir = tmp_path / "allowed"
         allowed_dir.mkdir()
         other_dir = tmp_path / "other"
@@ -987,7 +1038,7 @@ class TestSizeLimit:
 
     @pytest.mark.os_agnostic
     def test_oversized_attachment_raises(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        _install_recording_smtp(monkeypatch)
+        _install_fake_transport(monkeypatch)
         large_file = tmp_path / "large.txt"
         large_file.write_bytes(b"x" * 1000)  # 1000 bytes
 
@@ -1005,7 +1056,7 @@ class TestSizeLimit:
 
     @pytest.mark.os_agnostic
     def test_small_attachment_passes(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        _install_recording_smtp(monkeypatch)
+        _install_fake_transport(monkeypatch)
         small_file = tmp_path / "small.txt"
         small_file.write_bytes(b"x" * 100)
 
@@ -1027,7 +1078,7 @@ class TestSensitivePatterns:
 
     @pytest.mark.os_agnostic
     def test_ssh_key_path_is_blocked(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        _install_recording_smtp(monkeypatch)
+        _install_fake_transport(monkeypatch)
         ssh_dir = tmp_path / ".ssh"
         ssh_dir.mkdir()
         key_file = ssh_dir / "id_rsa"
@@ -1045,7 +1096,7 @@ class TestSensitivePatterns:
 
     @pytest.mark.os_agnostic
     def test_env_file_is_blocked(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        _install_recording_smtp(monkeypatch)
+        _install_fake_transport(monkeypatch)
         env_file = tmp_path / ".env"
         env_file.write_text("SECRET_KEY=supersecret")
 
@@ -1065,7 +1116,7 @@ class TestSecurityViolationWarningMode:
 
     @pytest.mark.os_agnostic
     def test_violation_logs_warning_and_continues(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-        _install_recording_smtp(monkeypatch)
+        _install_fake_transport(monkeypatch)
         caplog.set_level("WARNING")
 
         script_file = tmp_path / "script.sh"
@@ -1094,7 +1145,7 @@ class TestAttachmentSecurityErrorAttributes:
 
     @pytest.mark.os_agnostic
     def test_exception_has_path_and_reason(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        _install_recording_smtp(monkeypatch)
+        _install_fake_transport(monkeypatch)
         # Use .js which is blocked on both POSIX and Windows
         script_file = tmp_path / "script.js"
         script_file.write_text("console.log('test')")
@@ -1176,7 +1227,7 @@ class TestPerCallSecurityOverrides:
 
     @pytest.mark.os_agnostic
     def test_can_override_blocked_extensions_per_call(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        _install_recording_smtp(monkeypatch)
+        _install_fake_transport(monkeypatch)
         script_file = tmp_path / "script.sh"
         script_file.write_text("#!/bin/bash")
 
@@ -1194,7 +1245,7 @@ class TestPerCallSecurityOverrides:
 
     @pytest.mark.os_agnostic
     def test_can_override_size_limit_per_call(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        _install_recording_smtp(monkeypatch)
+        _install_fake_transport(monkeypatch)
         large_file = tmp_path / "large.txt"
         large_file.write_bytes(b"x" * 1000)
 
@@ -1223,7 +1274,7 @@ class TestRaiseOnMissingAttachmentsParameter:
     @pytest.mark.os_agnostic
     def test_parameter_true_raises_when_conf_false(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         """Override to raise even when conf says don't."""
-        _install_recording_smtp(monkeypatch)
+        _install_fake_transport(monkeypatch)
         lib_mail.conf.raise_on_missing_attachments = False
         missing_file = tmp_path / "missing.txt"
 
@@ -1246,7 +1297,7 @@ class TestRaiseOnMissingAttachmentsParameter:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Override to warn even when conf says raise."""
-        recorder = _install_recording_smtp(monkeypatch)
+        recorder = _install_fake_transport(monkeypatch)
         caplog.set_level("WARNING")
         lib_mail.conf.raise_on_missing_attachments = True
         missing_file = tmp_path / "missing.txt"
@@ -1268,7 +1319,7 @@ class TestRaiseOnMissingAttachmentsParameter:
     @pytest.mark.os_agnostic
     def test_parameter_none_uses_conf_default_true(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         """When None, fall back to conf which is True."""
-        _install_recording_smtp(monkeypatch)
+        _install_fake_transport(monkeypatch)
         lib_mail.conf.raise_on_missing_attachments = True
         missing_file = tmp_path / "missing.txt"
 
@@ -1291,7 +1342,7 @@ class TestRaiseOnMissingAttachmentsParameter:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """When None, fall back to conf which is False."""
-        recorder = _install_recording_smtp(monkeypatch)
+        recorder = _install_fake_transport(monkeypatch)
         caplog.set_level("WARNING")
         lib_mail.conf.raise_on_missing_attachments = False
         missing_file = tmp_path / "missing.txt"
@@ -1317,7 +1368,7 @@ class TestRaiseOnInvalidRecipientParameter:
     @pytest.mark.os_agnostic
     def test_parameter_true_raises_when_conf_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Override to raise even when conf says don't."""
-        _install_recording_smtp(monkeypatch)
+        _install_fake_transport(monkeypatch)
         lib_mail.conf.raise_on_invalid_recipient = False
 
         with pytest.raises(ValueError, match="invalid recipient"):
@@ -1336,7 +1387,7 @@ class TestRaiseOnInvalidRecipientParameter:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Override to warn even when conf says raise."""
-        recorder = _install_recording_smtp(monkeypatch)
+        recorder = _install_fake_transport(monkeypatch)
         caplog.set_level("WARNING")
         lib_mail.conf.raise_on_invalid_recipient = True
 
@@ -1355,7 +1406,7 @@ class TestRaiseOnInvalidRecipientParameter:
     @pytest.mark.os_agnostic
     def test_parameter_none_uses_conf_default_true(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """When None, fall back to conf which is True."""
-        _install_recording_smtp(monkeypatch)
+        _install_fake_transport(monkeypatch)
         lib_mail.conf.raise_on_invalid_recipient = True
 
         with pytest.raises(ValueError, match="invalid recipient"):
@@ -1374,7 +1425,7 @@ class TestRaiseOnInvalidRecipientParameter:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """When None, fall back to conf which is False."""
-        recorder = _install_recording_smtp(monkeypatch)
+        recorder = _install_fake_transport(monkeypatch)
         caplog.set_level("WARNING")
         lib_mail.conf.raise_on_invalid_recipient = False
 

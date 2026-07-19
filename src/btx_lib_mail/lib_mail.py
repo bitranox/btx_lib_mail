@@ -18,13 +18,16 @@ configuration flow and delivery flow separated.
 from __future__ import annotations
 
 import sys
+import base64
+import io
+import mimetypes
+import tempfile
+import uuid
 from dataclasses import dataclass
 from enum import Enum
-from email import encoders
-from email.header import Header
-from email.mime.base import MIMEBase
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+from email import policy as email_policy
+from email.generator import BytesGenerator
+from email.message import EmailMessage
 from email.utils import formatdate
 import logging
 import pathlib
@@ -32,7 +35,7 @@ import re
 import smtplib
 import ssl
 from collections.abc import Iterable, Sequence
-from typing import Any, Final, cast
+from typing import IO, Any, Final, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
@@ -267,19 +270,20 @@ class AttachmentSecurityError(Exception):
 class AttachmentPayload:
     """### AttachmentPayload {#lib-mail-attachmentpayload}
 
-    **Purpose:** Preserve the filename and bytes read from disk so MIME
-    rendering remains declarative and reproducible.
+    **Purpose:** Name a validated attachment and point at its source file so the
+    bytes are read only while the message is streamed to the transport, not held
+    in memory from preparation onward.
 
     **Fields:**
-    - `filename: str` — Basename surfaced in the `Content-Disposition` header.
-    - `content: bytes` — UTF-8 agnostic payload already read from disk.
+    - `filename: str` - Basename surfaced in the `Content-Disposition` header.
+    - `source: pathlib.Path` - Validated path whose bytes are read at send time.
 
     Instances are immutable (`frozen=True`) so helpers can rely on their
     stability across retries.
     """
 
     filename: str
-    content: bytes
+    source: pathlib.Path
 
 
 class ConfMail(BaseModel):
@@ -549,6 +553,8 @@ def send(
     # Error handling parameters
     raise_on_missing_attachments: bool | None = None,
     raise_on_invalid_recipient: bool | None = None,
+    # Delivery seam (advanced/testing): override the SMTP transport adapter.
+    transport: Transport | None = None,
 ) -> bool:
     """### send(...) -> bool {#lib-mail-send}
 
@@ -612,17 +618,17 @@ def send(
       lists the affected recipients and host set.
 
     **Example:**
-    >>> from unittest import mock
-    >>> sentinel = mock.MagicMock()
-    >>> _ = mock.patch("smtplib.SMTP", sentinel).start()
+    >>> class _NullTransport:  # a stand-in transport that accepts every message
+    ...     def deliver(self, **kwargs: object) -> None:
+    ...         return None
     >>> conf.smtphosts = ["smtp.example.com"]
     >>> send(
     ...     mail_from="sender@example.com",
     ...     mail_recipients="receiver@example.com",
     ...     mail_subject="Hello",
+    ...     transport=_NullTransport(),
     ... )
     True
-    >>> _ = mock.patch.stopall()
     """
 
     try:
@@ -661,6 +667,8 @@ def send(
         explicit_timeout=timeout,
     )
 
+    active_transport = transport if transport is not None else _DEFAULT_TRANSPORT
+
     failed_recipients: list[str] = []
     for recipient in recipients:
         if not _deliver_to_any_host(
@@ -672,6 +680,7 @@ def send(
             hosts=hosts,
             attachments=attachments,
             delivery=delivery,
+            transport=active_transport,
         ):
             failed_recipients.append(recipient)
 
@@ -839,11 +848,14 @@ def _deliver_to_any_host(
     hosts: tuple[str, ...],
     attachments: tuple[AttachmentPayload, ...],
     delivery: DeliveryOptions,
+    transport: Transport,
 ) -> bool:
     """Attempt delivery across hosts until one succeeds.
 
     Why
-        Encapsulates failover logic to keep orchestration linear.
+        Encapsulates failover logic to keep orchestration linear. The message is
+        composed once into a spooled temp file and reused across host attempts,
+        so a large payload is neither re-rendered per host nor held on the heap.
 
     Inputs
     ------
@@ -855,9 +867,11 @@ def _deliver_to_any_host(
         Attachment payloads prepared earlier.
     delivery:
         Resolved delivery options (credentials, STARTTLS, timeout).
+    transport:
+        Delivery adapter that streams the message to a host.
 
     What
-        Iterates hosts, invoking :func:`_deliver_via_host` until success.
+        Iterates hosts, invoking ``transport.deliver`` until one accepts.
 
     Outputs
     -------
@@ -866,37 +880,45 @@ def _deliver_to_any_host(
 
     Side Effects
     ------------
-    Logs warnings when hosts fail; delegates to :func:`_deliver_via_host`.
+    Composes a spooled message, performs network I/O, logs warnings on failure.
     """
 
-    for host in hosts:
-        try:
-            _deliver_via_host(
-                host=host,
-                sender=sender,
-                recipient=recipient,
-                subject=subject,
-                plain_body=plain_body,
-                html_body=html_body,
-                attachments=attachments,
-                delivery=delivery,
-            )
-            logger.debug(
-                'mail sent to "%s" via host "%s"',
-                recipient,
-                host,
-                extra={"sender": sender, "recipient": recipient, "host": host},
-            )
-            return True
-        except Exception:
-            logger.warning(
-                'can not send mail to "%s" via host "%s"',
-                recipient,
-                host,
-                exc_info=True,
-                extra={"sender": sender, "recipient": recipient, "host": host},
-            )
-    return False
+    spool = _compose_to_spool(
+        sender=sender,
+        recipient=recipient,
+        subject=subject,
+        plain_body=plain_body,
+        html_body=html_body,
+        attachments=attachments,
+    )
+    try:
+        for host in hosts:
+            try:
+                transport.deliver(
+                    host=host,
+                    sender=sender,
+                    recipient=recipient,
+                    message=spool,
+                    delivery=delivery,
+                )
+                logger.debug(
+                    'mail sent to "%s" via host "%s"',
+                    recipient,
+                    host,
+                    extra={"sender": sender, "recipient": recipient, "host": host},
+                )
+                return True
+            except Exception:
+                logger.warning(
+                    'can not send mail to "%s" via host "%s"',
+                    recipient,
+                    host,
+                    exc_info=True,
+                    extra={"sender": sender, "recipient": recipient, "host": host},
+                )
+        return False
+    finally:
+        spool.close()
 
 
 def _build_starttls_context(*, verify: bool) -> ssl.SSLContext:
@@ -937,144 +959,327 @@ def _build_starttls_context(*, verify: bool) -> ssl.SSLContext:
     return context
 
 
-def _deliver_via_host(
+# ---------------------------------------------------------------------------
+# Transport port and streamed SMTP adapter
+# ---------------------------------------------------------------------------
+
+
+# Bytes read from the spooled message per socket write. Bounds peak delivery
+# memory to roughly one chunk rather than the whole payload.
+_STREAM_CHUNK_SIZE: Final[int] = 64 * 1024
+
+
+class Transport(Protocol):
+    """### Transport {#lib-mail-transport}
+
+    **Purpose:** Delivery seam that decouples failover orchestration from the
+    concrete SMTP wire protocol, so an alternative transport (or a test double)
+    is injected rather than monkeypatched over :mod:`smtplib`.
+
+    An implementation delivers one already-composed message to one recipient via
+    one host and raises on any failure so the caller can fall over to the next
+    host.
+    """
+
+    def deliver(
+        self,
+        *,
+        host: str,
+        sender: str,
+        recipient: str,
+        message: IO[bytes],
+        delivery: DeliveryOptions,
+    ) -> None:
+        """Deliver ``message`` (a rewindable byte stream) to ``recipient`` via ``host``."""
+        ...
+
+
+class SmtplibTransport:
+    """### SmtplibTransport {#lib-mail-smtplibtransport}
+
+    **Purpose:** Production :class:`Transport` that streams the message to the
+    server over :mod:`smtplib` chunk by chunk instead of buffering the whole
+    payload. When the server advertises ``CHUNKING`` (RFC 3030) it frames the
+    body with ``BDAT``; otherwise it drives the classic ``DATA`` phase with
+    incremental dot-stuffing. Either way peak transfer memory is ~one chunk.
+    """
+
+    def deliver(
+        self,
+        *,
+        host: str,
+        sender: str,
+        recipient: str,
+        message: IO[bytes],
+        delivery: DeliveryOptions,
+    ) -> None:
+        hostname, port = _parse_smtp_host(host)
+        with smtplib.SMTP(hostname, port=port or 0, timeout=delivery.timeout) as smtp_connection:
+            smtp_connection.ehlo_or_helo_if_needed()
+            if delivery.use_starttls:
+                smtp_connection.starttls(context=_build_starttls_context(verify=delivery.starttls_verify))
+                # RFC 3207: server capabilities must be re-fetched after TLS.
+                smtp_connection.ehlo()
+            if delivery.credentials is not None:
+                username, password = delivery.credentials
+                smtp_connection.login(username, password)
+            smtp_connection.ehlo_or_helo_if_needed()
+
+            message.seek(0)
+            if smtp_connection.has_extn("chunking"):
+                _send_via_bdat(smtp_connection, sender, recipient, message)
+            else:
+                _send_via_data(smtp_connection, sender, recipient, message)
+
+
+def _require_socket(smtp_connection: smtplib.SMTP) -> Any:
+    """Return the live socket, or raise if the connection was never established."""
+    sock = smtp_connection.sock
+    if sock is None:  # pragma: no cover - smtplib sets sock once connected
+        raise smtplib.SMTPServerDisconnected("connection unexpectedly closed")
+    return sock
+
+
+def _open_envelope(smtp_connection: smtplib.SMTP, sender: str, recipient: str) -> None:
+    """Issue MAIL FROM / RCPT TO, raising on rejection (shared by DATA and BDAT)."""
+    code, resp = smtp_connection.mail(sender)
+    if code != 250:
+        raise smtplib.SMTPSenderRefused(code, resp, sender)
+    code, resp = smtp_connection.rcpt(recipient)
+    if code not in (250, 251):
+        raise smtplib.SMTPRecipientsRefused({recipient: (code, resp)})
+
+
+def _send_via_data(smtp_connection: smtplib.SMTP, sender: str, recipient: str, message: IO[bytes]) -> None:
+    """Stream the message through the classic DATA phase with incremental dot-stuffing."""
+    _open_envelope(smtp_connection, sender, recipient)
+    code, resp = smtp_connection.docmd("DATA")
+    if code != 354:
+        raise smtplib.SMTPDataError(code, resp)
+
+    sock = _require_socket(smtp_connection)
+    stuffer = _DotStuffer()
+    tail = b""
+    while True:
+        chunk = message.read(_STREAM_CHUNK_SIZE)
+        if not chunk:
+            break
+        sock.sendall(stuffer.feed(chunk))
+        tail = chunk[-2:] if len(chunk) >= 2 else (tail + chunk)[-2:]
+    # End the DATA phase with a lone "." line, guaranteeing exactly one CRLF
+    # before it so we neither merge into the final body line nor add a blank one.
+    if tail[-2:] != b"\r\n":
+        sock.sendall(b"\r\n")
+    sock.sendall(b".\r\n")
+    code, resp = smtp_connection.getreply()
+    if code != 250:
+        raise smtplib.SMTPDataError(code, resp)
+
+
+def _send_via_bdat(smtp_connection: smtplib.SMTP, sender: str, recipient: str, message: IO[bytes]) -> None:
+    """Stream the message as RFC 3030 BDAT chunks (length-prefixed, no dot-stuffing)."""
+    _open_envelope(smtp_connection, sender, recipient)
+    sock = _require_socket(smtp_connection)
+    while True:
+        chunk = message.read(_STREAM_CHUNK_SIZE)
+        if not chunk:
+            break
+        sock.sendall(b"BDAT " + str(len(chunk)).encode("ascii") + b"\r\n" + chunk)
+        code, resp = smtp_connection.getreply()
+        if code != 250:
+            raise smtplib.SMTPDataError(code, resp)
+    sock.sendall(b"BDAT 0 LAST\r\n")
+    code, resp = smtp_connection.getreply()
+    if code != 250:
+        raise smtplib.SMTPDataError(code, resp)
+
+
+# Default production transport; `send` uses it unless a transport is injected.
+_DEFAULT_TRANSPORT: Final[Transport] = SmtplibTransport()
+
+
+# Message assembly spills to disk above this threshold so a large message never
+# has to fit in memory as one contiguous string.
+_SPOOL_MAX_SIZE: Final[int] = 1024 * 1024  # 1 MiB
+
+
+def _guess_attachment_mimetype(filename: str) -> tuple[str, str]:
+    """Return the ``(maintype, subtype)`` Content-Type for an attachment name.
+
+    Why
+        A specific Content-Type helps the receiving client render the
+        attachment; an unrecognised extension falls back to the generic binary
+        type so delivery never fails on an unknown name.
+    """
+    guessed, _encoding = mimetypes.guess_type(filename)
+    if guessed is None:
+        return "application", "octet-stream"
+    maintype, _slash, subtype = guessed.partition("/")
+    return maintype, subtype or "octet-stream"
+
+
+def _compose_to_spool(
     *,
-    host: str,
     sender: str,
     recipient: str,
     subject: str,
     plain_body: str,
     html_body: str,
     attachments: tuple[AttachmentPayload, ...],
-    delivery: DeliveryOptions,
-) -> None:
-    """Deliver a message through a specific SMTP host.
+) -> IO[bytes]:
+    """Assemble the message into a rewound, CRLF-encoded spooled temp file.
 
     Why
-        Encapsulates the SMTP session lifecycle (connect → starttls → login →
-        send).
-
-    Inputs
-    ------
-    host:
-        Host string containing hostname and optional port.
-    sender / recipient / subject / plain_body / html_body / attachments:
-        Message attributes to deliver.
-    delivery:
-        Resolved options controlling STARTTLS, credentials, timeout.
-
-    What
-        Opens an SMTP session, applies STARTTLS/login as needed, and sends the message.
+        Serialising into a ``SpooledTemporaryFile`` (in memory below
+        ``_SPOOL_MAX_SIZE``, on disk above it) keeps the fully rendered message
+        off the heap so delivery can stream it to the socket in bounded chunks
+        instead of buffering the whole payload. ``email.policy.SMTP`` yields RFC
+        5321 CRLF line endings on the wire, so the DATA and BDAT senders only add
+        transfer framing and never re-encode the body.
 
     Outputs
     -------
-    None
+    IO[bytes]
+        Spooled file positioned at offset 0, holding the complete message.
 
     Side Effects
     ------------
-    Network I/O, optional STARTTLS handshake, optional authentication.
+    Reads each attachment's bytes from disk in chunks; may create a temp file.
     """
 
-    hostname, port = _parse_smtp_host(host)
-    with smtplib.SMTP(hostname, port=port or 0, timeout=delivery.timeout) as smtp_connection:
-        if delivery.use_starttls:
-            smtp_connection.starttls(context=_build_starttls_context(verify=delivery.starttls_verify))
-        if delivery.credentials is not None:
-            username, password = delivery.credentials
-            smtp_connection.login(username, password)
+    spool = cast("IO[bytes]", tempfile.SpooledTemporaryFile(max_size=_SPOOL_MAX_SIZE))
+    body_message = _build_body_message(plain_body, html_body)
 
-        message = _compose_message(
-            sender=sender,
-            recipient=recipient,
-            subject=subject,
-            plain_body=plain_body,
-            html_body=html_body,
-            attachments=attachments,
-        )
-        smtp_connection.sendmail(sender, recipient, message)
+    if not attachments:
+        # No attachments: the body message itself is the whole message, so give
+        # it the envelope headers and flatten it directly (it is small).
+        body_message["Subject"] = subject
+        body_message["From"] = sender
+        body_message["To"] = recipient
+        body_message["Date"] = formatdate(localtime=True)
+        BytesGenerator(spool, policy=email_policy.SMTP).flatten(body_message)
+        spool.seek(0)
+        return spool
 
+    # With attachments: hand-write a multipart/mixed so each attachment's base64
+    # is streamed from disk instead of held in an in-memory message part.
+    boundary = f"==============={uuid.uuid4().hex}=="
+    outer = EmailMessage()
+    outer["Subject"] = subject
+    outer["From"] = sender
+    outer["To"] = recipient
+    outer["Date"] = formatdate(localtime=True)
+    outer["MIME-Version"] = "1.0"
+    outer["Content-Type"] = f'multipart/mixed; boundary="{boundary}"'
 
-def _compose_message(
-    *,
-    sender: str,
-    recipient: str,
-    subject: str,
-    plain_body: str,
-    html_body: str,
-    attachments: tuple[AttachmentPayload, ...],
-) -> str:
-    """Construct the MIME message string for the SMTP session.
-
-    Why
-        Provides a single location for header and body assembly.
-
-    Inputs
-    ------
-    sender / recipient / subject:
-        Header values.
-    plain_body / html_body:
-        Optional body content.
-    attachments:
-        Prepared attachment payloads.
-
-    What
-        Builds a multipart message consistent with SMTP expectations.
-
-    Outputs
-    -------
-    str
-        UTF-8 encoded message returned via ``as_string()``.
-
-    Side Effects
-    ------------
-    None.
-    """
-
-    message = MIMEMultipart()
-    message["Subject"] = Header(subject, "utf-8").encode()
-    message["From"] = sender
-    message["To"] = recipient
-    message["Date"] = formatdate(localtime=True)
-
-    if plain_body:
-        message.attach(MIMEText(plain_body, "plain", "utf-8"))
-    if html_body:
-        message.attach(MIMEText(html_body, "html", "utf-8"))
+    delimiter = b"--" + boundary.encode("ascii") + b"\r\n"
+    spool.write(_header_block(outer))
+    # First body part: the (small) text/alternative message, headers and all.
+    spool.write(delimiter)
+    spool.write(_flatten_message(body_message))
+    spool.write(b"\r\n")
     for attachment in attachments:
-        message.attach(_render_attachment(attachment))
+        spool.write(delimiter)
+        _write_attachment_part(spool, attachment)
+    spool.write(b"--" + boundary.encode("ascii") + b"--\r\n")
+    spool.seek(0)
+    return spool
 
-    return message.as_string()
+
+def _build_body_message(plain_body: str, html_body: str) -> EmailMessage:
+    """Build the text/alternative body part (no envelope headers, no attachments)."""
+    message = EmailMessage()
+    if plain_body and html_body:
+        message.set_content(plain_body)
+        message.add_alternative(html_body, subtype="html")
+    elif html_body:
+        message.set_content(html_body, subtype="html")
+    else:
+        message.set_content(plain_body)
+    return message
 
 
-def _render_attachment(attachment: AttachmentPayload) -> MIMEBase:
-    """Wrap an :class:`AttachmentPayload` as a MIME part.
+def _header_block(message: EmailMessage) -> bytes:
+    """Serialise a message's headers to CRLF bytes, terminated by a blank line."""
+    out = bytearray()
+    for name, value in message.items():
+        out += email_policy.SMTP.fold_binary(name, value)
+    out += b"\r\n"
+    return bytes(out)
+
+
+def _flatten_message(message: EmailMessage) -> bytes:
+    """Serialise a whole (small) message to CRLF bytes via the SMTP policy."""
+    buffer = io.BytesIO()
+    BytesGenerator(buffer, policy=email_policy.SMTP).flatten(message)
+    return buffer.getvalue()
+
+
+def _write_attachment_part(spool: IO[bytes], attachment: AttachmentPayload) -> None:
+    """Write one base64 attachment part, streaming its bytes from disk in chunks.
 
     Why
-        Keeps MIME encoding concerns isolated from core assembly.
+        Encoding the file incrementally (57 raw bytes per 76-char base64 line,
+        read in a large multiple so whole lines are emitted per chunk) keeps peak
+        memory at roughly one chunk instead of the full attachment plus its
+        base64 expansion.
+    """
+    maintype, subtype = _guess_attachment_mimetype(attachment.filename)
+    part_headers = EmailMessage()
+    part_headers["Content-Type"] = f"{maintype}/{subtype}"
+    part_headers["Content-Transfer-Encoding"] = "base64"
+    part_headers.add_header("Content-Disposition", "attachment", filename=attachment.filename)
+    spool.write(_header_block(part_headers))
 
-    Inputs
-    ------
-    attachment:
-        Frozen payload harvested from disk.
+    # 57 decoded bytes -> one 76-char base64 line; a large multiple keeps each
+    # read aligned to whole lines so chunk encodings concatenate cleanly.
+    raw_chunk = 57 * 1024
+    with attachment.source.open("rb") as handle:
+        while True:
+            chunk = handle.read(raw_chunk)
+            if not chunk:
+                break
+            spool.write(base64.encodebytes(chunk).replace(b"\n", b"\r\n"))
+    spool.write(b"\r\n")
+
+
+# ---------------------------------------------------------------------------
+# Streamed delivery: DATA-phase dot-stuffing
+# ---------------------------------------------------------------------------
+
+
+class _DotStuffer:
+    """Incrementally SMTP-dot-stuff a CRLF byte stream for the DATA phase.
+
+    Why
+        RFC 5321 section 4.5.2 requires that a line beginning with ``.`` be
+        transmitted as ``..`` so the single-dot line stays reserved as the
+        end-of-data marker. When the message is streamed in fixed-size chunks a
+        line boundary (and therefore the leading dot to protect) can fall on any
+        chunk edge, so the transform must remember whether the next byte starts
+        a fresh line across ``feed`` calls rather than re-scanning whole lines.
 
     What
-        Encodes bytes and sets headers so the part can be attached.
-
-    Outputs
-    -------
-    MIMEBase
-        Base64-encoded part ready for ``message.attach``.
-
-    Side Effects
-    ------------
-    None.
+        Assumes the input already uses CRLF line endings (the caller serialises
+        with :class:`email.policy.SMTP`); only period doubling is applied here.
     """
 
-    part = MIMEBase("application", "octet-stream")
-    part.set_payload(attachment.content)
-    encoders.encode_base64(part)
-    part.add_header("Content-Disposition", f'attachment; filename="{attachment.filename}"')
-    return part
+    def __init__(self) -> None:
+        # The DATA payload begins at the start of a line, so the first byte is a
+        # candidate for doubling.
+        self._at_line_start = True
+
+    def feed(self, chunk: bytes) -> bytes:
+        """Return ``chunk`` with any line-leading ``.`` doubled."""
+        out = bytearray()
+        at_line_start = self._at_line_start
+        for byte in chunk:
+            if at_line_start and byte == 0x2E:  # ord(".")
+                out.append(0x2E)
+            out.append(byte)
+            at_line_start = byte == 0x0A  # ord("\n"): the byte after LF starts a line
+        self._at_line_start = at_line_start
+        return bytes(out)
 
 
 # ---------------------------------------------------------------------------
@@ -1431,11 +1636,12 @@ def _prepare_attachments(
             )
             continue
 
-        # Read and prepare the attachment
+        # Record the validated path; bytes are read later while streaming so a
+        # large attachment never sits fully in memory from here to delivery.
         prepared.append(
             AttachmentPayload(
                 filename=validated_path.name,
-                content=validated_path.read_bytes(),
+                source=validated_path,
             )
         )
 

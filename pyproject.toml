@@ -60,7 +60,12 @@ dev = [
   "pip-audit>=2.10.1",
   "textual>=8.2.8",
   "import-linter>=2.13",
-  "rtoml>=0.13.0"
+  "rtoml>=0.13.0",
+  # Real in-process SMTP server for streamed-delivery e2e tests (DATA path stock,
+  # BDAT/CHUNKING via a small subclass); test-only, never imported by the library.
+  "aiosmtpd>=1.4.6",
+  # Generates a throwaway self-signed cert for the STARTTLS+AUTH e2e test; test-only.
+  "cryptography>=44.0.0"
 ]
 
 [project.scripts]
