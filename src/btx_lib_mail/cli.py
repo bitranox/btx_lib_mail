@@ -711,6 +711,12 @@ def cli_hello() -> None:
     default=None,
     help="Force STARTTLS negotiation (overrides environment).",
 )
+@option(
+    "--starttls-verify/--no-starttls-verify",
+    "starttls_verify",
+    default=None,
+    help="Verify the server certificate during STARTTLS (default: verify). Use --no-starttls-verify for internal self-signed relays.",
+)
 @option("--username", help="SMTP username.")
 @option("--password", help="SMTP password.")
 @option(
@@ -773,6 +779,7 @@ def cli_send_mail(
     html_body: str | None,
     attachments: Sequence[Path],
     starttls: bool | None,
+    starttls_verify: bool | None,
     username: str | None,
     password: str | None,
     timeout: float | None,
@@ -802,6 +809,10 @@ def cli_send_mail(
     - `attachments: Sequence[Path]` — Zero or more filesystem paths to attach.
     - `starttls: bool | None` — Override for STARTTLS preference. When `None`,
       falls back to configuration/environment.
+    - `starttls_verify: bool | None` — Override for STARTTLS certificate
+      verification. When `None`, falls back to `BTX_MAIL_SMTP_STARTTLS_VERIFY`
+      or `conf.smtp_starttls_verify`. `--no-starttls-verify` keeps encryption
+      but skips certificate validation for internal self-signed relays.
     - `username: str | None`, `password: str | None` — Optional credentials.
       Both are required to enable authentication.
     - `timeout: float | None` — Optional socket timeout override in seconds.
@@ -819,6 +830,7 @@ def cli_send_mail(
     username_value = username or _configured_value("BTX_MAIL_SMTP_USERNAME")
     password_value = password or _configured_value("BTX_MAIL_SMTP_PASSWORD")
     use_starttls = _resolve_bool(starttls, "BTX_MAIL_SMTP_USE_STARTTLS", default=conf.smtp_use_starttls)
+    starttls_verify_value = _resolve_bool(starttls_verify, "BTX_MAIL_SMTP_STARTTLS_VERIFY", default=conf.smtp_starttls_verify)
     credentials = _resolve_credentials(username_value, password_value)
     timeout_value = _resolve_float(timeout, "BTX_MAIL_SMTP_TIMEOUT", default=conf.smtp_timeout)
 
@@ -841,6 +853,7 @@ def cli_send_mail(
         attachment_file_paths=list(attachments),
         credentials=credentials,
         use_starttls=use_starttls,
+        starttls_verify=starttls_verify_value,
         timeout=timeout_value,
         attachment_allowed_extensions=resolved_allowed_ext,
         attachment_blocked_extensions=resolved_blocked_ext,

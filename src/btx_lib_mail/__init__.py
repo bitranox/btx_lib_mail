@@ -10,6 +10,7 @@ from .behaviors import (
 )
 from .lib_mail import (
     AttachmentSecurityError,
+    AttachmentViolation,
     ConfMail,
     DANGEROUS_DIRECTORIES_POSIX,
     DANGEROUS_DIRECTORIES_WINDOWS,
@@ -26,6 +27,7 @@ from .__init__conf__ import print_info
 
 __all__ = [
     "AttachmentSecurityError",
+    "AttachmentViolation",
     "CANONICAL_GREETING",
     "ConfMail",
     "DANGEROUS_DIRECTORIES_POSIX",

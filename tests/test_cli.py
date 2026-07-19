@@ -537,7 +537,40 @@ def test_send_mail_command_honours_cli_overrides(
     assert calls["attachment_file_paths"] == [attachment]
     assert calls["credentials"] == ("user", "pass")
     assert calls["use_starttls"] is True
+    assert calls["starttls_verify"] is True
     assert calls["timeout"] == 42.0
+
+
+@pytest.mark.os_agnostic
+def test_send_mail_command_can_disable_starttls_verification(
+    monkeypatch: pytest.MonkeyPatch,
+    cli_runner: CliRunner,
+) -> None:
+    monkeypatch.setenv("BTX_MAIL_SMTP_HOSTS", "smtp.example.com")
+    monkeypatch.setenv("BTX_MAIL_RECIPIENTS", "first@example.com")
+
+    calls: dict[str, Any] = {}
+
+    def fake_send(**kwargs: Any) -> bool:
+        calls.update(kwargs)
+        return True
+
+    monkeypatch.setattr(cli_mod, "send", fake_send)
+
+    result = cli_runner.invoke(
+        cli_mod.cli,
+        [
+            "send",
+            "--subject",
+            "Subject",
+            "--body",
+            "Body",
+            "--no-starttls-verify",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls["starttls_verify"] is False
 
 
 @pytest.mark.os_agnostic

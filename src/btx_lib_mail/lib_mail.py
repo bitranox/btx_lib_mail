@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
+from enum import Enum
 from email import encoders
 from email.header import Header
 from email.mime.base import MIMEBase
@@ -33,12 +34,12 @@ import ssl
 from collections.abc import Iterable, Sequence
 from typing import Any, Final, cast
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 
 logger = logging.getLogger("btx_lib_mail")
 
-EMAIL_PATTERN: Final[re.Pattern[str]] = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b")
+EMAIL_PATTERN: Final[re.Pattern[str]] = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +205,31 @@ def _default_blocked_directories() -> frozenset[pathlib.Path]:
 
 
 # ---------------------------------------------------------------------------
+# Attachment Security: Violation category
+# ---------------------------------------------------------------------------
+
+
+class AttachmentViolation(str, Enum):
+    """### AttachmentViolation {#lib-mail-attachmentviolation}
+
+    **Purpose:** Enumerate the closed set of attachment security violation
+    categories so callers match on a typed member instead of a bare string.
+
+    Members subclass ``str`` (``str, Enum`` rather than 3.11+ ``StrEnum`` to keep
+    the 3.10 baseline), so ``violation is AttachmentViolation.SYMLINK``,
+    ``violation == "symlink"``, and JSON serialisation all behave as expected and
+    the wire value is unchanged.
+    """
+
+    PATH_TRAVERSAL = "path_traversal"
+    SYMLINK = "symlink"
+    SENSITIVE_PATTERN = "sensitive_pattern"
+    DIRECTORY = "directory"
+    EXTENSION = "extension"
+    SIZE = "size"
+
+
+# ---------------------------------------------------------------------------
 # Attachment Security: Exception
 # ---------------------------------------------------------------------------
 
@@ -217,18 +243,21 @@ class AttachmentSecurityError(Exception):
     **Fields:**
     - `path: pathlib.Path` — The offending attachment path.
     - `reason: str` — Human-readable description of the violation.
-    - `violation_type: str` — Category of the violation (e.g., 'path_traversal',
-      'symlink', 'extension', 'directory', 'size', 'sensitive_pattern').
+    - `violation_type: AttachmentViolation` — Category of the violation
+      (`AttachmentViolation.SYMLINK`, `.EXTENSION`, `.SIZE`, etc.). Members
+      subclass `str`, so `== "symlink"` comparisons keep working.
     """
 
-    def __init__(self, path: pathlib.Path, reason: str, violation_type: str) -> None:
+    def __init__(self, path: pathlib.Path, reason: str, violation_type: AttachmentViolation) -> None:
         super().__init__(reason)
         self.path = path
         self.reason = reason
         self.violation_type = violation_type
 
     def __str__(self) -> str:
-        return f"Attachment security violation ({self.violation_type}): {self.reason} [path={self.path}]"
+        # .value keeps the message text stable across Python versions, where
+        # f-string formatting of a `str, Enum` member is inconsistent.
+        return f"Attachment security violation ({self.violation_type.value}): {self.reason} [path={self.path}]"
 
 
 """Compiled regex used by :func:`validate_email_address`."""
@@ -269,10 +298,18 @@ class ConfMail(BaseModel):
     - `raise_on_invalid_recipient: bool = True` — When `True`, invalid addresses
       raise `ValueError`; otherwise a warning is logged and delivery skips the
       address.
-    - `smtp_username: str | None = None` and `smtp_password: str | None = None`
+    - `smtp_username: str | None = None` and `smtp_password: SecretStr | None = None`
       — Optional credentials; both must be populated to enable authentication.
+      `smtp_password` is a `SecretStr`, so it is masked in `repr()` and
+      `model_dump()`; call `.get_secret_value()` (or `resolved_credentials()`) to
+      read the plaintext. A plain string assigned to it is coerced to `SecretStr`.
     - `smtp_use_starttls: bool = True` — Enables `STARTTLS` negotiation before
       authentication when supported by the server.
+    - `smtp_starttls_verify: bool = True` — When `True`, the `STARTTLS` handshake
+      verifies the server certificate and hostname (the secure default). Set to
+      `False` for an internal relay whose certificate is self-signed or has a
+      hostname mismatch: the traffic stays encrypted but the certificate is not
+      validated. Has no effect when `smtp_use_starttls` is `False`.
     - `smtp_timeout: float = 30.0` — Socket timeout in seconds applied to SMTP
       connections.
     - `attachment_allowed_extensions: frozenset[str] | None = None` — When set,
@@ -302,8 +339,9 @@ class ConfMail(BaseModel):
     raise_on_missing_attachments: bool = True
     raise_on_invalid_recipient: bool = True
     smtp_username: str | None = None
-    smtp_password: str | None = None
+    smtp_password: SecretStr | None = None
     smtp_use_starttls: bool = True
+    smtp_starttls_verify: bool = True
     smtp_timeout: float = 30.0
 
     # Attachment security settings
@@ -473,12 +511,13 @@ class ConfMail(BaseModel):
         **Purpose:** Provide downstream helpers with a single optional tuple
         rather than juggling two separate optional strings.
 
-        **Returns:** `(username, password)` when both `smtp_username` and
-        `smtp_password` are populated; `None` otherwise.
+        **Returns:** `(username, password)` with the plaintext password when both
+        `smtp_username` and `smtp_password` are populated; `None` otherwise.
         """
 
-        if self.smtp_username and self.smtp_password:
-            return self.smtp_username, self.smtp_password
+        password = self.smtp_password.get_secret_value() if self.smtp_password is not None else None
+        if self.smtp_username and password:
+            return self.smtp_username, password
         return None
 
 
@@ -497,6 +536,7 @@ def send(
     *,
     credentials: tuple[str, str] | None = None,
     use_starttls: bool | None = None,
+    starttls_verify: bool | None = None,
     timeout: float | None = None,
     # Attachment security parameters
     attachment_allowed_extensions: frozenset[str] | None = None,
@@ -532,6 +572,10 @@ def send(
       omitted, `conf.resolved_credentials()` is used.
     - `use_starttls: bool | None = None` — Override STARTTLS preference. When
       `None`, the helper uses `conf.smtp_use_starttls`.
+    - `starttls_verify: bool | None = None` — Override STARTTLS certificate
+      verification. When `None`, the helper uses `conf.smtp_starttls_verify`.
+      `False` keeps the connection encrypted but skips certificate/hostname
+      validation (for internal self-signed relays). Ignored unless STARTTLS runs.
     - `timeout: float | None = None` — Override socket timeout in seconds. When
       `None`, the helper uses `conf.smtp_timeout`.
     - `attachment_allowed_extensions: frozenset[str] | None = None` — Override
@@ -613,6 +657,7 @@ def send(
     delivery = _resolve_delivery_options(
         explicit_credentials=credentials,
         explicit_starttls=use_starttls,
+        explicit_starttls_verify=starttls_verify,
         explicit_timeout=timeout,
     )
 
@@ -647,11 +692,15 @@ class DeliveryOptions:
     - `credentials: tuple[str, str] | None` — `(username, password)` pair or
       `None` when anonymous delivery is requested.
     - `use_starttls: bool` — `True` enables `STARTTLS` handshakes.
+    - `starttls_verify: bool` — `True` verifies the server certificate and
+      hostname during `STARTTLS`; `False` keeps the traffic encrypted but skips
+      verification (for internal self-signed relays).
     - `timeout: float` — Socket timeout (seconds) applied to SMTP connections.
     """
 
     credentials: tuple[str, str] | None
     use_starttls: bool
+    starttls_verify: bool
     timeout: float
 
 
@@ -659,6 +708,7 @@ def _resolve_delivery_options(
     *,
     explicit_credentials: tuple[str, str] | None,
     explicit_starttls: bool | None,
+    explicit_starttls_verify: bool | None,
     explicit_timeout: float | None,
 ) -> DeliveryOptions:
     """Resolve per-call overrides against configuration defaults.
@@ -686,10 +736,11 @@ def _resolve_delivery_options(
 
     credentials = explicit_credentials or conf.resolved_credentials()
     use_starttls = bool(explicit_starttls if explicit_starttls is not None else conf.smtp_use_starttls)
+    starttls_verify = bool(explicit_starttls_verify if explicit_starttls_verify is not None else conf.smtp_starttls_verify)
     timeout = float(explicit_timeout if explicit_timeout is not None else conf.smtp_timeout)
     if timeout <= 0:
         raise ValueError(f"smtp_timeout must be positive, got {timeout}")
-    return DeliveryOptions(credentials=credentials, use_starttls=use_starttls, timeout=timeout)
+    return DeliveryOptions(credentials=credentials, use_starttls=use_starttls, starttls_verify=starttls_verify, timeout=timeout)
 
 
 @dataclass(frozen=True)
@@ -848,6 +899,44 @@ def _deliver_to_any_host(
     return False
 
 
+def _build_starttls_context(*, verify: bool) -> ssl.SSLContext:
+    """Return the SSL context used for the STARTTLS handshake.
+
+    Why
+        Internal relays often present a self-signed certificate or one whose
+        hostname does not match. Verifying such a certificate makes ``starttls``
+        fail even though the channel would still be encrypted. ``verify=False``
+        lets an operator keep encryption while opting out of validation, which
+        is strictly better than falling back to plaintext.
+
+    Inputs
+    ------
+    verify:
+        ``True`` returns the standard verifying context (certificate chain and
+        hostname checked). ``False`` disables both checks.
+
+    Outputs
+    -------
+    ssl.SSLContext
+        A verifying context by default, or a non-verifying one when
+        ``verify`` is ``False``.
+
+    Side Effects
+    ------------
+    None.
+    """
+
+    context = ssl.create_default_context()
+    if not verify:
+        # Opt-in for internal self-signed relays: the channel stays encrypted,
+        # only certificate and hostname validation are dropped. check_hostname
+        # must be cleared before verify_mode, or assigning CERT_NONE raises
+        # ValueError while hostname checking is still on.
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+    return context
+
+
 def _deliver_via_host(
     *,
     host: str,
@@ -889,7 +978,7 @@ def _deliver_via_host(
     hostname, port = _parse_smtp_host(host)
     with smtplib.SMTP(hostname, port=port or 0, timeout=delivery.timeout) as smtp_connection:
         if delivery.use_starttls:
-            smtp_connection.starttls(context=ssl.create_default_context())
+            smtp_connection.starttls(context=_build_starttls_context(verify=delivery.starttls_verify))
         if delivery.credentials is not None:
             username, password = delivery.credentials
             smtp_connection.login(username, password)
@@ -1015,7 +1104,7 @@ def _check_path_traversal(path: pathlib.Path, original_str: str) -> None:
         raise AttachmentSecurityError(
             path=path,
             reason=f'path contains traversal sequence: "{original_str}"',
-            violation_type="path_traversal",
+            violation_type=AttachmentViolation.PATH_TRAVERSAL,
         )
 
 
@@ -1046,7 +1135,7 @@ def _check_symlink(path: pathlib.Path, allow_symlinks: bool) -> pathlib.Path:
             raise AttachmentSecurityError(
                 path=path,
                 reason=f'symlink detected and not allowed: "{path}"',
-                violation_type="symlink",
+                violation_type=AttachmentViolation.SYMLINK,
             )
         # Follow the symlink and return the resolved target
         return path.resolve()
@@ -1077,7 +1166,7 @@ def _check_sensitive_patterns(path: pathlib.Path) -> None:
             raise AttachmentSecurityError(
                 path=path,
                 reason=f'path matches sensitive pattern "{pattern}": "{path}"',
-                violation_type="sensitive_pattern",
+                violation_type=AttachmentViolation.SENSITIVE_PATTERN,
             )
 
 
@@ -1120,7 +1209,7 @@ def _check_directory_restrictions(
             raise AttachmentSecurityError(
                 path=path,
                 reason=f'path not under any allowed directory: "{path}"',
-                violation_type="directory",
+                violation_type=AttachmentViolation.DIRECTORY,
             )
     else:
         # Blacklist mode: path must not be under a blocked directory
@@ -1130,7 +1219,7 @@ def _check_directory_restrictions(
                 raise AttachmentSecurityError(
                     path=path,
                     reason=f'path under blocked directory "{blocked_dir}": "{path}"',
-                    violation_type="directory",
+                    violation_type=AttachmentViolation.DIRECTORY,
                 )
             except ValueError:
                 continue
@@ -1167,7 +1256,7 @@ def _check_extension(
             raise AttachmentSecurityError(
                 path=path,
                 reason=f'extension "{ext}" not in allowed list: "{path}"',
-                violation_type="extension",
+                violation_type=AttachmentViolation.EXTENSION,
             )
     else:
         # Blacklist mode: block only blacklisted extensions
@@ -1175,7 +1264,7 @@ def _check_extension(
             raise AttachmentSecurityError(
                 path=path,
                 reason=f'extension "{ext}" is blocked: "{path}"',
-                violation_type="extension",
+                violation_type=AttachmentViolation.EXTENSION,
             )
 
 
@@ -1205,14 +1294,14 @@ def _check_file_size(path: pathlib.Path, max_size: int | None) -> None:
         raise AttachmentSecurityError(
             path=path,
             reason=f'cannot stat file: "{path}" ({exc})',
-            violation_type="size",
+            violation_type=AttachmentViolation.SIZE,
         ) from exc
 
     if size > max_size:
         raise AttachmentSecurityError(
             path=path,
             reason=f'file size {size} bytes exceeds limit {max_size} bytes: "{path}"',
-            violation_type="size",
+            violation_type=AttachmentViolation.SIZE,
         )
 
 
@@ -1326,7 +1415,7 @@ def _prepare_attachments(
                 exc.reason,
                 extra={
                     "attachment_path": original_path_str,
-                    "violation_type": exc.violation_type,
+                    "violation_type": exc.violation_type.value,
                 },
             )
             continue

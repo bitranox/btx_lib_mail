@@ -35,7 +35,7 @@ For alternative install paths (pipx, uv, source builds, etc.), see
 - **Dependency audit (October 16, 2025):** runtime requirements continue to
   match the latest stable releases (`rich-click>=1.9.3`,
   `lib_cli_exit_tools>=2.1.0`, `pydantic>=2.12.2`). Development extras were
-  reconfirmed via `python -m pip index versions …`, with no upgrades required.
+  reconfirmed via `python -m pip index versions ...`, with no upgrades required.
 - GitHub Actions jobs keep using the rolling runners (`ubuntu-latest`,
   `macos-latest`, `windows-latest`) and now cache pip downloads via
   `actions/setup-python@v6` while pinning CodeQL to `v4.30.8`, preserving
@@ -141,6 +141,12 @@ Key behaviours:
 - STARTTLS is enabled by default (`smtp_use_starttls=True`). The helper performs
   the handshake with the system SSL context before authenticating; set the flag
   to `False` when connecting to servers that do not support STARTTLS.
+- Certificate verification is on by default (`smtp_starttls_verify=True`). For an
+  internal relay whose certificate is self-signed or has a hostname mismatch, set
+  `smtp_starttls_verify=False` (or pass `starttls_verify=False` / use
+  `--no-starttls-verify`): the traffic stays encrypted but the certificate is not
+  validated. This trades away MITM protection, so prefer adding the relay's CA to
+  the trust store where you can.
 - Credentials are optional. If both `smtp_username` and `smtp_password` are
   provided, `send` will call `SMTP.login`. The helper also accepts
   one-off credentials via the `credentials=` argument.
@@ -159,19 +165,19 @@ of sensitive files, dangerous executables, or oversized payloads.
 
 ### Security Checks
 
-1. **Path Traversal Prevention** — Paths containing `..` sequences are rejected
+1. **Path Traversal Prevention**  -  Paths containing `..` sequences are rejected
    to prevent escaping the intended directory.
-2. **Symlink Handling** — Symlinks are rejected by default to prevent following
+2. **Symlink Handling**  -  Symlinks are rejected by default to prevent following
    links to sensitive files. Enable via `attachment_allow_symlinks=True`.
-3. **Sensitive Pattern Detection** — Paths matching patterns like `/.ssh/`,
+3. **Sensitive Pattern Detection**  -  Paths matching patterns like `/.ssh/`,
    `/id_rsa`, `/.env`, `/credentials`, `/.aws/credentials` are always blocked.
-4. **Directory Restrictions** — By default, files from system directories
+4. **Directory Restrictions**  -  By default, files from system directories
    (`/etc`, `/var`, `/root`, etc. on POSIX; `C:\Windows`, etc. on Windows) are
    blocked. Use `attachment_allowed_directories` for whitelist mode.
-5. **Extension Filtering** — Dangerous extensions (`.sh`, `.exe`, `.bat`, `.py`,
+5. **Extension Filtering**  -  Dangerous extensions (`.sh`, `.exe`, `.bat`, `.py`,
    etc.) are blocked by default. Use `attachment_allowed_extensions` for
    whitelist mode or `attachment_blocked_extensions` to customize the blacklist.
-6. **Size Limit** — Files larger than 25 MiB (default) are rejected. Override
+6. **Size Limit**  -  Files larger than 25 MiB (default) are rejected. Override
    via `attachment_max_size_bytes`.
 
 ### Configuration Example
@@ -248,6 +254,7 @@ not supply per-call overrides. Update it directly or replace it wholesale with
 | `smtp_username`                | `str \| None` | `None`  | Username used for SMTP authentication. Must be paired with `smtp_password`.                                                             |
 | `smtp_password`                | `str \| None` | `None`  | Password paired with `smtp_username`. Ignored when either value is missing.                                                             |
 | `smtp_use_starttls`            | `bool`        | `True`  | Enables `STARTTLS` negotiation before authentication. Set to `False` for servers that do not support STARTTLS.                          |
+| `smtp_starttls_verify`         | `bool`        | `True`  | Verifies the server certificate and hostname during `STARTTLS`. Set to `False` for internal self-signed relays (encrypted, unverified). |
 | `smtp_timeout`                 | `float`       | `30.0`  | Socket timeout in seconds applied to SMTP connections.                                                                                  |
 
 **Attachment Security Settings:**
@@ -264,11 +271,11 @@ not supply per-call overrides. Update it directly or replace it wholesale with
 
 Common helpers:
 
-- `ConfMail.model_validate(data: dict[str, Any]) -> ConfMail` — validate crude
+- `ConfMail.model_validate(data: dict[str, Any]) -> ConfMail`  -  validate crude
   configuration (dicts, strings, iterables) into a typed instance.
-- `ConfMail.model_update(new_values: dict[str, Any]) -> ConfMail` — update an
+- `ConfMail.model_update(new_values: dict[str, Any]) -> ConfMail`  -  update an
   existing instance in place.
-- `ConfMail.resolved_credentials() -> tuple[str, str] | None` — return the
+- `ConfMail.resolved_credentials() -> tuple[str, str] | None`  -  return the
   `(username, password)` pair when both credential fields are populated.
 
 ### Functions {#public-api-functions}
@@ -298,18 +305,19 @@ raises when every host fails for at least one recipient.
 
 **Core Parameters:**
 
-| Parameter               | Type                              | Default | Notes                                                                                                    |
-|-------------------------|-----------------------------------|---------|----------------------------------------------------------------------------------------------------------|
-| `mail_from`             | `str`                             | —       | Envelope sender address (`local@domain`).                                                                |
-| `mail_recipients`       | `str \| Sequence[str]`            | —       | Deduplicated, validated recipient addresses.                                                             |
-| `mail_subject`          | `str`                             | —       | UTF-8 subject line.                                                                                      |
-| `mail_body`             | `str`                             | `""`    | Optional plain-text body.                                                                                |
-| `mail_body_html`        | `str`                             | `""`    | Optional HTML body (UTF-8).                                                                              |
-| `smtphosts`             | `Sequence[str] \| None`           | `None`  | Host override. Falls back to `conf.smtphosts`.                                                           |
-| `attachment_file_paths` | `Sequence[pathlib.Path] \| None`  | `None`  | Iterable of attachment paths. Missing files raise unless `conf.raise_on_missing_attachments` is `False`. |
-| `credentials`           | `tuple[str, str] \| None`         | `None`  | `(username, password)` override. Defaults to `conf.resolved_credentials()`.                              |
-| `use_starttls`          | `bool \| None`                    | `None`  | When `None`, the helper uses `conf.smtp_use_starttls`.                                                   |
-| `timeout`               | `float \| None`                   | `None`  | When `None`, the helper uses `conf.smtp_timeout`.                                                        |
+| Parameter               | Type                             | Default | Notes                                                                                                    |
+|-------------------------|----------------------------------|---------|----------------------------------------------------------------------------------------------------------|
+| `mail_from`             | `str`                            | -       | Envelope sender address (`local@domain`).                                                                |
+| `mail_recipients`       | `str \| Sequence[str]`           | -       | Deduplicated, validated recipient addresses.                                                             |
+| `mail_subject`          | `str`                            | -       | UTF-8 subject line.                                                                                      |
+| `mail_body`             | `str`                            | `""`    | Optional plain-text body.                                                                                |
+| `mail_body_html`        | `str`                            | `""`    | Optional HTML body (UTF-8).                                                                              |
+| `smtphosts`             | `Sequence[str] \| None`          | `None`  | Host override. Falls back to `conf.smtphosts`.                                                           |
+| `attachment_file_paths` | `Sequence[pathlib.Path] \| None` | `None`  | Iterable of attachment paths. Missing files raise unless `conf.raise_on_missing_attachments` is `False`. |
+| `credentials`           | `tuple[str, str] \| None`        | `None`  | `(username, password)` override. Defaults to `conf.resolved_credentials()`.                              |
+| `use_starttls`          | `bool \| None`                   | `None`  | When `None`, the helper uses `conf.smtp_use_starttls`.                                                   |
+| `starttls_verify`       | `bool \| None`                   | `None`  | When `None`, the helper uses `conf.smtp_starttls_verify`. `False` skips certificate verification.        |
+| `timeout`               | `float \| None`                  | `None`  | When `None`, the helper uses `conf.smtp_timeout`.                                                        |
 
 **Attachment Security Parameters (keyword-only):**
 
@@ -361,12 +369,12 @@ C:\Windows, C:\Windows\System32, C:\Program Files, C:\Program Files (x86), C:\Pr
 
 **Raises:**
 
-- `ValueError` — after validation if no valid recipients remain.
-- `FileNotFoundError` — when a required attachment is missing and
+- `ValueError`  -  after validation if no valid recipients remain.
+- `FileNotFoundError`  -  when a required attachment is missing and
   `raise_on_missing_attachments` is `True`.
-- `AttachmentSecurityError` — when an attachment violates security policies and
+- `AttachmentSecurityError`  -  when an attachment violates security policies and
   `attachment_raise_on_security_violation` is `True`.
-- `RuntimeError` — when every configured host fails for a recipient (the error
+- `RuntimeError`  -  when every configured host fails for a recipient (the error
   lists recipients and host roster).
 
 ### CLI Commands {#public-api-cli}
@@ -386,19 +394,20 @@ The CLI wraps the same behaviour through rich-click. Highlights:
 
 **Core Options:**
 
-| Option                     | Description                                                                |
-|----------------------------|----------------------------------------------------------------------------|
-| `--host HOST`              | SMTP host (repeat or comma-separated). Env: `BTX_MAIL_SMTP_HOSTS`.         |
-| `--recipient EMAIL`        | Recipient address (repeat or comma-separated). Env: `BTX_MAIL_RECIPIENTS`. |
-| `--sender EMAIL`           | Envelope sender. Env: `BTX_MAIL_SENDER`.                                   |
-| `--subject TEXT`           | Mail subject line (required).                                              |
-| `--body TEXT`              | Plain-text email body (required).                                          |
-| `--html-body TEXT`         | Optional HTML body content.                                                |
-| `--attachment PATH`        | Attachment file path (repeat for multiple).                                |
-| `--starttls/--no-starttls` | Force STARTTLS negotiation. Env: `BTX_MAIL_SMTP_USE_STARTTLS`.             |
-| `--username TEXT`          | SMTP username. Env: `BTX_MAIL_SMTP_USERNAME`.                              |
-| `--password TEXT`          | SMTP password. Env: `BTX_MAIL_SMTP_PASSWORD`.                              |
-| `--timeout FLOAT`          | Socket timeout in seconds. Env: `BTX_MAIL_SMTP_TIMEOUT`.                   |
+| Option                                   | Description                                                                                            |
+|------------------------------------------|--------------------------------------------------------------------------------------------------------|
+| `--host HOST`                            | SMTP host (repeat or comma-separated). Env: `BTX_MAIL_SMTP_HOSTS`.                                     |
+| `--recipient EMAIL`                      | Recipient address (repeat or comma-separated). Env: `BTX_MAIL_RECIPIENTS`.                             |
+| `--sender EMAIL`                         | Envelope sender. Env: `BTX_MAIL_SENDER`.                                                               |
+| `--subject TEXT`                         | Mail subject line (required).                                                                          |
+| `--body TEXT`                            | Plain-text email body (required).                                                                      |
+| `--html-body TEXT`                       | Optional HTML body content.                                                                            |
+| `--attachment PATH`                      | Attachment file path (repeat for multiple).                                                            |
+| `--starttls/--no-starttls`               | Force STARTTLS negotiation. Env: `BTX_MAIL_SMTP_USE_STARTTLS`.                                         |
+| `--starttls-verify/--no-starttls-verify` | Verify the server certificate during STARTTLS (default: verify). Env: `BTX_MAIL_SMTP_STARTTLS_VERIFY`. |
+| `--username TEXT`                        | SMTP username. Env: `BTX_MAIL_SMTP_USERNAME`.                                                          |
+| `--password TEXT`                        | SMTP password. Env: `BTX_MAIL_SMTP_PASSWORD`.                                                          |
+| `--timeout FLOAT`                        | Socket timeout in seconds. Env: `BTX_MAIL_SMTP_TIMEOUT`.                                               |
 
 **Attachment Security Options:**
 
@@ -427,15 +436,16 @@ Environment variables understood by the CLI:
 
 **SMTP Settings:**
 
-| Variable                     | Purpose                                                      | Example                                   |
-|------------------------------|--------------------------------------------------------------|-------------------------------------------|
-| `BTX_MAIL_SMTP_HOSTS`        | Comma-separated list of SMTP hosts (each `host[:port]`).     | `smtp1.example.com:587,smtp2.example.com` |
-| `BTX_MAIL_RECIPIENTS`        | Comma-separated list of recipient emails.                    | `primary@example.com,backup@example.com`  |
-| `BTX_MAIL_SENDER`            | Envelope sender; defaults to the first recipient when unset. | `alerts@example.com`                      |
-| `BTX_MAIL_SMTP_USE_STARTTLS` | Boolean flag (`1`, `true`, `yes`, `on`) enabling STARTTLS.   | `true`                                    |
-| `BTX_MAIL_SMTP_USERNAME`     | Username used when STARTTLS/authentication is required.      | `smtp-user`                               |
-| `BTX_MAIL_SMTP_PASSWORD`     | Password paired with the SMTP username.                      | `s3cr3t`                                  |
-| `BTX_MAIL_SMTP_TIMEOUT`      | Socket timeout in seconds (defaults to `30`).                | `12.5`                                    |
+| Variable                        | Purpose                                                                         | Example                                   |
+|---------------------------------|---------------------------------------------------------------------------------|-------------------------------------------|
+| `BTX_MAIL_SMTP_HOSTS`           | Comma-separated list of SMTP hosts (each `host[:port]`).                        | `smtp1.example.com:587,smtp2.example.com` |
+| `BTX_MAIL_RECIPIENTS`           | Comma-separated list of recipient emails.                                       | `primary@example.com,backup@example.com`  |
+| `BTX_MAIL_SENDER`               | Envelope sender; defaults to the first recipient when unset.                    | `alerts@example.com`                      |
+| `BTX_MAIL_SMTP_USE_STARTTLS`    | Boolean flag (`1`, `true`, `yes`, `on`) enabling STARTTLS.                      | `true`                                    |
+| `BTX_MAIL_SMTP_STARTTLS_VERIFY` | Boolean flag verifying the server certificate during STARTTLS (default `true`). | `false`                                   |
+| `BTX_MAIL_SMTP_USERNAME`        | Username used when STARTTLS/authentication is required.                         | `smtp-user`                               |
+| `BTX_MAIL_SMTP_PASSWORD`        | Password paired with the SMTP username.                                         | `s3cr3t`                                  |
+| `BTX_MAIL_SMTP_TIMEOUT`         | Socket timeout in seconds (defaults to `30`).                                   | `12.5`                                    |
 
 **Attachment Security Settings:**
 
@@ -486,4 +496,6 @@ variable always overrides `.env`; explicit CLI flags override both.
 - [Contributor Guide](CONTRIBUTING.md)
 - [Changelog](CHANGELOG.md)
 - [Module Reference](docs/systemdesign/module_reference.md)
+- [AI Transparency](ai-transparency.md)
+- [Our Stance on AI](ai-stance.md)
 - [License](LICENSE)

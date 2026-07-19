@@ -1,4 +1,4 @@
-# CLAUDE.md — btx_lib_mail
+# CLAUDE.md  -  btx_lib_mail
 
 ## Project Overview
 
@@ -67,6 +67,7 @@ from btx_lib_mail import (
     validate_email_address, validate_smtp_host,
     # Security
     AttachmentSecurityError,
+    AttachmentViolation,
     DANGEROUS_EXTENSIONS_POSIX,
     DANGEROUS_EXTENSIONS_WINDOWS,
     DANGEROUS_DIRECTORIES_POSIX,
@@ -90,35 +91,35 @@ btx-lib-mail fail               # trigger intentional failure
 
 Attachments are validated against multiple security checks:
 
-1. **Path Traversal** — Paths with `..` are rejected
-2. **Symlinks** — Rejected by default (`attachment_allow_symlinks=False`)
-3. **Sensitive Patterns** — `/.ssh/`, `/id_rsa`, `/.env`, etc. always blocked
-4. **Directory Restrictions** — System directories blocked by default
-5. **Extension Filtering** — Dangerous extensions (`.sh`, `.exe`, etc.) blocked
-6. **Size Limits** — Default 25 MiB (`attachment_max_size_bytes`)
+1. **Path Traversal**  -  Paths with `..` are rejected
+2. **Symlinks**  -  Rejected by default (`attachment_allow_symlinks=False`)
+3. **Sensitive Patterns**  -  `/.ssh/`, `/id_rsa`, `/.env`, etc. always blocked
+4. **Directory Restrictions**  -  System directories blocked by default
+5. **Extension Filtering**  -  Dangerous extensions (`.sh`, `.exe`, etc.) blocked
+6. **Size Limits**  -  Default 25 MiB (`attachment_max_size_bytes`)
 
 ### Configuration Fields (ConfMail)
 
-| Field                                    | Type                      | Default              |
-|------------------------------------------|---------------------------|----------------------|
-| `attachment_allowed_extensions`          | `frozenset[str] \| None`  | `None` (blacklist)   |
-| `attachment_blocked_extensions`          | `frozenset[str]`          | OS-specific dangers  |
-| `attachment_allowed_directories`         | `frozenset[Path] \| None` | `None` (blacklist)   |
-| `attachment_blocked_directories`         | `frozenset[Path]`         | OS-specific sensitive|
-| `attachment_max_size_bytes`              | `int \| None`             | `26_214_400` (25 MiB)|
-| `attachment_allow_symlinks`              | `bool`                    | `False`              |
-| `attachment_raise_on_security_violation` | `bool`                    | `True`               |
+| Field                                    | Type                      | Default               |
+|------------------------------------------|---------------------------|-----------------------|
+| `attachment_allowed_extensions`          | `frozenset[str] \| None`  | `None` (blacklist)    |
+| `attachment_blocked_extensions`          | `frozenset[str]`          | OS-specific dangers   |
+| `attachment_allowed_directories`         | `frozenset[Path] \| None` | `None` (blacklist)    |
+| `attachment_blocked_directories`         | `frozenset[Path]`         | OS-specific sensitive |
+| `attachment_max_size_bytes`              | `int \| None`             | `26_214_400` (25 MiB) |
+| `attachment_allow_symlinks`              | `bool`                    | `False`               |
+| `attachment_raise_on_security_violation` | `bool`                    | `True`                |
 
 ### Environment Variables
 
-| Variable                              | Purpose                           |
-|---------------------------------------|-----------------------------------|
-| `BTX_MAIL_ATTACHMENT_ALLOWED_EXT`     | Allowed extensions (whitelist)    |
-| `BTX_MAIL_ATTACHMENT_BLOCKED_EXT`     | Blocked extensions (override)     |
-| `BTX_MAIL_ATTACHMENT_ALLOWED_DIRS`    | Allowed directories (whitelist)   |
-| `BTX_MAIL_ATTACHMENT_BLOCKED_DIRS`    | Blocked directories (override)    |
-| `BTX_MAIL_ATTACHMENT_MAX_SIZE`        | Max size in bytes                 |
-| `BTX_MAIL_ATTACHMENT_ALLOW_SYMLINKS`  | Allow symlinks (boolean)          |
+| Variable                                | Purpose                         |
+|-----------------------------------------|---------------------------------|
+| `BTX_MAIL_ATTACHMENT_ALLOWED_EXT`       | Allowed extensions (whitelist)  |
+| `BTX_MAIL_ATTACHMENT_BLOCKED_EXT`       | Blocked extensions (override)   |
+| `BTX_MAIL_ATTACHMENT_ALLOWED_DIRS`      | Allowed directories (whitelist) |
+| `BTX_MAIL_ATTACHMENT_BLOCKED_DIRS`      | Blocked directories (override)  |
+| `BTX_MAIL_ATTACHMENT_MAX_SIZE`          | Max size in bytes               |
+| `BTX_MAIL_ATTACHMENT_ALLOW_SYMLINKS`    | Allow symlinks (boolean)        |
 | `BTX_MAIL_ATTACHMENT_RAISE_ON_SECURITY` | Raise on violation (boolean)    |
 
 ### CLI Options (send command)
@@ -137,4 +138,18 @@ Attachments are validated against multiple security checks:
 
 ## Version
 
-Current: 1.2.1 (see `pyproject.toml` and `__init__conf__.py`)
+Current: 1.4.0 (see `pyproject.toml` and `__init__conf__.py`)
+
+## Code Quality
+
+Deliberately accepted items - do not flag in future reviews:
+
+- **Attachments are read fully into memory**: `_prepare_attachments` uses
+  `Path.read_bytes()`, and `smtplib.SMTP.sendmail` buffers the whole assembled
+  MIME message, so peak memory is the full payload. Bounded by
+  `attachment_max_size_bytes` (default 25 MiB); `None` is a documented opt-out.
+  Streaming IS possible but deferred: it would mean bypassing `sendmail` to drive
+  the SMTP DATA phase manually (disk-backed `SpooledTemporaryFile` + chunked send
+  with dot-stuffing). Preferred future direction is a library that supports
+  BDAT/CHUNKING (RFC 3030) rather than hand-rolling DATA streaming. Accepted
+  as-is for now.

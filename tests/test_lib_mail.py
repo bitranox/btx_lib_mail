@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import ssl
 from pathlib import Path
 from email import message_from_string
 from email.message import EmailMessage
@@ -8,7 +9,7 @@ from email.policy import default as default_policy
 from typing import Any, Generator, cast
 
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from btx_lib_mail import ConfMail
 from btx_lib_mail import lib_mail
@@ -80,11 +81,28 @@ def test_conf_mail_rejects_non_string_entries() -> None:
 
 
 def test_conf_mail_resolves_credentials() -> None:
-    config = ConfMail(smtp_username="user", smtp_password="pass")
+    config = ConfMail(smtp_username="user", smtp_password=SecretStr("pass"))
     assert config.resolved_credentials() == ("user", "pass")
 
     config = ConfMail()
     assert config.resolved_credentials() is None
+
+
+@pytest.mark.os_agnostic
+def test_smtp_password_accepts_a_plain_string_and_coerces_it() -> None:
+    # A plain string assigned to the SecretStr field is coerced, so existing
+    # callers that pass a literal keep working at runtime.
+    config = ConfMail.model_validate({"smtp_username": "user", "smtp_password": "pass"})
+    assert config.resolved_credentials() == ("user", "pass")
+
+
+@pytest.mark.os_agnostic
+def test_smtp_password_is_masked_in_repr_and_dump() -> None:
+    config = ConfMail(smtp_username="user", smtp_password=SecretStr("s3cr3t-pw"))
+    assert "s3cr3t-pw" not in repr(config)
+    assert config.model_dump()["smtp_password"] != "s3cr3t-pw"
+    # the real value is still available for the SMTP login
+    assert config.resolved_credentials() == ("user", "s3cr3t-pw")
 
 
 @pytest.mark.os_agnostic
@@ -112,6 +130,7 @@ class RecordingSMTP:
         self.port = port
         self.timeout = timeout
         self.started_tls = False
+        self.starttls_context: Any = None
         self.logged_in: tuple[str, str] | None = None
         self.sent_messages: list[tuple[str, str, str]] = []
         self.closed = False
@@ -128,6 +147,7 @@ class RecordingSMTP:
 
     def starttls(self, *, context: Any) -> None:  # noqa: ANN401 - test helper
         self.started_tls = True
+        self.starttls_context = context
 
     def login(self, username: str, password: str) -> None:
         self.logged_in = (username, password)
@@ -289,6 +309,69 @@ def test_send_handles_utf8_and_credentials(monkeypatch: pytest.MonkeyPatch, tmp_
     assert RecordingSMTP.init_calls[0] == ("smtp.example.com", 2525, 12.5)
 
 
+@pytest.mark.os_agnostic
+def test_conf_starttls_verify_defaults_to_true() -> None:
+    assert ConfMail().smtp_starttls_verify is True
+
+
+@pytest.mark.os_agnostic
+def test_starttls_uses_a_verifying_context_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = _install_recording_smtp(monkeypatch)
+
+    lib_mail.send(
+        mail_from="sender@example.com",
+        mail_recipients="recipient@example.com",
+        mail_subject="Subject",
+        mail_body="Body",
+        smtphosts=["smtp.example.com"],
+        use_starttls=True,
+    )
+
+    context = recorder.created[0].starttls_context
+    assert context.check_hostname is True
+    assert context.verify_mode == ssl.CERT_REQUIRED
+
+
+@pytest.mark.os_agnostic
+def test_starttls_can_skip_certificate_verification(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = _install_recording_smtp(monkeypatch)
+
+    lib_mail.send(
+        mail_from="sender@example.com",
+        mail_recipients="recipient@example.com",
+        mail_subject="Subject",
+        mail_body="Body",
+        smtphosts=["smtp.example.com"],
+        use_starttls=True,
+        starttls_verify=False,
+    )
+
+    instance = recorder.created[0]
+    assert instance.started_tls is True
+    context = instance.starttls_context
+    assert context.check_hostname is False
+    assert context.verify_mode == ssl.CERT_NONE
+
+
+@pytest.mark.os_agnostic
+def test_starttls_verify_falls_back_to_conf(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = _install_recording_smtp(monkeypatch)
+    lib_mail.conf.smtp_starttls_verify = False
+
+    lib_mail.send(
+        mail_from="sender@example.com",
+        mail_recipients="recipient@example.com",
+        mail_subject="Subject",
+        mail_body="Body",
+        smtphosts=["smtp.example.com"],
+        use_starttls=True,
+    )
+
+    context = recorder.created[0].starttls_context
+    assert context.check_hostname is False
+    assert context.verify_mode == ssl.CERT_NONE
+
+
 def test_send_attempts_next_host_on_failure(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
     recorder = _install_recording_smtp(monkeypatch)
     recorder.fail_on_init = {"primary.example.com"}
@@ -349,7 +432,7 @@ def test_send_real_mail_when_env_configured(tmp_path: Path) -> None:
         password = _configured_value("TEST_SMTP_PASSWORD")
         if username and password:
             lib_mail.conf.smtp_username = username
-            lib_mail.conf.smtp_password = password
+            lib_mail.conf.smtp_password = SecretStr(password)
 
         attachment_path = tmp_path / "integration-attachment.txt"
         attachment_path.write_text("integration payload 😊", encoding="utf-8")
@@ -510,6 +593,13 @@ def test_validate_email_address_rejects_bare_word() -> None:
 def test_validate_email_address_rejects_empty_string() -> None:
     with pytest.raises(ValueError, match="invalid email address"):
         lib_mail.validate_email_address("")
+
+
+@pytest.mark.os_agnostic
+def test_validate_email_address_rejects_pipe_in_tld() -> None:
+    # The TLD must be letters only; a '|' must not sneak through.
+    with pytest.raises(ValueError, match="invalid email address"):
+        lib_mail.validate_email_address("user@example.c|m")
 
 
 # ---------------------------------------------------------------------------
@@ -1030,12 +1120,30 @@ class TestAttachmentSecurityErrorAttributes:
         exc = lib_mail.AttachmentSecurityError(
             path=test_path,
             reason="extension blocked",
-            violation_type="extension",
+            violation_type=lib_mail.AttachmentViolation.EXTENSION,
         )
         exc_str = str(exc)
         assert "extension" in exc_str
         assert "file.exe" in exc_str  # Check filename, not full path (OS-agnostic)
         assert "blocked" in exc_str
+
+
+@pytest.mark.os_agnostic
+def test_attachment_violation_type_is_an_enum_member() -> None:
+    from btx_lib_mail import AttachmentViolation
+
+    with pytest.raises(lib_mail.AttachmentSecurityError) as excinfo:
+        lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients="recipient@example.com",
+            mail_subject="Subject",
+            smtphosts=["smtp.example.com"],
+            attachment_file_paths=[Path("../secret.txt")],
+        )
+    exc = excinfo.value
+    assert exc.violation_type is AttachmentViolation.PATH_TRAVERSAL
+    assert exc.violation_type == "path_traversal"  # str-enum keeps the wire value
+    assert isinstance(exc.violation_type, str)
 
 
 class TestDefaultSecuritySettings:

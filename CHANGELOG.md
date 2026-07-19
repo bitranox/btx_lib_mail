@@ -1,5 +1,34 @@
 # Changelog
 
+## [Unreleased]
+
+## [1.4.0] 2026-07-19
+
+### Added
+- STARTTLS certificate-verification control: `ConfMail.smtp_starttls_verify`
+  (default `True`), the `send(..., starttls_verify=...)` parameter, the
+  `--starttls-verify/--no-starttls-verify` CLI flag, and the
+  `BTX_MAIL_SMTP_STARTTLS_VERIFY` environment variable. Setting it to `False`
+  keeps STARTTLS encryption but skips certificate/hostname validation, for
+  internal self-signed relays.
+- `AttachmentViolation` public enum (a `str` enum) naming the attachment
+  security violation categories.
+
+### Changed
+- `ConfMail.smtp_password` is now a `pydantic.SecretStr`, masked in `repr()` and
+  `model_dump()`; `resolved_credentials()` returns the plaintext for SMTP login,
+  and a plain string is still coerced. Type-checkers that pass a bare `str`
+  explicitly must wrap it in `SecretStr(...)`.
+- `AttachmentSecurityError.violation_type` is now an `AttachmentViolation` member
+  instead of a bare string. Members subclass `str`, so `== "symlink"` comparisons
+  keep working.
+- The import-linter contract now enforces the `cli -> lib_mail -> behaviors`
+  layering (previously only `cli -> behaviors`).
+
+### Fixed
+- Email validation no longer accepts a literal `|` in the top-level domain
+  (the character class `[A-Z|a-z]` is corrected to `[A-Za-z]`).
+
 ## [1.3.2] - 2026-06-14
 
 ### Changed
@@ -52,11 +81,11 @@
 
 ## [1.2.1] - 2026-01-28
 ### Fixed
-- Removed unnecessary `cast(Any, …)` from the `smtp_timeout` assignment test;
+- Removed unnecessary `cast(Any, ...)` from the `smtp_timeout` assignment test;
   pyright already accepts `float → float` without suppression.
 
 ### Changed
-- Clarified the `cast(Any, …)` comment in `test_conf_mail_assignment_validates`
+- Clarified the `cast(Any, ...)` comment in `test_conf_mail_assignment_validates`
   to document it as a deliberate type-mismatch bypass for Pydantic's runtime
   field-validator coercion (`str → list[str]`), not a missing-stub workaround.
 
@@ -71,8 +100,8 @@
 - SMTP host validation now supports IPv6 bracketed addresses (`[::1]:25`).
 
 ### Removed
-- `_is_valid_email_address()` — replaced by `validate_email_address()`.
-- `_split_host_and_port()` — replaced by `validate_smtp_host()` and `_parse_smtp_host()`.
+- `_is_valid_email_address()`  -  replaced by `validate_email_address()`.
+- `_split_host_and_port()`  -  replaced by `validate_smtp_host()` and `_parse_smtp_host()`.
 
 ## [1.1.0] - 2026-01-27
 ### Added
