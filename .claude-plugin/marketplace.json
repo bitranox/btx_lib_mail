@@ -1,0 +1,16 @@
+{
+  "name": "btx_lib_mail",
+  "owner": {
+    "name": "bitranox"
+  },
+  "metadata": {
+    "description": "btx_lib_mail delivered as a single Claude Code plugin: a skill to install and use btx_lib_mail (send email from Python or the shell, with streamed large attachments, RFC 3030 BDAT, STARTTLS, and attachment security)."
+  },
+  "plugins": [
+    {
+      "name": "btx_lib_mail",
+      "source": ".",
+      "description": "Install and use btx_lib_mail: send email from Python or the shell, stream large attachments without buffering them in memory, RFC 3030 BDAT/CHUNKING, STARTTLS with auth, multi-host failover, and attachment security. Runnable zero-install via uvx."
+    }
+  ]
+}

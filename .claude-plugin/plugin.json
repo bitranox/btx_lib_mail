@@ -1,0 +1,11 @@
+{
+  "name": "btx_lib_mail",
+  "description": "Send email from Python or the shell, with streamed large attachments (bounded memory), RFC 3030 BDAT/CHUNKING, STARTTLS with authentication, multi-host failover, and attachment security. Ships the python-send-mail skill: install, uvx zero-install, the library API, the CLI, streaming and BDAT, and attachment security.",
+  "version": "0.1.0",
+  "author": {
+    "name": "bitranox"
+  },
+  "homepage": "https://github.com/bitranox/btx_lib_mail",
+  "repository": "https://github.com/bitranox/btx_lib_mail",
+  "license": "MIT"
+}
