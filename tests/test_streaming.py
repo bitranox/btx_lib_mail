@@ -107,8 +107,14 @@ class _BdatController(Controller):
         return _BdatSMTP(self.handler)
 
 
+# ready_timeout is generous because busy CI runners (macOS especially) can take
+# more than aiosmtpd's 1.0s default to report the server ready, which otherwise
+# raises "SMTP server started, but not responding within allotted time".
+_SERVER_READY_TIMEOUT = 30.0
+
+
 def _run_server(handler: Any, *, controller_cls: type[Controller] = Controller) -> Controller:
-    controller = controller_cls(handler, hostname="127.0.0.1", port=_free_port())
+    controller = controller_cls(handler, hostname="127.0.0.1", port=_free_port(), ready_timeout=_SERVER_READY_TIMEOUT)
     controller.start()
     return controller
 
@@ -496,6 +502,7 @@ def test_starttls_and_auth_path_delivers(tmp_path: Path) -> None:
         tls_context=tls_context,
         authenticator=authenticator,
         auth_required=True,
+        ready_timeout=_SERVER_READY_TIMEOUT,
     )
     controller.start()
     try:
