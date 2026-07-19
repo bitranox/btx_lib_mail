@@ -19,8 +19,9 @@ cli.cli_send_mail  (resolve CLI flags / env / .env)
   -> lib_mail.send  (validate, prepare, orchestrate)
        -> _prepare_recipients / _prepare_attachments / _prepare_hosts
        -> _resolve_delivery_options / _resolve_attachment_security_options
-       -> _deliver_to_any_host   (failover across hosts)
-            -> _deliver_via_host  (connect, STARTTLS, login, sendmail)
+       -> _deliver_to_any_host   (compose once to a spool, failover across hosts)
+            -> Transport.deliver  (SmtplibTransport: connect, STARTTLS, login,
+                                   stream via BDAT or DATA)
 ```
 
 Configuration is a Pydantic model (`ConfMail`) with a global `conf` instance;
@@ -61,9 +62,10 @@ rendering, attachment security, and the delivery orchestration.
 
 #### AttachmentPayload {#lib-mail-attachmentpayload}
 
-* **Purpose:** Freeze the filename and bytes read from disk so MIME rendering
-  stays declarative and reproducible.
-* **Fields:** `filename` (`str`), `content` (`bytes`). Immutable (`frozen=True`).
+* **Purpose:** Name a validated attachment and point at its source file, so the
+  bytes are read only while the message is streamed to the transport, never held
+  in memory from preparation onward.
+* **Fields:** `filename` (`str`), `source` (`pathlib.Path`). Immutable (`frozen=True`).
 * **Location:** src/btx_lib_mail/lib_mail.py
 
 #### ConfMail {#lib-mail-confmail}
@@ -135,17 +137,23 @@ rendering, attachment security, and the delivery orchestration.
 
 #### Delivery helpers
 
-* `_deliver_to_any_host` iterates the host tuple, delegating to
-  `_deliver_via_host` until one accepts the message, and logs a warning per failed
-  host.
-* `_deliver_via_host` opens the `smtplib.SMTP` session, runs STARTTLS via
+* `_deliver_to_any_host` composes the message once into a `SpooledTemporaryFile`
+  and iterates the host tuple, delegating to the injected `Transport` until one
+  accepts the message, logging a warning per failed host. The spool is reused
+  across host attempts.
+* `Transport` is a protocol (delivery seam); `SmtplibTransport` is the default
+  adapter. It opens the `smtplib.SMTP` session, runs STARTTLS via
   `_build_starttls_context(verify=...)` when enabled, logs in when credentials are
-  present, then `sendmail`s the composed message.
+  present, then streams the message to the socket in `_STREAM_CHUNK_SIZE` chunks:
+  RFC 3030 `BDAT` when the server advertises `CHUNKING`, otherwise the `DATA` phase
+  with `_DotStuffer` incremental dot-stuffing. `send` accepts a `transport=`
+  override for testing or alternative transports.
 * `_build_starttls_context(*, verify)` returns `ssl.create_default_context()`; when
   `verify` is `False` it clears `check_hostname` and sets `verify_mode` to
   `CERT_NONE` (encrypted but unverified).
-* `_compose_message` builds the multipart UTF-8 message; `_render_attachment`
-  base64-encodes each payload.
+* `_compose_to_spool` serialises the message (`EmailMessage` + `email.policy.SMTP`
+  CRLF) into a spooled temp file, streaming each attachment's base64 from disk in
+  chunks so a large payload is never buffered whole.
 * **Location:** src/btx_lib_mail/lib_mail.py
 
 #### Validators

@@ -37,7 +37,7 @@ tests/
 ## Key Architecture
 
 - **Config**: `ConfMail` (Pydantic model) holds SMTP and security settings; global `conf` instance
-- **Delivery**: `send()` → `_prepare_*` helpers → `_deliver_to_any_host` → `_deliver_via_host`
+- **Delivery**: `send()` → `_prepare_*` helpers → `_compose_to_spool` (once) → `_deliver_to_any_host` → injected `Transport` (`SmtplibTransport` streams DATA/BDAT)
 - **Validation**: `validate_email_address()` and `validate_smtp_host()` are public
 - **Security**: `AttachmentSecurityOptions` + `_validate_attachment_security()` orchestrate checks
 - **CLI**: `cli.py` uses rich-click groups; `lib_cli_exit_tools` handles exit codes
@@ -140,16 +140,24 @@ Attachments are validated against multiple security checks:
 
 Current: 1.4.0 (see `pyproject.toml` and `__init__conf__.py`)
 
-## Code Quality
+## Attachment Streaming
 
-Deliberately accepted items - do not flag in future reviews:
+Attachments are streamed, not buffered whole. No off-the-shelf Python library
+streams SMTP attachments or implements the client side of RFC 3030 BDAT/CHUNKING
+(stdlib `smtplib` and `aiosmtpd` both buffer and lack BDAT), so it is hand-rolled
+on stdlib:
 
-- **Attachments are read fully into memory**: `_prepare_attachments` uses
-  `Path.read_bytes()`, and `smtplib.SMTP.sendmail` buffers the whole assembled
-  MIME message, so peak memory is the full payload. Bounded by
-  `attachment_max_size_bytes` (default 25 MiB); `None` is a documented opt-out.
-  Streaming IS possible but deferred: it would mean bypassing `sendmail` to drive
-  the SMTP DATA phase manually (disk-backed `SpooledTemporaryFile` + chunked send
-  with dot-stuffing). Preferred future direction is a library that supports
-  BDAT/CHUNKING (RFC 3030) rather than hand-rolling DATA streaming. Accepted
-  as-is for now.
+- `_compose_to_spool` serialises the message into a `SpooledTemporaryFile`
+  (in memory below `_SPOOL_MAX_SIZE`, on disk above it) using `EmailMessage` +
+  `email.policy.SMTP` (CRLF), and streams each attachment's base64 from disk in
+  `57 * 1024`-byte reads so a large attachment is never held whole.
+- `SmtplibTransport` streams that spool to the socket in `_STREAM_CHUNK_SIZE`
+  chunks: RFC 3030 `BDAT` when the server advertises `CHUNKING`, otherwise the
+  `DATA` phase with `_DotStuffer` incremental dot-stuffing. Peak transfer memory
+  is ~one chunk.
+- Delivery goes through the `Transport` protocol (injected via `send(transport=)`);
+  tests use a real `FakeTransport` (orchestration) and a real in-process `aiosmtpd`
+  server (wire behaviour), never a socket-level monkeypatch.
+
+Wire behaviour is proven end to end in `tests/test_streaming.py` (DATA + BDAT
+round-trips, dot-stuffing edge cases, STARTTLS+AUTH, and a `tracemalloc` bound).

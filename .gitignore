@@ -187,6 +187,8 @@ uv.lock
 *.local.json
 # bitranox curated memory (local; CLAUDE.local.md @imports it)
 CLAUDE.local.md
+# project instructions (local; not tracked)
+CLAUDE.md
 
 # Python virtual environments (managed by bmk)
 .venv*/
