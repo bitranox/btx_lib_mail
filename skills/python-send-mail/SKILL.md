@@ -138,7 +138,13 @@ an allowlist) when you deliberately send such a file.
 
 ## Reference
 
-Full API, every `ConfMail` field, all CLI options, and the env-var precedence live in the package
-README and its `docs/` (`api.md`, `cli.md`, `configuration.md`, `streaming.md`,
-`attachment-security.md`). The public API is re-exported from the package root: `send`, `conf`,
-`ConfMail`, `validate_email_address`, `validate_smtp_host`, and the attachment-security constants.
+The API and CLI surface is discoverable from the INSTALL (always matches your version): run
+`uvx btx_lib_mail --help` for every CLI option, and `python -c "import btx_lib_mail as m; help(m)"`
+for the public API - `send`, `conf`, `ConfMail`, `validate_email_address`, `validate_smtp_host`, and
+the attachment-security constants, all re-exported from the package root.
+
+Narrative detail (every `ConfMail` field, env-var precedence, streaming, attachment security) lives
+in the repo docs (NOT shipped in the pip wheel), on the default branch so they track the latest
+release you get from `uv`: `https://github.com/bitranox/btx_lib_mail/blob/master/README.md` and,
+under `https://github.com/bitranox/btx_lib_mail/blob/master/docs/`, the files `api.md`, `cli.md`,
+`configuration.md`, `streaming.md`, `attachment-security.md`.
