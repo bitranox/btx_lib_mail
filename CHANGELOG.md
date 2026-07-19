@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+## [1.5.0] 2026-07-19
+
+### Added
+- Streamed attachment delivery with bounded memory: the message is composed once
+  into a disk-backed spool and streamed to the SMTP socket in fixed-size chunks,
+  so peak memory stays roughly constant regardless of attachment size. Raise or
+  unset `attachment_max_size_bytes` (default 25 MiB) to send a very large file.
+- RFC 3030 BDAT/CHUNKING: when the server advertises `CHUNKING` the message is
+  sent with `BDAT` framing; otherwise the classic `DATA` phase is used with
+  incremental dot-stuffing. Selected automatically per host.
+- `Transport` protocol and default `SmtplibTransport`, with an optional
+  `send(..., transport=...)` override (a delivery seam for testing or alternative
+  transports).
+- A bundled Claude Code usage skill (`python-send-mail`): the repo now installs
+  as a single-plugin marketplace, and the skill is mirrored into `bitranox-skills`
+  as `coding-python-send-mail`. The CLI runs zero-install via `uvx btx-lib-mail`.
+
+### Changed
+- Attachment bytes are read at send time: `AttachmentPayload` carries the source
+  `Path` instead of eager `content: bytes`. Message assembly moved to
+  `email.message.EmailMessage` with `email.policy.SMTP` (CRLF line endings).
+- Package `description` and `keywords` corrected from the template placeholder.
+- README rewritten as an intro plus quickstart; the reference material moved into
+  `docs/` (installation, CLI, configuration, streaming, attachment security,
+  public API).
+
+### Dev
+- Added `aiosmtpd` and `cryptography` as dev-only dependencies for the real-server
+  delivery e2e tests (DATA, BDAT, STARTTLS with authentication, and a memory bound).
+
 ## [1.4.0] 2026-07-19
 
 ### Added

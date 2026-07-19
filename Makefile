@@ -1,4 +1,4 @@
-# BMK MAKEFILE 3.11.1
+# BMK MAKEFILE 3.11.2
 # do not alter this file - it might be overwritten on new versions of BMK
 # if You want to alter it, remove the first line # BMK MAKEFILE 1.0 - then it is a custom makefile and will not be overwritten
 # bmk Makefile — thin wrapper using `uv tool install` for persistent bmk
@@ -145,7 +145,7 @@ endif
 #
 # BMK_MIN is kept as a floor even though nothing can cap bmk any more (that needed the
 # co-resolution this recipe no longer does). It is inert insurance and costs nothing.
-BMK_MIN := 3.11.1
+BMK_MIN := 3.11.2
 
 # Refresh bmk's cached index metadata so a new release is seen the moment it exists -
 # EXCEPT when uv is in offline mode, where uv refuses the combination outright ("the

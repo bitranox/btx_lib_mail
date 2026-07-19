@@ -22,9 +22,9 @@ from __future__ import annotations
 #: Distribution name declared in ``pyproject.toml``.
 name = "btx_lib_mail"
 #: Human-readable summary shown in CLI help output.
-title = "Template for python apps with registered cli commands"
+title = "Send email from Python or the shell: streamed large attachments (bounded memory), RFC 3030 BDAT/CHUNKING, STARTTLS, multi-host failover, and attachment security."
 #: Current release version pulled from ``pyproject.toml`` by automation.
-version = "1.4.0"
+version = "1.5.0"
 #: Repository homepage presented to users.
 homepage = "https://github.com/bitranox/btx_lib_mail"
 #: Author attribution surfaced in CLI output.

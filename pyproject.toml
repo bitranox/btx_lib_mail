@@ -1,13 +1,13 @@
 [project]
 name = "btx_lib_mail"
-version = "1.4.0"
-description = "Template for python apps with registered cli commands"
+version = "1.5.0"
+description = "Send email from Python or the shell: streamed large attachments (bounded memory), RFC 3030 BDAT/CHUNKING, STARTTLS, multi-host failover, and attachment security."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["rich-click>=1.9.8", "lib_cli_exit_tools>=2.3.2", "pydantic>=2.13.4"]
 license = { text = "MIT" }
 authors = [{ name = "bitranox", email = "bitranox@gmail.com" }]
-keywords = ["logging", "rich", "cli", "terminal", "ansi"]
+keywords = ["email", "smtp", "mail", "attachments", "bdat", "starttls", "streaming", "cli"]
 classifiers = [
   "License :: OSI Approved :: MIT License",
   "Environment :: Console",
@@ -65,7 +65,7 @@ dev = [
   # BDAT/CHUNKING via a small subclass); test-only, never imported by the library.
   "aiosmtpd>=1.4.6",
   # Generates a throwaway self-signed cert for the STARTTLS+AUTH e2e test; test-only.
-  "cryptography>=44.0.0"
+  "cryptography>=49.0.0"
 ]
 
 [project.scripts]
