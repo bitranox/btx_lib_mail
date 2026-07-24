@@ -48,13 +48,13 @@ from btx_lib_mail import send
 
 send(
     mail_from="alerts@example.com",
-    mail_recipients=["oncall@example.com"],          # str or sequence; validated, deduped
-    mail_subject="build failed",                      # UTF-8 is fine (Grüße, emoji, CJK)
+    mail_recipients=["oncall@example.com"],  # str or sequence; validated, deduped
+    mail_subject="build failed",  # UTF-8 is fine (Grüße, emoji, CJK)
     mail_body="See CI logs.",
-    mail_body_html="<p>See CI logs.</p>",             # optional HTML alternative
+    mail_body_html="<p>See CI logs.</p>",  # optional HTML alternative
     smtphosts=["smtp.example.com:587", "smtp-dr.example.com:587"],  # tried in order (failover)
-    credentials=("user", "pass"),                     # optional
-    use_starttls=True,                                # default True, verifies the cert by default
+    credentials=("user", "pass"),  # optional
+    use_starttls=True,  # default True, verifies the cert by default
 )
 ```
 
@@ -63,9 +63,10 @@ fail for a recipient. Set global defaults on `conf` and override per call:
 
 ```python
 from btx_lib_mail import conf
+
 conf.smtphosts = ["smtp.example.com:587"]
 conf.smtp_username = "mailer"
-conf.smtp_password = "s3cr3t"    # SecretStr; a plain str is coerced. Per-call kwargs override conf.
+conf.smtp_password = "s3cr3t"  # SecretStr; a plain str is coerced. Per-call kwargs override conf.
 ```
 
 ### Large attachments (streamed, bounded memory)
@@ -85,7 +86,7 @@ send(
     mail_body="Attached.",
     smtphosts=["smtp.example.com:587"],
     attachment_file_paths=[Path("/data/backup-20GB.tar")],
-    attachment_max_size_bytes=None,   # REQUIRED for big files: the default cap is 25 MiB
+    attachment_max_size_bytes=None,  # REQUIRED for big files: the default cap is 25 MiB
 )
 ```
 
