@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import pytest
 import click
-from click.testing import CliRunner, Result
-
 import lib_cli_exit_tools
+import pytest
 
-from btx_lib_mail import cli as cli_mod
 from btx_lib_mail import __init__conf__
+from btx_lib_mail import cli as cli_mod
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
+    from click.testing import CliRunner, Result
 
 
 def _call_cli_private(name: str, *args: Any, **kwargs: Any) -> Any:
@@ -139,14 +141,14 @@ def test_when_boolean_env_is_absent_the_default_choice_wins(
     monkeypatch.delenv("BTX_MAIL_SMTP_USE_STARTTLS", raising=False)
     monkeypatch.setattr(cli_mod, "_DOTENV_PATH", tmp_path / "void.env")
 
-    assert _call_cli_private("_resolve_bool", None, "BTX_MAIL_SMTP_USE_STARTTLS", default=True) is True
+    assert _call_cli_private("_resolve_bool", cli_flag=None, env_key="BTX_MAIL_SMTP_USE_STARTTLS", default=True) is True
 
 
 @pytest.mark.os_agnostic
 def test_when_boolean_env_says_yes_the_flag_follows(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BTX_MAIL_SMTP_USE_STARTTLS", "YES")
 
-    assert _call_cli_private("_resolve_bool", None, "BTX_MAIL_SMTP_USE_STARTTLS", default=False) is True
+    assert _call_cli_private("_resolve_bool", cli_flag=None, env_key="BTX_MAIL_SMTP_USE_STARTTLS", default=False) is True
 
 
 @pytest.mark.os_agnostic
@@ -156,7 +158,7 @@ def test_when_boolean_env_is_nonsense_a_bad_parameter_surfaces(
     monkeypatch.setenv("BTX_MAIL_SMTP_USE_STARTTLS", "maybe")
 
     with pytest.raises(click.BadParameter, match="Unrecognised boolean value"):
-        _call_cli_private("_resolve_bool", None, "BTX_MAIL_SMTP_USE_STARTTLS", default=False)
+        _call_cli_private("_resolve_bool", cli_flag=None, env_key="BTX_MAIL_SMTP_USE_STARTTLS", default=False)
 
 
 @pytest.mark.os_agnostic
@@ -191,12 +193,12 @@ def test_when_the_traceback_mode_is_read_the_truth_is_returned(
 
 @pytest.mark.os_agnostic
 def test_when_tracebacks_are_enabled_the_verbose_limit_wins() -> None:
-    assert _call_cli_private("_traceback_limit", True, summary_limit=10, verbose_limit=999) == 999
+    assert _call_cli_private("_traceback_limit", tracebacks_enabled=True, summary_limit=10, verbose_limit=999) == 999
 
 
 @pytest.mark.os_agnostic
 def test_when_tracebacks_are_disabled_the_summary_limit_wins() -> None:
-    assert _call_cli_private("_traceback_limit", False, summary_limit=10, verbose_limit=999) == 10
+    assert _call_cli_private("_traceback_limit", tracebacks_enabled=False, summary_limit=10, verbose_limit=999) == 10
 
 
 @pytest.mark.os_agnostic
@@ -748,14 +750,14 @@ def test_resolve_directories_handles_multiple_values() -> None:
 def test_resolve_optional_bool_parses_true_values(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test that optional bool correctly parses true values."""
     monkeypatch.setenv("TEST_BOOL", "yes")
-    result = _call_cli_private("_resolve_optional_bool", None, "TEST_BOOL")
+    result = _call_cli_private("_resolve_optional_bool", cli_flag=None, env_key="TEST_BOOL")
     assert result is True
 
 
 @pytest.mark.os_agnostic
 def test_resolve_optional_bool_returns_none_when_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     """Test that optional bool returns None when env var is empty."""
-    result = _call_cli_private("_resolve_optional_bool", None, "NONEXISTENT_ENV")
+    result = _call_cli_private("_resolve_optional_bool", cli_flag=None, env_key="NONEXISTENT_ENV")
     assert result is None
 
 

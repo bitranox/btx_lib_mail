@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
 import importlib
 import runpy
 import sys
-from typing import TextIO
-
-import pytest
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, TextIO
 
 import lib_cli_exit_tools
+import pytest
 
-from btx_lib_mail import __init__conf__, cli as cli_mod
+from btx_lib_mail import __init__conf__
+from btx_lib_mail import cli as cli_mod
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 @dataclass(slots=True)

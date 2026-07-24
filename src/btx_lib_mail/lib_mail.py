@@ -17,28 +17,27 @@ configuration flow and delivery flow separated.
 
 from __future__ import annotations
 
-import sys
 import base64
 import io
-import mimetypes
-import tempfile
-import uuid
-from dataclasses import dataclass
-from enum import Enum
-from email import policy as email_policy
-from email.generator import BytesGenerator
-from email.message import EmailMessage
-from email.utils import formatdate
 import logging
+import mimetypes
 import pathlib
 import re
 import smtplib
 import ssl
+import sys
+import tempfile
+import uuid
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
+from email import policy as email_policy
+from email.generator import BytesGenerator
+from email.message import EmailMessage
+from email.utils import formatdate
+from enum import Enum
 from typing import IO, Any, Final, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
-
 
 logger = logging.getLogger("btx_lib_mail")
 
@@ -413,7 +412,7 @@ class ConfMail(BaseModel):
 
     @field_validator("attachment_allowed_extensions", "attachment_blocked_extensions", mode="before")
     @classmethod
-    def _normalise_extensions(cls, value: Any) -> frozenset[str] | None:  # noqa: ANN401
+    def _normalise_extensions(cls, value: Any) -> frozenset[str] | None:
         """Normalise extension sets to lowercase with leading dots.
 
         Why
@@ -452,7 +451,7 @@ class ConfMail(BaseModel):
 
     @field_validator("attachment_allowed_directories", "attachment_blocked_directories", mode="before")
     @classmethod
-    def _normalise_directories(cls, value: Any) -> frozenset[pathlib.Path] | None:  # noqa: ANN401
+    def _normalise_directories(cls, value: Any) -> frozenset[pathlib.Path] | None:
         """Normalise directory sets to resolved Path objects.
 
         Why
@@ -529,7 +528,7 @@ conf: ConfMail = ConfMail()
 """Global SMTP configuration surface used when per-call overrides are absent."""
 
 
-def send(
+def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called positionally by existing consumers
     mail_from: str,
     mail_recipients: str | Sequence[str],
     mail_subject: str,
@@ -669,8 +668,9 @@ def send(
 
     active_transport = transport if transport is not None else _DEFAULT_TRANSPORT
 
-    failed_recipients: list[str] = []
-    for recipient in recipients:
+    failed_recipients: list[str] = [
+        recipient
+        for recipient in recipients
         if not _deliver_to_any_host(
             sender=mail_from,
             recipient=recipient,
@@ -681,8 +681,8 @@ def send(
             attachments=attachments,
             delivery=delivery,
             transport=active_transport,
-        ):
-            failed_recipients.append(recipient)
+        )
+    ]
 
     if failed_recipients:
         raise RuntimeError(f'following recipients failed "{failed_recipients}" on all of following hosts : "{hosts}"')
@@ -782,7 +782,7 @@ class AttachmentSecurityOptions:
     raise_on_violation: bool
 
 
-def _resolve_attachment_security_options(
+def _resolve_attachment_security_options(  # noqa: PLR0913 - one keyword-only override per independent security policy
     *,
     explicit_allowed_extensions: frozenset[str] | None,
     explicit_blocked_extensions: frozenset[str] | None,
@@ -838,7 +838,7 @@ def _resolve_attachment_security_options(
     )
 
 
-def _deliver_to_any_host(
+def _deliver_to_any_host(  # noqa: PLR0913 - one keyword-only param per piece of message/delivery state, all required
     *,
     sender: str,
     recipient: str,
@@ -908,7 +908,7 @@ def _deliver_to_any_host(
                     extra={"sender": sender, "recipient": recipient, "host": host},
                 )
                 return True
-            except Exception:
+            except Exception:  # noqa: PERF203 - failover needs the try inside the loop to keep trying remaining hosts
                 logger.warning(
                     'can not send mail to "%s" via host "%s"',
                     recipient,
@@ -967,6 +967,15 @@ def _build_starttls_context(*, verify: bool) -> ssl.SSLContext:
 # Bytes read from the spooled message per socket write. Bounds peak delivery
 # memory to roughly one chunk rather than the whole payload.
 _STREAM_CHUNK_SIZE: Final[int] = 64 * 1024
+
+# RFC 5321 SMTP reply codes used to gate the streamed DATA/BDAT protocol steps.
+_SMTP_OK: Final[int] = 250
+_SMTP_WILL_FORWARD: Final[int] = 251
+_SMTP_START_MAIL_INPUT: Final[int] = 354
+
+# Length of a CRLF line terminator; used to detect whether the DATA phase
+# already ended on a line boundary before appending the terminal "." line.
+_CRLF_LEN: Final[int] = 2
 
 
 class Transport(Protocol):
@@ -1043,10 +1052,10 @@ def _require_socket(smtp_connection: smtplib.SMTP) -> Any:
 def _open_envelope(smtp_connection: smtplib.SMTP, sender: str, recipient: str) -> None:
     """Issue MAIL FROM / RCPT TO, raising on rejection (shared by DATA and BDAT)."""
     code, resp = smtp_connection.mail(sender)
-    if code != 250:
+    if code != _SMTP_OK:
         raise smtplib.SMTPSenderRefused(code, resp, sender)
     code, resp = smtp_connection.rcpt(recipient)
-    if code not in (250, 251):
+    if code not in (_SMTP_OK, _SMTP_WILL_FORWARD):
         raise smtplib.SMTPRecipientsRefused({recipient: (code, resp)})
 
 
@@ -1054,7 +1063,7 @@ def _send_via_data(smtp_connection: smtplib.SMTP, sender: str, recipient: str, m
     """Stream the message through the classic DATA phase with incremental dot-stuffing."""
     _open_envelope(smtp_connection, sender, recipient)
     code, resp = smtp_connection.docmd("DATA")
-    if code != 354:
+    if code != _SMTP_START_MAIL_INPUT:
         raise smtplib.SMTPDataError(code, resp)
 
     sock = _require_socket(smtp_connection)
@@ -1065,14 +1074,14 @@ def _send_via_data(smtp_connection: smtplib.SMTP, sender: str, recipient: str, m
         if not chunk:
             break
         sock.sendall(stuffer.feed(chunk))
-        tail = chunk[-2:] if len(chunk) >= 2 else (tail + chunk)[-2:]
+        tail = chunk[-_CRLF_LEN:] if len(chunk) >= _CRLF_LEN else (tail + chunk)[-_CRLF_LEN:]
     # End the DATA phase with a lone "." line, guaranteeing exactly one CRLF
     # before it so we neither merge into the final body line nor add a blank one.
-    if tail[-2:] != b"\r\n":
+    if tail[-_CRLF_LEN:] != b"\r\n":
         sock.sendall(b"\r\n")
     sock.sendall(b".\r\n")
     code, resp = smtp_connection.getreply()
-    if code != 250:
+    if code != _SMTP_OK:
         raise smtplib.SMTPDataError(code, resp)
 
 
@@ -1086,11 +1095,11 @@ def _send_via_bdat(smtp_connection: smtplib.SMTP, sender: str, recipient: str, m
             break
         sock.sendall(b"BDAT " + str(len(chunk)).encode("ascii") + b"\r\n" + chunk)
         code, resp = smtp_connection.getreply()
-        if code != 250:
+        if code != _SMTP_OK:
             raise smtplib.SMTPDataError(code, resp)
     sock.sendall(b"BDAT 0 LAST\r\n")
     code, resp = smtp_connection.getreply()
-    if code != 250:
+    if code != _SMTP_OK:
         raise smtplib.SMTPDataError(code, resp)
 
 
@@ -1118,7 +1127,7 @@ def _guess_attachment_mimetype(filename: str) -> tuple[str, str]:
     return maintype, subtype or "octet-stream"
 
 
-def _compose_to_spool(
+def _compose_to_spool(  # noqa: PLR0913 - one keyword-only param per message part; mirrors _deliver_to_any_host
     *,
     sender: str,
     recipient: str,
@@ -1147,7 +1156,9 @@ def _compose_to_spool(
     Reads each attachment's bytes from disk in chunks; may create a temp file.
     """
 
-    spool = cast("IO[bytes]", tempfile.SpooledTemporaryFile(max_size=_SPOOL_MAX_SIZE))
+    # Returned open and closed later by the caller (_deliver_to_any_host's `finally`)
+    # once streaming delivery finishes, so it cannot be opened as a `with` block here.
+    spool = cast("IO[bytes]", tempfile.SpooledTemporaryFile(max_size=_SPOOL_MAX_SIZE))  # noqa: SIM115
     body_message = _build_body_message(plain_body, html_body)
 
     if not attachments:
@@ -1271,13 +1282,15 @@ class _DotStuffer:
 
     def feed(self, chunk: bytes) -> bytes:
         """Return ``chunk`` with any line-leading ``.`` doubled."""
+        dot = ord(".")
+        line_feed = ord("\n")
         out = bytearray()
         at_line_start = self._at_line_start
         for byte in chunk:
-            if at_line_start and byte == 0x2E:  # ord(".")
-                out.append(0x2E)
+            if at_line_start and byte == dot:
+                out.append(dot)
             out.append(byte)
-            at_line_start = byte == 0x0A  # ord("\n"): the byte after LF starts a line
+            at_line_start = byte == line_feed  # the byte after LF starts a line
         self._at_line_start = at_line_start
         return bytes(out)
 
@@ -1313,7 +1326,7 @@ def _check_path_traversal(path: pathlib.Path, original_str: str) -> None:
         )
 
 
-def _check_symlink(path: pathlib.Path, allow_symlinks: bool) -> pathlib.Path:
+def _check_symlink(*, path: pathlib.Path, allow_symlinks: bool) -> pathlib.Path:
     """Check symlink status and return the resolved path.
 
     Why
@@ -1401,15 +1414,10 @@ def _check_directory_restrictions(
     resolved_path = path.resolve()
 
     if allowed is not None:
-        # Whitelist mode: path must be under an allowed directory
-        is_allowed = False
-        for allowed_dir in allowed:
-            try:
-                resolved_path.relative_to(allowed_dir.resolve())
-                is_allowed = True
-                break
-            except ValueError:
-                continue
+        # Whitelist mode: path must be under an allowed directory. is_relative_to()
+        # (3.9+) reports membership without raising, so no try/except is needed per
+        # candidate directory.
+        is_allowed = any(resolved_path.is_relative_to(allowed_dir.resolve()) for allowed_dir in allowed)
         if not is_allowed:
             raise AttachmentSecurityError(
                 path=path,
@@ -1419,15 +1427,12 @@ def _check_directory_restrictions(
     else:
         # Blacklist mode: path must not be under a blocked directory
         for blocked_dir in blocked:
-            try:
-                resolved_path.relative_to(blocked_dir.resolve())
+            if resolved_path.is_relative_to(blocked_dir.resolve()):
                 raise AttachmentSecurityError(
                     path=path,
                     reason=f'path under blocked directory "{blocked_dir}": "{path}"',
                     violation_type=AttachmentViolation.DIRECTORY,
                 )
-            except ValueError:
-                continue
 
 
 def _check_extension(
@@ -1463,14 +1468,13 @@ def _check_extension(
                 reason=f'extension "{ext}" not in allowed list: "{path}"',
                 violation_type=AttachmentViolation.EXTENSION,
             )
-    else:
-        # Blacklist mode: block only blacklisted extensions
-        if ext in blocked:
-            raise AttachmentSecurityError(
-                path=path,
-                reason=f'extension "{ext}" is blocked: "{path}"',
-                violation_type=AttachmentViolation.EXTENSION,
-            )
+    # Blacklist mode: block only blacklisted extensions
+    elif ext in blocked:
+        raise AttachmentSecurityError(
+            path=path,
+            reason=f'extension "{ext}" is blocked: "{path}"',
+            violation_type=AttachmentViolation.EXTENSION,
+        )
 
 
 def _check_file_size(path: pathlib.Path, max_size: int | None) -> None:
@@ -1544,7 +1548,7 @@ def _validate_attachment_security(
     _check_path_traversal(path, original_path_str)
 
     # 2. Check symlink handling
-    resolved_path = _check_symlink(path, security.allow_symlinks)
+    resolved_path = _check_symlink(path=path, allow_symlinks=security.allow_symlinks)
 
     # 3. Check sensitive patterns
     _check_sensitive_patterns(resolved_path)
@@ -1824,7 +1828,7 @@ def _collect_host_inputs(value: Any) -> list[str]:
         return [_normalise_host(value)]
     if isinstance(value, Iterable):  # type: ignore[reportUnnecessaryIsInstance]
         hosts: list[str] = []
-        for item in cast(Iterable[Any], value):
+        for item in cast("Iterable[Any]", value):
             if not isinstance(item, str):
                 raise ValueError("smtphosts entries must be strings")
             hosts.append(_normalise_host(item))
@@ -1946,12 +1950,14 @@ def _validate_port(port_str: str, original: str) -> None:
     None.
     """
 
+    min_port = 1
+    max_port = 65535  # highest valid TCP port
     try:
         port = int(port_str)
     except ValueError as exc:
         raise ValueError(f'invalid smtp port in "{original}"') from exc
-    if not (1 <= port <= 65535):
-        raise ValueError(f'port must be 1-65535 in "{original}", got {port}')
+    if not (min_port <= port <= max_port):
+        raise ValueError(f'port must be {min_port}-{max_port} in "{original}", got {port}')
 
 
 def _parse_smtp_host(address: str) -> tuple[str, int | None]:

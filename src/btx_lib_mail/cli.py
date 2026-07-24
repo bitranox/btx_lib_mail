@@ -23,17 +23,19 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Final, Sequence
-
-import rich_click as click
+from typing import TYPE_CHECKING, Final
 
 import lib_cli_exit_tools
+import rich_click as click
 from click.core import ParameterSource
 
 from . import __init__conf__
 from .behaviors import emit_greeting, noop_main, raise_intentional_failure
 from .lib_mail import conf, send, validate_email_address, validate_smtp_host
 from .typed_click import argument, option, version_option
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 _DOTENV_PATH = Path(".env")
 _TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -84,7 +86,7 @@ def _resolve_list(cli_values: Sequence[str], env_key: str, *, label: str) -> lis
     return values
 
 
-def _resolve_bool(cli_flag: bool | None, env_key: str, *, default: bool = False) -> bool:
+def _resolve_bool(*, cli_flag: bool | None, env_key: str, default: bool = False) -> bool:
     if cli_flag is not None:
         return cli_flag
     env_raw = _configured_value(env_key)
@@ -193,8 +195,8 @@ def _resolve_extensions(cli_value: str | None, env_key: str) -> frozenset[str] |
         return None
 
     extensions: set[str] = set()
-    for ext in raw.split(","):
-        ext = ext.strip().lower()
+    for raw_ext in raw.split(","):
+        ext = raw_ext.strip().lower()
         if not ext:
             continue
         if not ext.startswith("."):
@@ -234,15 +236,15 @@ def _resolve_directories(cli_values: Sequence[str], env_key: str) -> frozenset[P
         return None
 
     directories: set[Path] = set()
-    for dir_str in flattened:
-        dir_str = dir_str.strip()
+    for raw_dir_str in flattened:
+        dir_str = raw_dir_str.strip()
         if dir_str:
             directories.add(Path(dir_str))
 
     return frozenset(directories) if directories else None
 
 
-def _resolve_optional_bool(cli_flag: bool | None, env_key: str) -> bool | None:
+def _resolve_optional_bool(*, cli_flag: bool | None, env_key: str) -> bool | None:
     """Return the bool value provided via CLI, environment, or None for default.
 
     Why
@@ -274,7 +276,7 @@ def _resolve_optional_bool(cli_flag: bool | None, env_key: str) -> bool | None:
 
 
 #: Shared Click context flags so help output stays consistent across commands.
-CLICK_CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}  # noqa: C408
+CLICK_CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
 """Click context settings ensuring every command honours `-h/--help`."""
 #: Character budget used when printing truncated tracebacks.
 TRACEBACK_SUMMARY_LIMIT: Final[int] = 500
@@ -285,7 +287,7 @@ TRACEBACK_VERBOSE_LIMIT: Final[int] = 10_000
 TracebackState = tuple[bool, bool]
 
 
-def apply_traceback_preferences(enabled: bool) -> None:
+def apply_traceback_preferences(enabled: bool) -> None:  # noqa: FBT001 - public API (docs/systemdesign/module_reference.md), positional call sites exist
     """### apply_traceback_preferences(enabled: bool) -> None {#cli-apply-traceback-preferences}
 
     **Purpose:** Keep `lib_cli_exit_tools` configuration aligned with the CLI's
@@ -378,7 +380,7 @@ def _record_traceback_choice(ctx: click.Context, *, enabled: bool) -> None:
     ctx.obj["traceback"] = enabled
 
 
-def _announce_traceback_choice(enabled: bool) -> None:
+def _announce_traceback_choice(*, enabled: bool) -> None:
     """Keep ``lib_cli_exit_tools`` in sync with the selected traceback mode.
 
     Why
@@ -456,7 +458,7 @@ def _current_traceback_mode() -> bool:
     return bool(getattr(lib_cli_exit_tools.config, "traceback", False))
 
 
-def _traceback_limit(tracebacks_enabled: bool, *, summary_limit: int, verbose_limit: int) -> int:
+def _traceback_limit(*, tracebacks_enabled: bool, summary_limit: int, verbose_limit: int) -> int:
     """Return the character budget that matches the current traceback mode.
 
     Why
@@ -565,14 +567,14 @@ def _run_cli_via_exit_tools(
 
     try:
         return _invoke_cli(argv)
-    except BaseException as exc:  # noqa: BLE001 - handled by shared printers
+    except BaseException as exc:
         tracebacks_enabled = _current_traceback_mode()
         apply_traceback_preferences(tracebacks_enabled)
         return _print_exception(
             exc,
             tracebacks_enabled=tracebacks_enabled,
             length_limit=_traceback_limit(
-                tracebacks_enabled,
+                tracebacks_enabled=tracebacks_enabled,
                 summary_limit=summary_limit,
                 verbose_limit=verbose_limit,
             ),
@@ -596,7 +598,7 @@ def _run_cli_via_exit_tools(
     help="Show full Python traceback on errors",
 )
 @click.pass_context
-def cli(ctx: click.Context, traceback: bool) -> None:
+def cli(ctx: click.Context, *, traceback: bool) -> None:
     """### cli(traceback: bool = False) -> None {#cli-root}
 
     **Purpose:** Register global CLI options (notably `--traceback`) and ensure
@@ -623,7 +625,7 @@ def cli(ctx: click.Context, traceback: bool) -> None:
     """
 
     _record_traceback_choice(ctx, enabled=traceback)
-    _announce_traceback_choice(traceback)
+    _announce_traceback_choice(enabled=traceback)
     if _no_subcommand_requested(ctx):
         if _traceback_option_requested(ctx):
             cli_main()
@@ -769,7 +771,7 @@ def cli_hello() -> None:
     default=None,
     help="Raise on security violation (strict) or log warning and skip (warn).",
 )
-def cli_send_mail(
+def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per `send()` parameter, all keyword-only
     *,
     hosts: Sequence[str],
     recipients: Sequence[str],
@@ -829,8 +831,8 @@ def cli_send_mail(
     sender_value = sender or _configured_value("BTX_MAIL_SENDER") or resolved_recipients[0]
     username_value = username or _configured_value("BTX_MAIL_SMTP_USERNAME")
     password_value = password or _configured_value("BTX_MAIL_SMTP_PASSWORD")
-    use_starttls = _resolve_bool(starttls, "BTX_MAIL_SMTP_USE_STARTTLS", default=conf.smtp_use_starttls)
-    starttls_verify_value = _resolve_bool(starttls_verify, "BTX_MAIL_SMTP_STARTTLS_VERIFY", default=conf.smtp_starttls_verify)
+    use_starttls = _resolve_bool(cli_flag=starttls, env_key="BTX_MAIL_SMTP_USE_STARTTLS", default=conf.smtp_use_starttls)
+    starttls_verify_value = _resolve_bool(cli_flag=starttls_verify, env_key="BTX_MAIL_SMTP_STARTTLS_VERIFY", default=conf.smtp_starttls_verify)
     credentials = _resolve_credentials(username_value, password_value)
     timeout_value = _resolve_float(timeout, "BTX_MAIL_SMTP_TIMEOUT", default=conf.smtp_timeout)
 
@@ -840,8 +842,8 @@ def cli_send_mail(
     resolved_allowed_dirs = _resolve_directories(attachment_allowed_dirs, "BTX_MAIL_ATTACHMENT_ALLOWED_DIRS")
     resolved_blocked_dirs = _resolve_directories(attachment_blocked_dirs, "BTX_MAIL_ATTACHMENT_BLOCKED_DIRS")
     resolved_max_size = _resolve_int(attachment_max_size, "BTX_MAIL_ATTACHMENT_MAX_SIZE")
-    resolved_allow_symlinks = _resolve_optional_bool(attachment_allow_symlinks, "BTX_MAIL_ATTACHMENT_ALLOW_SYMLINKS")
-    resolved_raise_on_security = _resolve_optional_bool(attachment_raise_on_security, "BTX_MAIL_ATTACHMENT_RAISE_ON_SECURITY")
+    resolved_allow_symlinks = _resolve_optional_bool(cli_flag=attachment_allow_symlinks, env_key="BTX_MAIL_ATTACHMENT_ALLOW_SYMLINKS")
+    resolved_raise_on_security = _resolve_optional_bool(cli_flag=attachment_raise_on_security, env_key="BTX_MAIL_ATTACHMENT_RAISE_ON_SECURITY")
 
     send(
         mail_from=sender_value,
@@ -961,10 +963,10 @@ def main(
             verbose_limit=verbose_limit,
         )
     finally:
-        _restore_when_requested(previous_state, restore_traceback)
+        _restore_when_requested(state=previous_state, should_restore=restore_traceback)
 
 
-def _restore_when_requested(state: TracebackState, should_restore: bool) -> None:
+def _restore_when_requested(*, state: TracebackState, should_restore: bool) -> None:
     """Restore the prior traceback configuration when requested.
 
     Why

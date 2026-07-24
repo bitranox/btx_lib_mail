@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterator
 from dataclasses import fields
+from typing import TYPE_CHECKING
 
+import lib_cli_exit_tools
 import pytest
 from click.testing import CliRunner
 
-import lib_cli_exit_tools
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
 
 ANSI_ESCAPE_PATTERN = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 CONFIG_FIELDS: tuple[str, ...] = tuple(field.name for field in fields(type(lib_cli_exit_tools.config)))

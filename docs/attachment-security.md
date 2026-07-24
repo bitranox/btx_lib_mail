@@ -61,10 +61,10 @@ The library exports OS-specific defaults that can be extended or replaced:
 
 ```python
 from btx_lib_mail import (
-    DANGEROUS_EXTENSIONS_POSIX,    # frozenset: .sh, .py, .so, etc.
+    DANGEROUS_EXTENSIONS_POSIX,  # frozenset: .sh, .py, .so, etc.
     DANGEROUS_EXTENSIONS_WINDOWS,  # frozenset: .exe, .bat, .ps1, etc.
-    DANGEROUS_DIRECTORIES_POSIX,   # frozenset[Path]: /etc, /var, /root, etc.
-    DANGEROUS_DIRECTORIES_WINDOWS, # frozenset[Path]: C:\Windows, etc.
-    SENSITIVE_PATH_PATTERNS,       # tuple[str]: /.ssh/, /id_rsa, /.env, etc.
+    DANGEROUS_DIRECTORIES_POSIX,  # frozenset[Path]: /etc, /var, /root, etc.
+    DANGEROUS_DIRECTORIES_WINDOWS,  # frozenset[Path]: C:\Windows, etc.
+    SENSITIVE_PATH_PATTERNS,  # tuple[str]: /.ssh/, /id_rsa, /.env, etc.
 )
 ```

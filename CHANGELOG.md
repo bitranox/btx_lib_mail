@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+## [1.5.1] 2026-07-24 16:48:37
+
+### Fixed
+- Latest `ruff` (0.16) widened its default rule set to ~920 rules; CI went red
+  because this repo had no explicit `[tool.ruff.lint].select`. Pinned the
+  bitranox curated select (plus Pydantic `runtime-evaluated-base-classes` for
+  `ConfMail` and library/test per-file-ignores) so a future `ruff` release
+  cannot silently re-explode the policy again.
+- `PLR0917`/`FBT001` on internal CLI/`lib_mail` helpers: made the boolean
+  argument keyword-only and updated every call site; `send()`,
+  `cli_send_mail()`, and the documented `apply_traceback_preferences()` stayed
+  positional-compatible with a narrow `noqa` since they are public API.
+- Replaced two `try`/`except ValueError` directory-membership loops with
+  `Path.is_relative_to()` (no exception needed), replaced two `try`/`except`
+  loops flagged by `PLR2004`/`PERF203`/`SIM105` with named SMTP reply-code
+  constants and `contextlib.suppress`, and named the dot-stuffer's raw byte
+  literals via `ord(".")`/`ord("\n")`.
+
+### Changed
+- Removed the ad hoc "unused noqa" cleanups that had drifted out of sync with
+  the enabled rule set; every remaining `noqa`/`nosec` now matches a rule that
+  is actually enabled.
+
 ## [1.5.0] 2026-07-19
 
 ### Added

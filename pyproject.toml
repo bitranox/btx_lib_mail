@@ -1,10 +1,10 @@
 [project]
 name = "btx_lib_mail"
-version = "1.5.0"
+version = "1.5.1"
 description = "Send email from Python or the shell: streamed large attachments (bounded memory), RFC 3030 BDAT/CHUNKING, STARTTLS, multi-host failover, and attachment security."
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["rich-click>=1.9.8", "lib_cli_exit_tools>=2.3.2", "pydantic>=2.13.4"]
+dependencies = ["rich-click>=1.9.8", "lib_cli_exit_tools>=2.3.3", "pydantic>=2.13.4"]
 license = { text = "MIT" }
 authors = [{ name = "bitranox", email = "bitranox@gmail.com" }]
 keywords = ["email", "smtp", "mail", "attachments", "bdat", "starttls", "streaming", "cli"]
@@ -41,7 +41,7 @@ Issues = "https://github.com/bitranox/btx_lib_mail/issues"
 dev = [
   "pytest>=9.1.1",
   "pytest-cov>=7.1.0",
-  "ruff>=0.15.22",
+  "ruff>=0.16.0",
   "pyright[nodejs]>=1.1.411",
   "bandit>=1.9.4",
   # 1.5.1 was yanked upstream (unintended breaking changes), so 1.5.0 is the newest usable
@@ -86,9 +86,53 @@ include = ["src/btx_lib_mail/py.typed"]
 line-length = 160
 target-version = "py310"
 
+[tool.ruff.lint]
+# ruff 0.16 widened its default rule set to ~920 rules; pin the bitranox curated policy
+# instead of inheriting whatever the default grows to on the next ruff release.
+select = [
+  "E", "W",     # pycodestyle
+  "F",           # pyflakes
+  "I",           # isort
+  "N",           # pep8-naming
+  "UP",          # pyupgrade
+  "B",           # bugbear
+  "A",           # builtins shadowing
+  "C4",          # comprehension simplification
+  "SIM",         # simplification
+  "TCH",         # type-checking imports
+  "RUF",         # ruff-specific
+  "G",           # logging format (catches f-string in logger)
+  "T20",         # print statements
+  "PTH",         # pathlib preference
+  "PLC", "PLE",  # pylint conventions/errors
+  "S",           # flake8-bandit security checks
+  "PERF",        # performance anti-patterns
+  "ERA",         # eradicate dead/commented-out code
+  "FBT",         # boolean trap (boolean positional args)
+  "PLR",         # pylint refactor
+  "PLW",         # pylint warnings
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.flake8-type-checking]
+# ConfMail (lib_mail.py) resolves its field annotations at model-build time, so its
+# field-type imports must stay at runtime. Telling ruff about the Pydantic base keeps
+# TC001/TC002/TC003 from moving those imports into a TYPE_CHECKING block and breaking
+# model construction.
+runtime-evaluated-base-classes = ["pydantic.BaseModel"]
+
 [tool.ruff.lint.per-file-ignores]
 # ignore the "unused import sys" in the jupyter notebook - which we need (it is a linter hickup)
 "notebooks/*.ipynb" = ["F401"]
+# Tests: assert is standard, test fixtures have passwords, magic values are clearer inline, temp
+# paths are fine. PLC0415: local/deferred imports are a deliberate test idiom - several tests
+# import inside the test body to exercise import-time and cache behaviour.
+"tests/*.py" = ["S101", "S105", "S106", "S108", "T20", "PLR2004", "PLR0913", "FBT001", "FBT003", "PLC0415"]
+# aiosmtpd dispatches by exact method name (handle_<VERB>, smtp_<VERB> matching the
+# uppercase SMTP command), so these e2e test handlers cannot be lowercased.
+"tests/test_streaming.py" = ["N802"]
 
 [tool.pyright]
 typeCheckingMode = "strict"

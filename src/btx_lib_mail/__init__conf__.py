@@ -22,9 +22,11 @@ from __future__ import annotations
 #: Distribution name declared in ``pyproject.toml``.
 name = "btx_lib_mail"
 #: Human-readable summary shown in CLI help output.
-title = "Send email from Python or the shell: streamed large attachments (bounded memory), RFC 3030 BDAT/CHUNKING, STARTTLS, multi-host failover, and attachment security."
+# Must stay a single line: tests/test_metadata.py and the sync automation parse this
+# assignment line-by-line against pyproject.toml's `project.description` field.
+title = "Send email from Python or the shell: streamed large attachments (bounded memory), RFC 3030 BDAT/CHUNKING, STARTTLS, multi-host failover, and attachment security."  # noqa: E501
 #: Current release version pulled from ``pyproject.toml`` by automation.
-version = "1.5.0"
+version = "1.5.1"
 #: Repository homepage presented to users.
 homepage = "https://github.com/bitranox/btx_lib_mail"
 #: Author attribution surfaced in CLI output.
@@ -71,4 +73,4 @@ def print_info() -> None:
     pad = max(len(label) for label, _ in fields)
     lines = [f"Info for {name}:", ""]
     lines.extend(f"    {label.ljust(pad)} = {value}" for label, value in fields)
-    print("\n".join(lines))
+    print("\n".join(lines))  # noqa: T201 - doctested stdout contract for the CLI `info` command, not a debug leftover

@@ -65,10 +65,12 @@ but accepts a `transport=` override:
 from btx_lib_mail import send
 from btx_lib_mail.lib_mail import Transport  # protocol for a custom adapter
 
+
 class MyTransport:
     def deliver(self, *, host, sender, recipient, message, delivery):
         # `message` is a rewindable binary stream (the composed spool)
         ...
+
 
 send(..., transport=MyTransport())
 ```

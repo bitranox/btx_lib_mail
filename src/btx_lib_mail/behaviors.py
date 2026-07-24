@@ -17,10 +17,8 @@ features incubate elsewhere.
 
 from __future__ import annotations
 
-from typing import Final, TextIO
-
 import sys
-
+from typing import Final, TextIO
 
 CANONICAL_GREETING: Final[str] = "Hello World"
 """Canonical greeting line shared across CLI and smoke tests."""
@@ -128,6 +126,6 @@ def noop_main() -> None:
 __all__ = [
     "CANONICAL_GREETING",
     "emit_greeting",
-    "raise_intentional_failure",
     "noop_main",
+    "raise_intentional_failure",
 ]

@@ -3,21 +3,21 @@ from __future__ import annotations
 # Tests deliberately reach into module internals (the injected transport seam,
 # host parser, context builder), which is the tests' job, not an API leak.
 # pyright: reportPrivateUsage=false
-
 import os
 import ssl
-from pathlib import Path
 from email import message_from_bytes
 from email.message import EmailMessage
 from email.policy import default as default_policy
-from typing import IO, Any, Generator, cast
+from pathlib import Path
+from typing import IO, TYPE_CHECKING, Any, ClassVar, cast
 
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from btx_lib_mail import ConfMail
-from btx_lib_mail import lib_mail
+from btx_lib_mail import ConfMail, lib_mail
 
+if TYPE_CHECKING:
+    from collections.abc import Generator
 
 _DOTENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 
@@ -71,7 +71,7 @@ def test_conf_mail_assignment_validates() -> None:
     # correctly rejects ``config.smtphosts = "…"`` (str is not list[str]);
     # the cast silences the diagnostic for this deliberate type mismatch.
     config = ConfMail()
-    cast(Any, config).smtphosts = "smtp.example.com"
+    cast("Any", config).smtphosts = "smtp.example.com"
     assert config.smtphosts == ["smtp.example.com"]
 
 
@@ -81,7 +81,7 @@ def test_conf_mail_rejects_non_string_entries() -> None:
 
     config = ConfMail()
     with pytest.raises(ValidationError):
-        cast(Any, config).smtphosts = [1]  # type: ignore[list-item]
+        cast("Any", config).smtphosts = [1]  # type: ignore[list-item]
 
 
 def test_conf_mail_resolves_credentials() -> None:
@@ -157,11 +157,14 @@ class FakeTransport:
     e2e tests in ``test_streaming.py``.
     """
 
-    created: list[_RecordedDelivery] = []
-    init_calls: list[tuple[str, int, float | None]] = []
-    fail_on_send: set[str] = set()
-    fail_on_init: set[str] = set()
-    send_attempts: list[str] = []
+    # Shared across all FakeTransport instances by design: tests record via the
+    # class itself (FakeTransport.init_calls.append(...)) to inspect delivery
+    # history after `send()` returns.
+    created: ClassVar[list[_RecordedDelivery]] = []
+    init_calls: ClassVar[list[tuple[str, int, float | None]]] = []
+    fail_on_send: ClassVar[set[str]] = set()
+    fail_on_init: ClassVar[set[str]] = set()
+    send_attempts: ClassVar[list[str]] = []
 
     def deliver(
         self,
@@ -170,7 +173,7 @@ class FakeTransport:
         sender: str,
         recipient: str,
         message: IO[bytes],
-        delivery: Any,  # noqa: ANN401 - lib_mail.DeliveryOptions, kept loose for the double
+        delivery: Any,
     ) -> None:
         hostname, port = lib_mail._parse_smtp_host(host)
         FakeTransport.init_calls.append((hostname, port or 0, delivery.timeout))
@@ -925,7 +928,7 @@ class TestExtensionBlocking:
         script_file = tmp_path / "malicious.js"
         script_file.write_text("console.log('pwned')")
 
-        with pytest.raises(lib_mail.AttachmentSecurityError, match="extension.*is blocked"):
+        with pytest.raises(lib_mail.AttachmentSecurityError, match=r"extension.*is blocked"):
             lib_mail.send(
                 mail_from="sender@example.com",
                 mail_recipients="recipient@example.com",
@@ -958,7 +961,7 @@ class TestExtensionBlocking:
         doc_file = tmp_path / "document.docx"
         doc_file.write_bytes(b"fake docx content")
 
-        with pytest.raises(lib_mail.AttachmentSecurityError, match="extension.*not in allowed list"):
+        with pytest.raises(lib_mail.AttachmentSecurityError, match=r"extension.*not in allowed list"):
             lib_mail.send(
                 mail_from="sender@example.com",
                 mail_recipients="recipient@example.com",
@@ -1042,7 +1045,7 @@ class TestSizeLimit:
         large_file = tmp_path / "large.txt"
         large_file.write_bytes(b"x" * 1000)  # 1000 bytes
 
-        with pytest.raises(lib_mail.AttachmentSecurityError, match="file size.*exceeds limit"):
+        with pytest.raises(lib_mail.AttachmentSecurityError, match=r"file size.*exceeds limit"):
             lib_mail.send(
                 mail_from="sender@example.com",
                 mail_recipients="recipient@example.com",

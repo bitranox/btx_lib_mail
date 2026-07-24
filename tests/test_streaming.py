@@ -2,19 +2,23 @@
 
 from __future__ import annotations
 
+import contextlib
+
 # Tests reach into module internals (dot-stuffer, spool composer) by design, and
 # aiosmtpd ships no type stubs, so its server/handler objects are untyped here.
 # pyright: reportPrivateUsage=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false
-
 import socket
 import time
 from email import message_from_bytes
-from pathlib import Path
-from typing import Any, Iterator, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
 from btx_lib_mail import lib_mail
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from pathlib import Path
 
 aiosmtpd_controller = pytest.importorskip("aiosmtpd.controller")
 aiosmtpd_smtp = pytest.importorskip("aiosmtpd.smtp")
@@ -135,10 +139,8 @@ def _run_server(handler: Any, *, controller_cls: type[Controller] = Controller, 
             return controller
         except (TimeoutError, OSError) as error:  # readiness timeout or bind race
             last_error = error
-            try:
+            with contextlib.suppress(Exception):
                 controller.stop()
-            except Exception:  # noqa: BLE001 - best-effort teardown before retry
-                pass
             time.sleep(0.5)
     # Every retry hit an environment flake (seen only on macOS CI runners). The
     # wire behaviour under test is OS-independent and is covered on Linux and

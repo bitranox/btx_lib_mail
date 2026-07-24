@@ -16,13 +16,16 @@ module execution shares the same traceback limits and command wiring as the CLI.
 from __future__ import annotations
 
 from collections.abc import Callable
-from contextlib import AbstractContextManager
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from lib_cli_exit_tools import cli_session
-import rich_click as click
 
 from . import __init__conf__, cli
+
+if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
+
+    import rich_click as click
 
 TRACEBACK_SUMMARY_LIMIT: Final[int] = cli.TRACEBACK_SUMMARY_LIMIT
 """Character budget for truncated tracebacks when running via module entry."""

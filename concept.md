@@ -177,33 +177,33 @@ import btx_lib_mail as log
 log.init(
     service="meinservice",
     env="prod",
-    backend="auto",                 # "journald" (Linux), "eventlog" (Windows), "none"
+    backend="auto",  # "journald" (Linux), "eventlog" (Windows), "none"
     # Windows
     eventlog_log="Application",
     eventlog_provider=None,
-    eventlog_event_ids=None,        # { "INFO":1000, "WARNING":2000, ... } default s.o.
+    eventlog_event_ids=None,  # { "INFO":1000, "WARNING":2000, ... } default s.o.
     # Graylog (optional)
     gelf_enabled=False,
     gelf_host="graylog.example",
     gelf_port=12201,
-    gelf_proto="tcp",               # "udp" | "tcp" | "http"
+    gelf_proto="tcp",  # "udp" | "tcp" | "http"
     gelf_tls=True,
     gelf_level="INFO",
-    gelf_compress=True,             # falls unterstützt
+    gelf_compress=True,  # falls unterstützt
     # Konsole / Rich
     colors=True,
-    markup_console=False,           # Rich-Markup in messages erlauben?
-    force_color=None,               # None=auto, True/False erzwingen
+    markup_console=False,  # Rich-Markup in messages erlauben?
+    force_color=None,  # None=auto, True/False erzwingen
     console_level="INFO",
-    backend_level="INFO",           # Default für journald/Event Log
+    backend_level="INFO",  # Default für journald/Event Log
     console_format="{ts} {level:>5} {name} {pid}:{tid} — {message} {context}",
     # Ringpuffer & Dumps
     ring_size=25000,
     ring_store_colored="segments",  # "segments" | "ansi" | "none"
     max_event_size=16384,
     rate_limit="100/5s",
-    html_theme="dark",              # "dark" | "light" | "custom"
-    html_inline_css=True,           # Inline-CSS für Mail-Clients
+    html_theme="dark",  # "dark" | "light" | "custom"
+    html_inline_css=True,  # Inline-CSS für Mail-Clients
 )
 
 logger = log.get("app.http")
