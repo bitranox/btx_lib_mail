@@ -1,10 +1,10 @@
 [project]
 name = "btx_lib_mail"
-version = "1.5.1"
+version = "1.5.2"
 description = "Send email from Python or the shell: streamed large attachments (bounded memory), RFC 3030 BDAT/CHUNKING, STARTTLS, multi-host failover, and attachment security."
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["rich-click>=1.9.8", "lib_cli_exit_tools>=2.3.3", "pydantic>=2.13.4"]
+dependencies = ["rich-click>=1.9.8", "lib_cli_exit_tools>=2.3.4", "pydantic>=2.13.4"]
 license = { text = "MIT" }
 authors = [{ name = "bitranox", email = "bitranox@gmail.com" }]
 keywords = ["email", "smtp", "mail", "attachments", "bdat", "starttls", "streaming", "cli"]
@@ -47,7 +47,7 @@ dev = [
   # 1.5.1 was yanked upstream (unintended breaking changes), so 1.5.0 is the newest usable
   # release; a >=1.5.1 floor has ZERO candidates and makes this extra unresolvable.
   "build>=1.5.0",
-  "twine>=6.2.0",
+  "twine>=7.0.0",
   # codecov-cli is disabled, not dropped: it requires click<8.3.0, which drags click back to
   # 8.2.1 - the version with CVE-2026-7246 (command injection in click.edit(), fixed in 8.3.3).
   # Nothing else here caps click, so with this line active the audit gate goes red on every
