@@ -86,12 +86,14 @@ send(
     mail_body="Attached.",
     smtphosts=["smtp.example.com:587"],
     attachment_file_paths=[Path("/data/backup-20GB.tar")],
-    attachment_max_size_bytes=None,  # REQUIRED for big files: the default cap is 25 MiB
+    attachment_max_size_bytes=20 * 1024**3,  # REQUIRED for big files: the default cap is 25 MiB
 )
 ```
 
 The default `attachment_max_size_bytes` is 25 MiB, so a large file is rejected until you raise the
-cap or set it to `None`. The server's own `SIZE` limit still applies.
+cap. Raise it by passing a byte count bigger than the file. Do NOT pass `None` here: on the call it
+is the sentinel for "no override", so the 25 MiB default still applies and the send fails anyway.
+`None` disables the check only on the CONFIG object. The server's own `SIZE` limit still applies.
 
 ## CLI
 
