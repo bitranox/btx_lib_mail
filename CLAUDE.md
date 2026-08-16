@@ -138,7 +138,8 @@ Attachments are validated against multiple security checks:
 
 ## Version
 
-Current: 1.4.0 (see `pyproject.toml` and `__init__conf__.py`)
+The version lives in `pyproject.toml` and `__init__conf__.py`; read it there. Restating a number
+here only rots (this line said 1.4.0 while the package was at 1.5.2).
 
 ## Attachment Streaming
 
