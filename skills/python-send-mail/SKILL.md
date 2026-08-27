@@ -113,10 +113,14 @@ uvx btx-lib-mail send \
   --attachment-max-size 5000000000    # raise the 25 MiB default for a large attachment
 ```
 
-Other commands: `info`, `hello`, `validate-email`, `validate-smtp-host`. Every option also reads a
-matching `BTX_MAIL_*` environment variable (for example `BTX_MAIL_SMTP_HOSTS`,
-`BTX_MAIL_RECIPIENTS`, `BTX_MAIL_SMTP_PASSWORD`). Run `uvx btx-lib-mail send --help` for the full
-option list and precedence.
+Other commands: `info`, `hello`, `validate-email`, `validate-smtp-host` (no options; the two
+`validate-*` take a positional argument). On `send`, the connection and attachment-security
+options each fall back to a `BTX_MAIL_*` variable whose name is NOT mechanically derived from
+the flag - `--host` reads `BTX_MAIL_SMTP_HOSTS`, `--recipient` reads `BTX_MAIL_RECIPIENTS`,
+`--username` reads `BTX_MAIL_SMTP_USERNAME`. The MESSAGE-CONTENT options have no environment
+variable at all: `--subject`, `--body` (both required), `--html-body` and `--attachment` must
+be passed on the command line. Run `uvx btx-lib-mail send --help` for the full option list and
+precedence.
 
 ## Streaming and BDAT (how delivery works)
 
@@ -132,7 +136,13 @@ option list and precedence.
 
 Attachments are validated before any bytes are read, and rejected for: path traversal (`..`),
 symlinks (off by default), sensitive patterns (`/.ssh/`, `/id_rsa`, `/.env`, credentials), system
-directories, dangerous extensions (`.sh`, `.exe`, and the like), and oversize payloads. Violations
+directories, dangerous extensions, and oversize payloads. The dangerous-extension default is
+OS-SELECTED and the two sets are nearly disjoint (4 shared entries): on Linux and macOS
+`DANGEROUS_EXTENSIONS_POSIX` blocks `.sh`, `.py` and `.so` but NOT `.exe`, `.bat`, `.ps1` or
+`.dll`; on Windows `DANGEROUS_EXTENSIONS_WINDOWS` is the reverse. To block both families on
+every platform pass
+`attachment_blocked_extensions=DANGEROUS_EXTENSIONS_POSIX | DANGEROUS_EXTENSIONS_WINDOWS`
+(both are re-exported from the package root). Violations
 raise `AttachmentSecurityError` by default, or log-and-skip with
 `attachment_raise_on_security_violation=False`. There are whitelist modes
 (`attachment_allowed_extensions`, `attachment_allowed_directories`). Because dangerous extensions
