@@ -583,6 +583,8 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
     # Error handling parameters
     raise_on_missing_attachments: bool | None = None,
     raise_on_invalid_recipient: bool | None = None,
+    # Settings object used instead of the module-global conf (explicit keywords still win).
+    config: ConfMail | None = None,
     # Delivery seam (advanced/testing): override the SMTP transport adapter.
     transport: Transport | None = None,
 ) -> bool:
@@ -634,6 +636,10 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
     - `raise_on_invalid_recipient: bool | None = None` — Override
       `conf.raise_on_invalid_recipient`. When `None`, uses `conf` default;
       `True` raises on invalid, `False` logs warning and skips.
+    - `config: ConfMail | None = None` — Settings used in place of the
+      module-global `conf` for every value not passed explicitly; when given,
+      `conf` is not read. Lets an application hold its own `ConfMail` (or
+      subclass) without mutating the global.
 
     **Returns:** `bool` — Always `True` when all deliveries succeed. A failure
     raises instead of returning `False`.
@@ -661,19 +667,22 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
     True
     """
 
+    settings = config if config is not None else conf
+
     try:
         validate_email_address(mail_from)
     except ValueError:
         raise ValueError(f"invalid sender address: {mail_from!r}") from None
 
     # Resolve error handling parameters
-    resolved_raise_on_missing = raise_on_missing_attachments if raise_on_missing_attachments is not None else conf.raise_on_missing_attachments
-    resolved_raise_on_invalid = raise_on_invalid_recipient if raise_on_invalid_recipient is not None else conf.raise_on_invalid_recipient
+    resolved_raise_on_missing = raise_on_missing_attachments if raise_on_missing_attachments is not None else settings.raise_on_missing_attachments
+    resolved_raise_on_invalid = raise_on_invalid_recipient if raise_on_invalid_recipient is not None else settings.raise_on_invalid_recipient
 
     recipients = _prepare_recipients(mail_recipients, raise_on_invalid=resolved_raise_on_invalid)
 
     # Resolve security options
     security = _resolve_attachment_security_options(
+        settings=settings,
         explicit_allowed_extensions=attachment_allowed_extensions,
         explicit_blocked_extensions=attachment_blocked_extensions,
         explicit_allowed_directories=attachment_allowed_directories,
@@ -688,9 +697,10 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
         security,
         raise_on_missing=resolved_raise_on_missing,
     )
-    hosts = _prepare_hosts(tuple(smtphosts or conf.smtphosts))
+    hosts = _prepare_hosts(tuple(smtphosts or settings.smtphosts))
 
     delivery = _resolve_delivery_options(
+        settings=settings,
         explicit_credentials=credentials,
         explicit_starttls=use_starttls,
         explicit_starttls_verify=starttls_verify,
@@ -747,6 +757,7 @@ class DeliveryOptions:
 
 def _resolve_delivery_options(
     *,
+    settings: ConfMail,
     explicit_credentials: tuple[str, str] | None,
     explicit_starttls: bool | None,
     explicit_starttls_verify: bool | None,
@@ -759,6 +770,8 @@ def _resolve_delivery_options(
 
     Inputs
     ------
+    settings:
+        The `ConfMail` whose values fill in anything not passed explicitly.
     explicit_credentials / explicit_starttls / explicit_timeout:
         Optional overrides supplied by :func:`send`.
 
@@ -775,10 +788,10 @@ def _resolve_delivery_options(
     None; pure function.
     """
 
-    credentials = explicit_credentials or conf.resolved_credentials()
-    use_starttls = bool(explicit_starttls if explicit_starttls is not None else conf.smtp_use_starttls)
-    starttls_verify = bool(explicit_starttls_verify if explicit_starttls_verify is not None else conf.smtp_starttls_verify)
-    timeout = float(explicit_timeout if explicit_timeout is not None else conf.smtp_timeout)
+    credentials = explicit_credentials or settings.resolved_credentials()
+    use_starttls = bool(explicit_starttls if explicit_starttls is not None else settings.smtp_use_starttls)
+    starttls_verify = bool(explicit_starttls_verify if explicit_starttls_verify is not None else settings.smtp_starttls_verify)
+    timeout = float(explicit_timeout if explicit_timeout is not None else settings.smtp_timeout)
     if timeout <= 0:
         raise ValueError(f"smtp_timeout must be positive, got {timeout}")
     return DeliveryOptions(credentials=credentials, use_starttls=use_starttls, starttls_verify=starttls_verify, timeout=timeout)
@@ -816,6 +829,7 @@ class AttachmentSecurityOptions:
 
 def _resolve_attachment_security_options(  # noqa: PLR0913 - one keyword-only override per independent security policy
     *,
+    settings: ConfMail,
     explicit_allowed_extensions: frozenset[str] | None,
     explicit_blocked_extensions: frozenset[str] | None,
     explicit_allowed_directories: frozenset[pathlib.Path] | None,
@@ -831,6 +845,8 @@ def _resolve_attachment_security_options(  # noqa: PLR0913 - one keyword-only ov
 
     Inputs
     ------
+    settings:
+        The `ConfMail` whose values fill in anything not passed explicitly.
     explicit_allowed_extensions / explicit_blocked_extensions / ... :
         Optional overrides supplied by :func:`send`. When `None`, the
         corresponding `conf` default is used.
@@ -851,13 +867,13 @@ def _resolve_attachment_security_options(  # noqa: PLR0913 - one keyword-only ov
     None; pure function.
     """
     # Use sentinel pattern: None means "use default", explicit value overrides
-    allowed_ext = explicit_allowed_extensions if explicit_allowed_extensions is not None else conf.attachment_allowed_extensions
-    blocked_ext = explicit_blocked_extensions if explicit_blocked_extensions is not None else conf.attachment_blocked_extensions
-    allowed_dirs = explicit_allowed_directories if explicit_allowed_directories is not None else conf.attachment_allowed_directories
-    blocked_dirs = explicit_blocked_directories if explicit_blocked_directories is not None else conf.attachment_blocked_directories
-    max_size = explicit_max_size_bytes if explicit_max_size_bytes is not None else conf.attachment_max_size_bytes
-    allow_symlinks = explicit_allow_symlinks if explicit_allow_symlinks is not None else conf.attachment_allow_symlinks
-    raise_on_violation = explicit_raise_on_violation if explicit_raise_on_violation is not None else conf.attachment_raise_on_security_violation
+    allowed_ext = explicit_allowed_extensions if explicit_allowed_extensions is not None else settings.attachment_allowed_extensions
+    blocked_ext = explicit_blocked_extensions if explicit_blocked_extensions is not None else settings.attachment_blocked_extensions
+    allowed_dirs = explicit_allowed_directories if explicit_allowed_directories is not None else settings.attachment_allowed_directories
+    blocked_dirs = explicit_blocked_directories if explicit_blocked_directories is not None else settings.attachment_blocked_directories
+    max_size = explicit_max_size_bytes if explicit_max_size_bytes is not None else settings.attachment_max_size_bytes
+    allow_symlinks = explicit_allow_symlinks if explicit_allow_symlinks is not None else settings.attachment_allow_symlinks
+    raise_on_violation = explicit_raise_on_violation if explicit_raise_on_violation is not None else settings.attachment_raise_on_security_violation
 
     return AttachmentSecurityOptions(
         allowed_extensions=allowed_ext,

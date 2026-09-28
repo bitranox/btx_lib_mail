@@ -1443,3 +1443,56 @@ class TestRaiseOnInvalidRecipientParameter:
         assert result is True
         assert "invalid recipient invalid@" in caplog.text
         assert recorder.created[0].sent_messages[0][1] == "valid@example.com"
+
+
+class _RecordingTransport:
+    """Transport double that records the options each delivery received."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, lib_mail.DeliveryOptions]] = []
+
+    def deliver(self, *, host: str, sender: str, recipient: str, message: IO[bytes], delivery: lib_mail.DeliveryOptions) -> None:
+        self.calls.append((host, delivery))
+
+
+@pytest.mark.os_agnostic
+def test_send_uses_a_passed_config_and_leaves_the_global_conf_alone() -> None:
+    lib_mail.conf.smtphosts = ["global.example.com"]
+    config = ConfMail(
+        smtphosts=["cfg.example.com:2525"],
+        smtp_username="user",
+        smtp_password=SecretStr("DUMMY-PLANTED-cfg"),
+        smtp_timeout=7.0,
+        smtp_use_starttls=False,
+    )
+    transport = _RecordingTransport()
+
+    lib_mail.send("sender@example.com", "rcpt@example.com", "s", config=config, transport=transport)
+
+    host, delivery = transport.calls[0]
+    assert host == "cfg.example.com:2525"
+    assert delivery.credentials == ("user", "DUMMY-PLANTED-cfg")
+    assert delivery.timeout == 7.0
+    assert delivery.use_starttls is False
+    assert lib_mail.conf.smtphosts == ["global.example.com"]
+
+
+@pytest.mark.os_agnostic
+def test_an_explicit_keyword_beats_the_passed_config() -> None:
+    config = ConfMail(smtphosts=["cfg.example.com"], smtp_timeout=7.0)
+    transport = _RecordingTransport()
+
+    lib_mail.send("sender@example.com", "rcpt@example.com", "s", smtphosts=["kw.example.com"], timeout=3.0, config=config, transport=transport)
+
+    host, delivery = transport.calls[0]
+    assert (host, delivery.timeout) == ("kw.example.com", 3.0)
+
+
+@pytest.mark.os_agnostic
+def test_a_passed_config_supplies_the_attachment_policy(tmp_path: Path) -> None:
+    attachment = tmp_path / "report.pdf"
+    attachment.write_bytes(b"%PDF-1.4")
+    config = ConfMail(smtphosts=["cfg.example.com"], attachment_allowed_extensions=frozenset({".txt"}))
+
+    with pytest.raises(lib_mail.AttachmentSecurityError):
+        lib_mail.send("sender@example.com", "rcpt@example.com", "s", attachment_file_paths=[attachment], config=config, transport=_RecordingTransport())
