@@ -29,10 +29,11 @@ ruff/pyright/pytest, since bmk also runs whole-tree Markdown formatting and
 - Single source of truth for package metadata is `pyproject.toml` (`[project]`).
 - `src/btx_lib_mail/__init__conf__.py` is generated from `pyproject.toml`; do not
   hand-edit the version there.
-- `make bump-patch` / `make bump-minor` / `make bump-major` update `pyproject.toml` and
-  insert a new `CHANGELOG.md` section; `make release` tags and releases the CURRENT
-  `pyproject.toml` version without bumping it, so bump first if the version is not yet
-  released.
+- `make bump-patch` / `make bump-minor` / `make bump-major` update `pyproject.toml`,
+  `src/btx_lib_mail/__init__conf__.py` and `.claude-plugin/plugin.json` to the new
+  version, and insert a new `CHANGELOG.md` section; `make release` tags and releases
+  the CURRENT `pyproject.toml` version without bumping it, so bump first if the version
+  is not yet released.
 
 ## Dependency auditing
 

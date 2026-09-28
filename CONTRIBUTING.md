@@ -13,8 +13,10 @@ Thanks for helping improve **btx_lib_mail**. The sections below summarise the da
 ## 2. Commits & Pushes
 
 - Commit messages should be imperative (`Add rich handler`, `Fix CLI exit codes`).
-- `make test` runs the full lint/type/test pipeline but leaves the repository untouched;
-  create commits yourself before pushing.
+- `make test` runs the full lint/type/test pipeline; it does NOT leave the repository
+  untouched (bmk regenerates the Makefile, may raise a dependency floor in
+  `pyproject.toml`, and reformats files with the current `ruff`). Review `git status`
+  and `git diff` after running it, then create commits yourself before pushing.
 - `make push` (bmk) runs the test gate, commits, and pushes to the remote in one step;
   see `DEVELOPMENT.md` and `make help` for its exact behaviour.
 
@@ -46,8 +48,10 @@ Before opening a PR, confirm the following:
 - [ ] `make test` passes locally.
 - [ ] Relevant documentation (`README.md`, `DEVELOPMENT.md`, `docs/systemdesign/*`) is updated.
 - [ ] No generated artefacts or virtual environments are committed.
-- [ ] Version bumps, when required, touch **only** `pyproject.toml` and `CHANGELOG.md`
-      (`make bump-patch`/`-minor`/`-major` does both).
+- [ ] Version bumps, when required, are done with `make bump-patch`/`-minor`/`-major`,
+      which updates `pyproject.toml`, `src/btx_lib_mail/__init__conf__.py` and
+      `.claude-plugin/plugin.json` and inserts a new `CHANGELOG.md` section; do not
+      hand-edit the version in any of those files.
 
 ## 6. Security & Configuration
 

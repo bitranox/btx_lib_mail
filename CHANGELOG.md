@@ -15,21 +15,31 @@
 - `ConfMail` validation errors never carry the password (not in `str()`,
   `errors()` or `json()`), including errors raised by a subclass's own
   model-level validators.
-- SMTP host strings containing `@` or `/` (for example `smtp://user:pw@host`)
-  are refused without echoing them, both by `send()` and when a `ConfMail` is
-  built or assigned; they were previously quoted in the log, in the delivery
-  `RuntimeError`, and in `repr()` / `model_dump_json()` of the config.
+- `validate_smtp_host()` (and the CLI `validate-smtp-host`, which calls it)
+  now refuse a host containing `@` or `/` (for example `smtp://user:pw@host`),
+  or interior whitespace or a control character (outer whitespace is still
+  trimmed), without echoing the value. The same refusal applies wherever a
+  host reaches `send()` or a `ConfMail` build/assignment; such hosts were
+  previously quoted in the log, in the delivery `RuntimeError`, and in
+  `repr()` / `model_dump_json()` of the config.
 - `DeliveryOptions` no longer prints its credentials in `repr()`.
 - Host, recipient, sender and attachment-path values are passed through a
   control-character cleaner before they reach any log line, log `extra` or
   raised error text (a recipient or a filename containing a newline or an ESC
   sequence could forge log lines or inject terminal sequences);
   `AttachmentSecurityError` cleans its reason and rendered path.
-- A host containing interior whitespace or a control character is refused, at
-  `send()` and at `ConfMail` time (outer whitespace is still trimmed).
 - A hidden validation error's message is scrubbed of the input's text
   (best-effort: verbatim, repr, ascii and JSON-escaped forms; a transformed
   value is not recognised).
+- `str(ValidationError)` of any `ConfMail` error (`hide_input_in_errors=True`)
+  no longer shows `input_value=` for any field, credential or not; `.errors()`
+  still carries a kept scalar's input (a non-credential field such as
+  `smtp_timeout` keeps its value there, just not in the printed string).
+- The per-host delivery WARNING is now logged after the `except` block that
+  caught the failure has exited, not from inside it, so a broken log handler
+  or formatter can no longer chain that failure onto its own traceback via
+  `__context__` ("During handling of the above exception ..."). Only visible
+  to a caller with a log sink that itself raises.
 
 ### Added
 
@@ -47,12 +57,18 @@
 
 ### Changed
 
-- **Breaking:** a host list containing a `user:pw@` or URL entry (anything
-  with `@` or `/`) is now refused as a whole with `ValueError` before any
-  delivery; it previously failed over past that entry to the next host. A
-  `ConfMail` with such a host now raises `ValidationError` at construction or
-  assignment instead of failing at send time. Remove the entry and pass the
-  credentials as `smtp_username` / `smtp_password`.
+- **Breaking:** every host list entry carrying `@` or `/` (userinfo or a URL)
+  is now refused up front with `ValueError` before any delivery, and a
+  `ConfMail` built or assigned such a host raises `ValidationError` at that
+  point instead of at send time. This changes behaviour for two of the three
+  forms: `smtp://user:pw@relay:25` and `user@relay` previously reached
+  delivery and failed over to the next host (a bogus hostname, or a DNS
+  lookup failure); they are now refused eagerly instead. `user:pw@relay` was
+  already refused at 1.5.x, just by an accident of the port parser reading
+  everything after the first `:` as the port and quoting the whole string,
+  password included, in `ValueError: invalid smtp port in "..."`; it is now
+  refused deliberately, without quoting the value. Remove the entry and pass
+  the credentials as `smtp_username` / `smtp_password`.
 - The per-host WARNING reads `can not send mail to "<rcpt>" via host "<host>":
   <failure>` (one line, control characters replaced) and carries `error_type`
   and `smtp_code` extras; the traceback is no longer attached.

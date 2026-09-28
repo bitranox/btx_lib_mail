@@ -138,9 +138,11 @@ Key behaviours:
   `SecretSafeModel` subclass's own `model_validate_json` directly (`ConfMail.model_validate_json(text)`)
   to get the redaction; it is covered from `__init__` and every `model_validate*` method
   onward.
-- **`ConfMail.model_construct(...)` skips validation.** It builds an instance directly
-  from the fields you give it, so nothing refuses a host carrying `user:password@` or
-  rejects a malformed password; use it only for data you already trust.
+- **`ConfMail.model_construct(...)` and `existing.model_copy(update=...)` both skip
+  validation.** `model_construct` builds an instance directly from the fields you give
+  it, and `model_copy(update=...)` applies the update without re-validating the model;
+  neither refuses a host carrying `user:password@` or rejects a malformed password.
+  Use either only for data you already trust.
 
 An empty `attachment_blocked_extensions` or `attachment_blocked_directories` set on
 `ConfMail` means "block nothing"; it is not a way to ask for the OS defaults. Passing

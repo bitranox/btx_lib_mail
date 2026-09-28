@@ -2,8 +2,8 @@
 
 ## On session start
 
-- Read the following files from `/media/srv-main-softdev/projects/softwarestack/systemprompts`
-  and keep their guidance in working memory:
+- Read the following files (path set by the working environment, not part of this
+  repository) and keep their guidance in working memory:
   - core_programming_solid.md
   - bash_clean_code.md
   - bash_small_functions.md
@@ -76,18 +76,6 @@ current target list; see `DEVELOPMENT.md` for the everyday ones.
   sites consistent with that.
 - A model holding a credential extends `secret_safety.SecretSafeModel` rather than a
   plain `pydantic.BaseModel`.
-
-## Translations (Docs)
-
-## Translations (App UI Strings)
-
-## Changes in WEB Documentation
-- when asked to update documentation - only do that in the english docs under /website/docs because other languages will be translated automatically,
-  unless stated otherwise by the user. In doubt - ask the user
-
-## Changes in APP Strings
-- when i18 strings are changed, only to that in sources/\_locales/en because other languages will be translated automatically,
-  unless stated otherwise by the user. In doubt - ask the user
 
 ## commit/push/GitHub policy
 - run "make test" before any push to avoid lint/test breakage.
