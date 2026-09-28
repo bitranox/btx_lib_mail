@@ -14,7 +14,6 @@ import logging
 import pickle
 import smtplib
 import threading
-import time
 from collections import deque
 from dataclasses import dataclass
 from enum import Enum
@@ -39,9 +38,10 @@ from pydantic_core import PydanticCustomError
 
 import btx_lib_mail
 from btx_lib_mail import REDACTED_INPUT, SecretSafeModel, lib_mail, redact_validation_error
+from btx_lib_mail.secret_safety import _MAX_VISITS
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
     from btx_lib_mail.lib_mail import DeliveryOptions
 
@@ -356,6 +356,12 @@ _UMLAUT_BACKSLASH_DUMMY = "DUMMY-PLANTED-8e5a-ä\\x"
 # Bytes are quoted by their own repr (b'...\xc3\xa4'), which no form of the
 # decoded text matches.
 _BYTES_DUMMY = "DUMMY-PLANTED-9f6b-ä".encode()
+# json.dumps(ensure_ascii=False) keeps the umlaut literal but still escapes the
+# quote, so its form differs from repr() (which leaves the quote bare) and from
+# json.dumps()'s default ensure_ascii=True form (which escapes the umlaut too).
+_NONASCII_QUOTE_DUMMY = 'DUMMY-PLANTED-2d9f-ä"x'
+# A credential used AS a mapping key, not a value.
+_KEY_DUMMY = "DUMMY-PLANTED-4a7c"
 
 
 class _QuotedToken(SecretSafeModel):
@@ -384,8 +390,30 @@ class _TokenQuotedByJson(_QuotedToken):
         raise ValueError(f"bad token {json.dumps(value)}")
 
 
+class _TokenQuotedByJsonNonAscii(_QuotedToken):
+    @field_validator("token")
+    @classmethod
+    def _check(cls, value: str) -> str:
+        raise ValueError(f"bad token {json.dumps(value, ensure_ascii=False)}")
+
+
 class _MappingEnum(Enum):
     HELD = MappingProxyType({"password": _MODEL_DUMMY})
+
+
+class _TokenScopes(SecretSafeModel):
+    """Field is a credential dict: the KEY, not only the value, can hold a secret."""
+
+    credential_fields = frozenset({"tokens"})
+    tokens: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("tokens")
+    @classmethod
+    def _check(cls, value: dict[str, str]) -> dict[str, str]:
+        for key, scope in value.items():
+            if scope not in {"read", "write"}:
+                raise ValueError(f"token {key} has unknown scope {scope}")
+        return value
 
 
 class _BytesTokenQuotedByRepr(SecretSafeModel):
@@ -491,6 +519,8 @@ _LEAK_CASES: list[tuple[str, Callable[[], object], str]] = [
     ("backslash token quoted by json.dumps()", lambda: _TokenQuotedByJson(token=_BACKSLASH_DUMMY), "PLANTED-5b2d"),
     ("umlaut and backslash token quoted by repr()", lambda: _TokenQuotedByRepr(token=_UMLAUT_BACKSLASH_DUMMY), "PLANTED-8e5a"),
     ("bytes token quoted by repr()", lambda: _BytesTokenQuotedByRepr(token=_BYTES_DUMMY), "PLANTED-9f6b"),
+    ("token quoted by json.dumps(ensure_ascii=False)", lambda: _TokenQuotedByJsonNonAscii(token=_NONASCII_QUOTE_DUMMY), "PLANTED-2d9f"),
+    ("credential dict key", lambda: _TokenScopes(tokens={_KEY_DUMMY: "admin"}), _KEY_DUMMY),
     ("custom error type", lambda: _CredsWithCustomRule(password=_MODEL_DUMMY), _MODEL_DUMMY),  # type: ignore[arg-type]
     ("custom error reusing value_error", lambda: _CredsWithValueErrorNamedRule(password=_MODEL_DUMMY), _MODEL_DUMMY),  # type: ignore[arg-type]
     ("custom error reusing int_parsing", lambda: _CredsWithIntParsingNamedRule(password=_MODEL_DUMMY), _MODEL_DUMMY),  # type: ignore[arg-type]
@@ -585,7 +615,10 @@ def test_a_hidden_error_drops_ctx_and_scrubs_the_input_from_its_message() -> Non
     errors = caught.value.errors()
     assert [(e["type"], e["loc"], e["input"]) for e in errors] == [("union_tag_invalid", ("auth",), REDACTED_INPUT)], "positive control"
     assert "ctx" not in errors[0]
-    assert errors[0]["msg"] == f"Input tag '{REDACTED_INPUT}' found using 'kind' does not match any of the expected tags: 'pw', 'token'"
+    # 'kind' is also a KEY of the hidden input dict (the discriminator field
+    # name coincides with it here), so it is scrubbed too now that mapping
+    # keys are walked; over-redaction is the safe direction.
+    assert errors[0]["msg"] == f"Input tag '{REDACTED_INPUT}' found using '{REDACTED_INPUT}' does not match any of the expected tags: 'pw', 'token'"
 
 
 @pytest.mark.os_agnostic
@@ -623,6 +656,7 @@ _ESCAPED_QUOTES: list[tuple[type[_QuotedToken], Callable[[str], str], str, str]]
     (_TokenQuotedByJson, json.dumps, _UMLAUT_DUMMY, f'Value error, bad token "{REDACTED_INPUT}"'),
     (_TokenQuotedByJson, json.dumps, _BACKSLASH_DUMMY, f'Value error, bad token "{REDACTED_INPUT}"'),
     (_TokenQuotedByRepr, repr, _UMLAUT_BACKSLASH_DUMMY, f"Value error, bad token '{REDACTED_INPUT}'"),
+    (_TokenQuotedByJsonNonAscii, lambda text: json.dumps(text, ensure_ascii=False), _NONASCII_QUOTE_DUMMY, f'Value error, bad token "{REDACTED_INPUT}"'),
 ]
 
 
@@ -630,7 +664,7 @@ _ESCAPED_QUOTES: list[tuple[type[_QuotedToken], Callable[[str], str], str, str]]
 @pytest.mark.parametrize(
     ("model", "quote", "token", "message"),
     _ESCAPED_QUOTES,
-    ids=["repr backslash", "ascii umlauts", "json umlauts", "json backslash", "repr umlaut and backslash"],
+    ids=["repr backslash", "ascii umlauts", "json umlauts", "json backslash", "repr umlaut and backslash", "json ensure_ascii=False"],
 )
 def test_an_escaped_copy_of_a_hidden_input_is_scrubbed_from_the_message(
     model: type[_QuotedToken], quote: Callable[[str], str], token: str, message: str
@@ -666,6 +700,17 @@ def test_the_repr_of_hidden_bytes_is_scrubbed_from_the_message() -> None:
     assert errors[0]["msg"] == f"Value error, bad token b'{REDACTED_INPUT}'"
 
 
+@pytest.mark.os_agnostic
+def test_a_credential_used_as_a_mapping_key_is_scrubbed_from_the_message() -> None:
+    with pytest.raises(ValidationError) as caught:
+        _TokenScopes(tokens={_KEY_DUMMY: "admin"})
+    errors = caught.value.errors()
+    assert [(e["type"], e["loc"], e["input"]) for e in errors] == [("value_error", ("tokens",), REDACTED_INPUT)], "positive control"
+    # "admin" (the dict VALUE) was already scrubbed before this fix; the KEY is
+    # the new part this test proves.
+    assert errors[0]["msg"] == f"Value error, token {REDACTED_INPUT} has unknown scope {REDACTED_INPUT}", "the KEY, not only the value, is scrubbed"
+
+
 def _enum_member_whose_value_is_itself() -> Enum:
     class _Cyclic(Enum):
         LOOP = 1
@@ -693,6 +738,7 @@ def test_an_enum_whose_value_leads_back_to_itself_is_hidden_without_looping() ->
     worker.start()
     worker.join(timeout=5)
     assert not worker.is_alive(), "the redaction kept following an Enum value that leads back to itself"
+    assert caught, "positive control: the worker finished by raising, not by returning silently"
     assert [(e["loc"], e["input"]) for e in caught[0].errors()] == [(("timeout",), REDACTED_INPUT)]
 
 
@@ -708,25 +754,45 @@ def test_an_input_with_more_members_than_the_walk_allows_hides_the_message() -> 
     assert errors[0]["msg"] == REDACTED_INPUT, "an input with more members than the walk visits hides the message whole"
 
 
-# The walk over an input takes its members one at a time, so a huge input is
-# refused after a bounded number of them. A walk that first materialises every
-# member costs ~0.07 s per million members (measured), so the smaller size is
-# still well over the bound when the walk is eager; the larger one would need
-# tens of gigabytes that way.
-_HUGE_INPUT_SECONDS: float = 0.5
+class _CountingCollection:
+    """A `Collection` that counts how many members were actually pulled from it.
+
+    `__len__` reports the real size (honest, not a lie to look small), but the
+    walk under test never calls it; only `__iter__` is pulled from, one member
+    at a time, so `pulls` is a deterministic proxy for how much of the input
+    the walk actually visited -- no wall clock involved.
+    """
+
+    def __init__(self, size: int) -> None:
+        self._size = size
+        self.pulls = 0
+
+    def __len__(self) -> int:
+        return self._size
+
+    def __contains__(self, item: object) -> bool:
+        return isinstance(item, int) and 0 <= item < self._size
+
+    def __iter__(self) -> Iterator[int]:
+        for index in range(self._size):
+            self.pulls += 1
+            yield index
 
 
 @pytest.mark.os_agnostic
-@pytest.mark.parametrize("size", [30_000_000, 10**9], ids=["3e7", "1e9"])
-def test_an_input_with_a_huge_number_of_members_is_refused_without_walking_it(size: int) -> None:
-    started = time.perf_counter()
+def test_an_input_with_a_huge_number_of_members_is_refused_without_walking_it() -> None:
+    # The walk takes members one at a time and stops after _MAX_VISITS of them
+    # (plus the one that trips the bound), never materialising the rest; a
+    # collection ten times that size proves the walk did not just run to
+    # completion quickly.
+    members = _CountingCollection(10 * _MAX_VISITS)
     with pytest.raises(ValidationError) as caught:
-        _Creds(timeout=range(size))  # type: ignore[arg-type]
-    elapsed = time.perf_counter() - started
+        _Creds(timeout=members)  # type: ignore[arg-type]
+    assert caught.value.error_count() >= 1, "positive control: an error was produced"
     errors = caught.value.errors()
     assert [(e["loc"], e["input"]) for e in errors] == [(("timeout",), REDACTED_INPUT)], "positive control"
     assert errors[0]["msg"] == REDACTED_INPUT, "an input too large to check hides the message whole"
-    assert elapsed < _HUGE_INPUT_SECONDS, f"refusing a range({size}) took {elapsed:.2f} s"
+    assert members.pulls <= _MAX_VISITS + 1, f"the walk pulled {members.pulls} members from a bound of {_MAX_VISITS}"
 
 
 class _BrokenError:

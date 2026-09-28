@@ -13,12 +13,17 @@ malformed JSON handed to ``model_validate_json`` of a plain (non-secret-safe)
 model that nests a ``SecretSafeModel``. The JSON parser fails first, and its
 ``json_invalid`` error carries the whole JSON text as its input.
 
-The error MESSAGE of a hidden error is scrubbed on a best-effort basis only:
-every text reachable in its input is replaced where the message repeats it
-verbatim or in its ``repr()``, ``ascii()`` or JSON-escaped form. A value a
-developer TRANSFORMS before writing it into a message (``strip()``, a slice,
-other formatting, a hash) cannot be recognised and is not covered; keep
-credentials out of messages you write.
+The error MESSAGE of a hidden error is scrubbed on a best-effort basis only.
+The scrub WALKS the input: the input itself, every mapping key and value,
+every collection member, and every attribute of a plain object, up to
+``_MAX_VISITS`` members and ``_MAX_TEXT_DEPTH`` levels deep (an input past
+that bound cannot be proven absent from the message, so the whole message is
+replaced instead of being searched). Every text the walk reaches is replaced
+where the message repeats it verbatim or in its ``repr()``, ``ascii()`` or
+JSON-escaped form (``json.dumps`` with ``ensure_ascii`` both true and false).
+A value a developer TRANSFORMS before writing it into a message (``strip()``,
+a slice, other formatting, a hash) cannot be recognised and is not covered;
+keep credentials out of messages you write.
 """
 
 from __future__ import annotations
@@ -96,7 +101,13 @@ def _is_shown_scalar(value: object) -> bool:
 
 def _children(value: object) -> Iterator[object]:
     if isinstance(value, Mapping):
-        yield from cast("Mapping[object, object]", value).values()
+        mapping = cast("Mapping[object, object]", value)
+        for key, item in mapping.items():
+            # A message can quote a credential used AS a key (a misspelled
+            # scope name, a header name), so the key is walked and counted
+            # toward the visit bound exactly like a value.
+            yield key
+            yield item
     elif isinstance(value, Collection):
         yield from cast("Collection[object]", value)
     else:
@@ -152,8 +163,13 @@ def _input_texts(value: object) -> set[str]:
 
 
 def _written_forms(text: str) -> set[str]:
-    """Return *text* as a message can repeat it: verbatim, or escaped by repr(), ascii() or json.dumps()."""
-    return {text, repr(text)[1:-1], ascii(text)[1:-1], json.dumps(text)[1:-1]}
+    """Return *text* as a message can repeat it: verbatim, or escaped by repr(), ascii() or json.dumps().
+
+    ``json.dumps`` is tried with ``ensure_ascii`` both true (the default) and
+    false: a non-ASCII character is escaped by the former and left literal by
+    the latter, and a message can be built either way.
+    """
+    return {text, repr(text)[1:-1], ascii(text)[1:-1], json.dumps(text)[1:-1], json.dumps(text, ensure_ascii=False)[1:-1]}
 
 
 def _scrub_pattern(form: str) -> str:
@@ -246,11 +262,16 @@ def redact_validation_error(exc: ValidationError, *, credential_fields: frozense
         not a plain scalar (str, bytes, int, float, bool, None, Decimal, a date
         or time value, or an Enum member whose value is one of these). Such a
         hidden error also loses its ``ctx``, and its message is scrubbed on a
-        best-effort basis: every text of the input is replaced where the message
-        repeats it verbatim or in its ``repr()``, ``ascii()`` or JSON-escaped
-        form. A value a developer transforms before writing it into a message
-        (``strip()``, a slice, other formatting, a hash) is not recognised.
-        Other errors keep their input and ctx.
+        best-effort basis: every text reached by walking the input -- the
+        input itself, every mapping key and value, every collection member,
+        and every attribute of a plain object, up to a bounded number of
+        members and levels deep -- is replaced where the message repeats it
+        verbatim or in its ``repr()``, ``ascii()`` or JSON-escaped form
+        (``ensure_ascii`` true or false). An input past that bound cannot be
+        proven absent from the message, so the whole message is replaced
+        instead. A value a developer transforms before writing it into a
+        message (``strip()``, a slice, other formatting, a hash) is not
+        recognised. Other errors keep their input and ctx.
 
     Examples:
         >>> from pydantic import BaseModel
@@ -304,9 +325,12 @@ class SecretSafeModel(BaseModel):
 
     The rule for each error is that of ``redact_validation_error``: hidden
     inputs and ctx are replaced whole, while the message of a hidden error is
-    scrubbed on a best-effort basis only (the input verbatim or in its
-    ``repr()``, ``ascii()`` or JSON-escaped form). A credential a validator
-    transforms before writing it into its own message is not covered.
+    scrubbed on a best-effort basis only -- every text reached by walking the
+    input (mapping keys and values, collection members, object attributes),
+    in its verbatim, ``repr()``, ``ascii()`` or JSON-escaped form, up to the
+    walk's visit and depth bound; an input past that bound has its whole
+    message replaced instead. A credential a validator transforms before
+    writing it into its own message is not covered.
 
     Not covered, because the JSON parser fails before this model is reached and
     its ``json_invalid`` error quotes the whole JSON text: malformed JSON handed
