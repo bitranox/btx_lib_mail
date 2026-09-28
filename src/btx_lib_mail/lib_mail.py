@@ -37,7 +37,9 @@ from email.utils import formatdate
 from enum import Enum
 from typing import IO, Any, Final, Protocol, cast
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from pydantic import ConfigDict, Field, SecretStr, field_validator
+
+from .secret_safety import SecretSafeModel
 
 logger = logging.getLogger("btx_lib_mail")
 
@@ -285,7 +287,7 @@ class AttachmentPayload:
     source: pathlib.Path
 
 
-class ConfMail(BaseModel):
+class ConfMail(SecretSafeModel):
     """### ConfMail {#lib-mail-confmail}
 
     **Purpose:** Serve as the authoritative SMTP configuration object, merging
@@ -306,6 +308,9 @@ class ConfMail(BaseModel):
       `smtp_password` is a `SecretStr`, so it is masked in `repr()` and
       `model_dump()`; call `.get_secret_value()` (or `resolved_credentials()`) to
       read the plaintext. A plain string assigned to it is coerced to `SecretStr`.
+      An int is accepted as its decimal text (config loaders parse digit strings
+      as numbers); any other non-text value is refused, and validation errors of
+      this model never carry the password (see `SecretSafeModel`).
     - `smtp_use_starttls: bool = True` — Enables `STARTTLS` negotiation before
       authentication when supported by the server.
     - `smtp_starttls_verify: bool = True` — When `True`, the `STARTTLS` handshake
@@ -358,6 +363,10 @@ class ConfMail(BaseModel):
 
     model_config = ConfigDict(validate_assignment=True, arbitrary_types_allowed=True)
 
+    # smtphosts is listed because a host that carries user:password@ is refused
+    # there, and that refusal must not echo the value.
+    credential_fields = frozenset({"smtp_password", "smtphosts"})
+
     @field_validator("smtphosts", mode="before")
     @classmethod
     def _coerce_smtphosts(cls, value: Any) -> list[str]:
@@ -382,6 +391,28 @@ class ConfMail(BaseModel):
         """
 
         return _collect_host_inputs(value)
+
+    @field_validator("smtp_password", mode="before")
+    @classmethod
+    def _coerce_password(cls, value: Any) -> Any:
+        """Accept text and whole numbers; refuse anything else without echoing it.
+
+        Why
+            Layered config loaders turn an all-digit environment value into an
+            ``int`` before it reaches this model, and quoting it does not help
+            (the quotes are kept as characters). A float, a bool or a container
+            is never a password a loader produced faithfully, so it is refused
+            with only its type named.
+
+        Note
+            A loader that parsed ``0123`` as the number 123 has already lost the
+            leading zero; this model cannot restore it.
+        """
+        if value is None or isinstance(value, (str, bytes, SecretStr)):
+            return value
+        if isinstance(value, int) and not isinstance(value, bool):
+            return str(value)
+        raise ValueError(f"smtp_password must be text, got {type(value).__name__}; quote it in the configuration source")
 
     @field_validator("smtp_timeout", mode="after")
     @classmethod
@@ -1917,6 +1948,7 @@ def _collect_host_inputs(value: Any) -> list[str]:
 
     What
         Converts supported forms into a list while validating element types.
+        Refuses a host carrying userinfo or a path, without quoting it.
 
     Outputs
     -------
@@ -1931,13 +1963,13 @@ def _collect_host_inputs(value: Any) -> list[str]:
     if value is None:
         return []
     if isinstance(value, str):
-        return [_normalise_host(value)]
+        return [_refuse_credentials_in_host(_normalise_host(value))]
     if isinstance(value, Iterable):  # type: ignore[reportUnnecessaryIsInstance]
         hosts: list[str] = []
         for item in cast("Iterable[Any]", value):
             if not isinstance(item, str):
                 raise ValueError("smtphosts entries must be strings")
-            hosts.append(_normalise_host(item))
+            hosts.append(_refuse_credentials_in_host(_normalise_host(item)))
         return hosts
     raise ValueError("smtphosts must be a string, list of strings, or tuple of strings")
 

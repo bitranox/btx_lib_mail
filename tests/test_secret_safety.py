@@ -38,7 +38,7 @@ from pydantic import (
 from pydantic_core import PydanticCustomError
 
 import btx_lib_mail
-from btx_lib_mail import REDACTED_INPUT, SecretSafeModel, lib_mail, redact_validation_error
+from btx_lib_mail import REDACTED_INPUT, ConfMail, SecretSafeModel, lib_mail, redact_validation_error
 from btx_lib_mail.secret_safety import _MAX_VISITS
 
 if TYPE_CHECKING:
@@ -1017,3 +1017,91 @@ def test_the_redaction_keeps_ordinary_model_behaviour() -> None:
     assert schema["title"] == "_Creds"
     assert set(schema["properties"]) == {"password", "timeout"}
     assert schema["properties"]["timeout"] == {"default": 30.0, "title": "Timeout", "type": "number"}
+
+
+_CONF_DUMMY = "DUMMY-PLANTED-9c1e"
+_CONF_DIGITS = 918273645
+
+
+@pytest.mark.os_agnostic
+def test_an_all_digit_password_from_an_env_layer_is_accepted_as_text() -> None:
+    config = ConfMail(smtp_username="user", smtp_password=_CONF_DIGITS)  # type: ignore[arg-type]
+    assert config.resolved_credentials() == ("user", str(_CONF_DIGITS))
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    ("value", "needle"),
+    [(["x", _CONF_DUMMY], _CONF_DUMMY), ({"k": _CONF_DUMMY}, _CONF_DUMMY), (True, "True"), (9182.73645, "9182.73645")],
+    ids=["list", "dict", "bool", "float"],
+)
+def test_an_unusable_password_type_is_refused_without_its_value(value: object, needle: str) -> None:
+    with pytest.raises(ValidationError) as caught:
+        ConfMail(smtp_password=value)  # type: ignore[arg-type]
+    error = caught.value.errors()[0]
+    assert error["loc"] == ("smtp_password",), "positive control: the refusal is about the password"
+    assert f"got {type(value).__name__}" in error["msg"]
+    assert error["input"] == REDACTED_INPUT
+    assert _leaks(caught.value, needle) == []
+
+
+@pytest.mark.os_agnostic
+def test_assigning_an_unusable_password_to_the_global_conf_is_refused_without_its_value() -> None:
+    config = ConfMail()
+    with pytest.raises(ValidationError) as caught:
+        config.smtp_password = ["x", _CONF_DUMMY]  # type: ignore[assignment]
+    assert caught.value.errors()[0]["loc"] == ("smtp_password",), "positive control"
+    assert _leaks(caught.value, _CONF_DUMMY) == []
+
+
+@pytest.mark.os_agnostic
+def test_a_confmail_subclass_rule_does_not_quote_the_password() -> None:
+    class _Strict(ConfMail):
+        @model_validator(mode="after")
+        def _rule(self) -> _Strict:
+            if self.smtp_timeout > 100:
+                raise ValueError("timeout too large")
+            return self
+
+    with pytest.raises(ValidationError) as caught:
+        _Strict(smtp_password=_CONF_DUMMY, smtp_timeout=500)  # type: ignore[arg-type]
+    assert "timeout too large" in str(caught.value), "positive control"
+    assert _leaks(caught.value, _CONF_DUMMY) == []
+
+
+_CREDENTIAL_NAME_HINTS = ("password", "token", "secret")
+
+
+@pytest.mark.os_agnostic
+def test_every_secret_field_of_confmail_is_a_credential_field() -> None:
+    secret_fields = {
+        name
+        for name, info in ConfMail.model_fields.items()
+        if any(marker in str(info.annotation) for marker in ("SecretStr", "SecretBytes")) or any(hint in name.lower() for hint in _CREDENTIAL_NAME_HINTS)
+    }
+    assert "smtp_password" in secret_fields, "positive control: the detector sees the password field"
+    assert secret_fields <= ConfMail.credential_fields
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    "hosts",
+    [f"smtp://user:{_HOST_DUMMY}@smtp.example.com:587", ["relay.example.com", f"user:{_HOST_DUMMY}@smtp.example.com"]],
+    ids=["str", "list"],
+)
+def test_a_confmail_host_with_userinfo_is_refused_without_quoting_it(hosts: object) -> None:
+    with pytest.raises(ValidationError) as caught:
+        ConfMail(smtphosts=hosts)  # type: ignore[arg-type]
+    error = caught.value.errors()[0]
+    assert error["loc"] == ("smtphosts",), "positive control: the refusal is about the hosts"
+    assert "must not contain" in error["msg"]
+    assert _leaks(caught.value, _HOST_DUMMY) == []
+
+
+@pytest.mark.os_agnostic
+def test_assigning_a_userinfo_host_to_the_global_conf_is_refused_without_quoting_it() -> None:
+    config = ConfMail()
+    with pytest.raises(ValidationError) as caught:
+        config.smtphosts = [f"smtp://user:{_HOST_DUMMY}@smtp.example.com"]
+    assert "must not contain" in caught.value.errors()[0]["msg"], "positive control"
+    assert _leaks(caught.value, _HOST_DUMMY) == []
