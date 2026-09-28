@@ -1020,15 +1020,21 @@ def _deliver_to_any_host(  # noqa: PLR0913 - one keyword-only param per piece of
                 )
                 return True
             except Exception as error:  # noqa: PERF203 - failover needs the try inside the loop to keep trying remaining hosts
+                # host and recipient normally reach here already validated (no
+                # control characters), but the WARNING cleans them again as
+                # defense in depth: nothing upstream of this log call is trusted
+                # to be the last guard against a forged log line.
+                clean_recipient = _printable(recipient)
+                clean_host = _printable(host)
                 logger.warning(
                     'can not send mail to "%s" via host "%s": %s',
-                    recipient,
-                    host,
+                    clean_recipient,
+                    clean_host,
                     _describe_failure(error),
                     extra={
                         "sender": sender,
-                        "recipient": recipient,
-                        "host": host,
+                        "recipient": clean_recipient,
+                        "host": clean_host,
                         "error_type": type(error).__name__,
                         "smtp_code": getattr(error, "smtp_code", None),
                     },
@@ -2038,16 +2044,26 @@ def validate_email_address(address: str) -> None:
 
 
 def _refuse_credentials_in_host(host: str) -> str:
-    """Return *host* unchanged, or raise when it carries userinfo or a path.
+    """Return *host* unchanged, or raise when it carries userinfo, a path, or an interior control character.
 
     Why
         ``smtp://user:<password>@relay`` in a host list puts the password into
         every log line and error text that names the host. The error never
         quotes the value.
+
+        A host carrying a newline or an escape sequence can forge an extra log
+        line or a terminal control sequence wherever the host is later logged.
+        Callers run this after :func:`_normalise_host`, which trims OUTER
+        whitespace, so only an INTERIOR whitespace or control character is
+        refused here; an ordinary ``" smtp.example.com "`` from an env file
+        still validates.
     """
     if "@" in host or "/" in host:
         # Never quote the value: a userinfo part here is a password in the wrong field.
         raise ValueError("SMTP host must be host[:port]; it must not contain '@' or '/' (pass credentials as smtp_username and smtp_password)")
+    if any(not character.isprintable() or character.isspace() for character in host):
+        # Never quote the value: it may itself be the forged content.
+        raise ValueError("SMTP host must not contain whitespace or control characters")
     return host
 
 

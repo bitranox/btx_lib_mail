@@ -1105,3 +1105,107 @@ def test_assigning_a_userinfo_host_to_the_global_conf_is_refused_without_quoting
         config.smtphosts = [f"smtp://user:{_HOST_DUMMY}@smtp.example.com"]
     assert "must not contain" in caught.value.errors()[0]["msg"], "positive control"
     assert _leaks(caught.value, _HOST_DUMMY) == []
+
+
+# A host with an embedded newline or escape sequence can forge extra log lines
+# or terminal control sequences in whatever renders the per-host WARNING; a
+# host is refused before it ever reaches delivery or the log.
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    "host",
+    ["evil\nFORGED line", "ho\x1b[31mst", "evil\thost", "evil host"],
+    ids=["newline", "escape", "tab", "interior-space"],
+)
+def test_a_host_with_whitespace_or_control_characters_is_refused_at_send(host: str) -> None:
+    with pytest.raises(ValueError, match="whitespace or control characters") as caught:
+        lib_mail.validate_smtp_host(host)
+    assert "\n" not in str(caught.value)
+    assert "\x1b" not in str(caught.value)
+
+
+@pytest.mark.os_agnostic
+def test_plain_hosts_with_only_outer_whitespace_still_validate() -> None:
+    # positive control: _normalise_host trims outer whitespace before the refusal
+    # check runs, so an ordinary env-file value with surrounding blanks still works.
+    assert lib_mail._prepare_hosts(("  smtp.example.com  ",)) == ("smtp.example.com",)
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    "hosts",
+    ["evil\nFORGED line", ["good.example.com", "ho\x1b[31mst"]],
+    ids=["str", "list"],
+)
+def test_a_confmail_host_with_whitespace_or_control_characters_is_refused(hosts: object) -> None:
+    with pytest.raises(ValidationError) as caught:
+        ConfMail(smtphosts=hosts)  # type: ignore[arg-type]
+    error = caught.value.errors()[0]
+    assert error["loc"] == ("smtphosts",), "positive control: the refusal is about the hosts"
+    assert "whitespace or control characters" in error["msg"]
+    assert "\n" not in caught.value.json()
+    assert "\x1b" not in caught.value.json()
+
+
+@pytest.mark.os_agnostic
+def test_a_confmail_host_with_only_outer_whitespace_still_validates() -> None:
+    # positive control: outer whitespace/quotes from an env file are trimmed,
+    # not refused, mirroring test_plain_hosts_with_only_outer_whitespace_still_validate.
+    config = ConfMail(smtphosts=["  smtp.example.com  "])
+    assert config.smtphosts == ["smtp.example.com"]
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    "hosts",
+    [["evil\nFORGED line"], ["good.example.com", "evil\nFORGED line"]],
+    ids=["alone", "after a good host"],
+)
+def test_send_refuses_a_host_with_a_control_character_before_any_delivery(hosts: list[str], caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.DEBUG, logger="btx_lib_mail")
+    transport = _RaisingTransport(AssertionError("transport must not be reached"))
+    with pytest.raises(ValueError, match="whitespace or control characters") as caught:
+        lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients="rcpt@example.com",
+            mail_subject="s",
+            smtphosts=hosts,
+            transport=transport,
+        )
+    assert "\n" not in str(caught.value)
+    assert "FORGED line" not in caplog.text, "no delivery attempt, so no log line at all was produced"
+
+
+@pytest.mark.os_agnostic
+def test_the_per_host_warning_cannot_carry_a_forged_log_line_or_escape_sequence(caplog: pytest.LogCaptureFixture) -> None:
+    """Defense in depth: even a host bypassing validation cannot forge the WARNING.
+
+    ``_deliver_to_any_host`` trusts the ``hosts`` tuple it is handed and does not
+    re-validate it, so this drives it directly with a value that
+    ``_refuse_credentials_in_host`` would refuse, to prove the WARNING itself
+    cleans the host (and the recipient) rather than relying solely on the
+    upstream refusal.
+    """
+    caplog.set_level(logging.WARNING, logger="btx_lib_mail")
+    delivery = lib_mail.DeliveryOptions(credentials=None, use_starttls=False, starttls_verify=True, timeout=5.0)
+
+    ok = lib_mail._deliver_to_any_host(
+        sender="sender@example.com",
+        recipient="rcpt@example.com",
+        subject="s",
+        plain_body="b",
+        html_body="",
+        hosts=("evil\nFORGED line\x1b[31m",),
+        attachments=(),
+        delivery=delivery,
+        transport=_RaisingTransport(ValueError("boom")),
+    )
+
+    assert ok is False
+    records = _failure_records(caplog)
+    assert len(records) == 1, "positive control: the direct call still reaches the WARNING"
+    record = records[0]
+    message = record.getMessage()
+    assert "evil" in message, "positive control: the host text survives, just cleaned"
+    assert all(character.isprintable() for character in message)
+    assert all(character.isprintable() for character in str(record.__dict__["host"])), "extras must be cleaned too"
+    assert all(character.isprintable() for character in str(record.__dict__["recipient"]))
