@@ -277,8 +277,12 @@ def test_plain_hosts_still_validate(host: str) -> None:
 @pytest.mark.os_agnostic
 @pytest.mark.parametrize(
     "hosts",
-    [[f"smtp://user:{_HOST_DUMMY}@smtp.example.com:587"], [f"smtp://user:{_HOST_DUMMY}@smtp.example.com:587", "good.example.com"]],
-    ids=["alone", "before a good host"],
+    [
+        [f"smtp://user:{_HOST_DUMMY}@smtp.example.com:587"],
+        [f"smtp://user:{_HOST_DUMMY}@smtp.example.com:587", "good.example.com"],
+        ["good.example.com", f"smtp://user:{_HOST_DUMMY}@smtp.example.com:587"],
+    ],
+    ids=["alone", "before a good host", "after a good host"],
 )
 def test_send_refuses_a_userinfo_host_before_any_delivery(hosts: list[str], caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.DEBUG, logger="btx_lib_mail")
@@ -860,6 +864,37 @@ def test_a_failure_computing_the_declared_names_fails_closed_instead_of_leaking_
         raise ValueError("boom")
 
     monkeypatch.setattr(secret_safety, "_declared_names", _boom)
+    with pytest.raises(ValidationError) as caught:
+        ConfMail(smtp_password=[_DUMMY])  # type: ignore[arg-type]
+    exc = caught.value
+    errors = exc.errors()
+    assert errors, "positive control: the patch is reached and still raises"
+    assert [(e["type"], e["loc"], e["input"]) for e in errors] == [("redacted_error", (), REDACTED_INPUT)]
+    assert errors[0]["msg"] == "validation failed; the details could not be redacted and were dropped"
+    assert _DUMMY not in str(exc)
+    assert _DUMMY not in repr(exc)
+    assert _DUMMY not in json.dumps(errors, default=str)
+    assert exc.__context__ is None, "the unredacted original must not survive on the chain"
+
+
+@pytest.mark.os_agnostic
+def test_a_failure_computing_the_hidden_locations_fails_closed_instead_of_leaking_the_raw_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    """If collecting the credential locations raises, the redaction must still hide the raw input.
+
+    ``SecretSafeModel._redacted`` calls ``cls._hidden_locations()`` before ``_declared_names``;
+    both calls sit inside the same guard, so a raise from either path must fail closed. This is
+    the sibling of the test above, which forces ``_declared_names`` instead.
+    """
+    with pytest.raises(ValidationError) as control:
+        ConfMail(smtp_password=[_DUMMY])  # type: ignore[arg-type]
+    control_errors = control.value.errors()
+    assert control_errors, "positive control: a broken hidden-locations collector is not the only way to reach an error here"
+    assert _DUMMY not in str(control.value), "positive control: the plant is checked against the working path first"
+
+    def _boom(cls: type[BaseModel]) -> frozenset[str]:
+        raise ValueError("boom")
+
+    monkeypatch.setattr(SecretSafeModel, "_hidden_locations", classmethod(_boom))
     with pytest.raises(ValidationError) as caught:
         ConfMail(smtp_password=[_DUMMY])  # type: ignore[arg-type]
     exc = caught.value

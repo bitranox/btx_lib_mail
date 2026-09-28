@@ -36,10 +36,12 @@
   still carries a kept scalar's input (a non-credential field such as
   `smtp_timeout` keeps its value there, just not in the printed string).
 - The per-host delivery WARNING is now logged after the `except` block that
-  caught the failure has exited, not from inside it, so a broken log handler
-  or formatter can no longer chain that failure onto its own traceback via
-  `__context__` ("During handling of the above exception ..."). Only visible
-  to a caller with a log sink that itself raises.
+  caught the failure has exited, not from inside it. Two things follow: a
+  broken log handler or formatter can no longer chain that failure onto its
+  own traceback via `__context__` ("During handling of the above exception
+  ..."), and `sys.exc_info()` is empty by the time the warning is emitted, so
+  a log sink that reads it during emit (rather than relying on `__context__`)
+  no longer sees the delivery error either.
 
 ### Added
 
@@ -60,13 +62,18 @@
 - **Breaking:** every host list entry carrying `@` or `/` (userinfo or a URL)
   is now refused up front with `ValueError` before any delivery, and a
   `ConfMail` built or assigned such a host raises `ValidationError` at that
-  point instead of at send time. This changes behaviour for two of the three
-  forms: `smtp://user:pw@relay:25` and `user@relay` previously reached
-  delivery and failed over to the next host (a bogus hostname, or a DNS
-  lookup failure); they are now refused eagerly instead. `user:pw@relay` was
-  already refused at 1.5.x, just by an accident of the port parser reading
-  everything after the first `:` as the port and quoting the whole string,
-  password included, in `ValueError: invalid smtp port in "..."`; it is now
+  point instead of at send time. This changes behaviour for every such entry
+  except one: at 1.5.x, `host.rsplit(":", 1)` read everything after the LAST
+  `:` as the port, so `smtp://user:pw@relay:25`, `user@relay` and the
+  commonest userinfo form `user:pw@relay:587` all parsed as a valid
+  hostname[:port] pair (the whole `user:...@relay` text became the
+  "hostname"), reached delivery, and failed over to the next host, quoting
+  the password in the per-host log line and in the `RuntimeError` raised
+  once every host failed. They are now refused eagerly instead. Only the
+  port-less `user:pw@relay` was already refused at 1.5.x, by the same
+  `rsplit` accident: with no second `:`, `rsplit` handed `pw@relay` to the
+  port parser, which rejected it as non-numeric and quoted the whole string,
+  password included, in `ValueError: invalid smtp port in "..."`. It is now
   refused deliberately, without quoting the value. Remove the entry and pass
   the credentials as `smtp_username` / `smtp_password`.
 - The per-host WARNING reads `can not send mail to "<rcpt>" via host "<host>":
