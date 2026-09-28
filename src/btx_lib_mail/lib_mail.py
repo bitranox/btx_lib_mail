@@ -603,39 +603,51 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
     - `mail_body: str = ""` — Optional plain-text body.
     - `mail_body_html: str = ""` — Optional HTML body.
     - `smtphosts: Sequence[str] | None = None` — Override host list. When
-      `None`, the helper falls back to `conf.smtphosts`.
+      `None`, the helper falls back to the passed `config`, else the global
+      `conf.smtphosts`.
     - `attachment_file_paths: Sequence[pathlib.Path] | None = None` — Optional
       iterable of filesystem paths. Each existing file becomes an attachment.
     - `credentials: tuple[str, str] | None = None` — Override credentials. When
-      omitted, `conf.resolved_credentials()` is used.
+      omitted, `resolved_credentials()` of the passed `config`, else of `conf`,
+      is used.
     - `use_starttls: bool | None = None` — Override STARTTLS preference. When
-      `None`, the helper uses `conf.smtp_use_starttls`.
+      `None`, the helper uses `smtp_use_starttls` of the passed `config`, else
+      `conf`.
     - `starttls_verify: bool | None = None` — Override STARTTLS certificate
-      verification. When `None`, the helper uses `conf.smtp_starttls_verify`.
-      `False` keeps the connection encrypted but skips certificate/hostname
-      validation (for internal self-signed relays). Ignored unless STARTTLS runs.
+      verification. When `None`, the helper uses `smtp_starttls_verify` of the
+      passed `config`, else `conf`. `False` keeps the connection encrypted but
+      skips certificate/hostname validation (for internal self-signed relays).
+      Ignored unless STARTTLS runs.
     - `timeout: float | None = None` — Override socket timeout in seconds. When
-      `None`, the helper uses `conf.smtp_timeout`.
+      `None`, the helper uses `smtp_timeout` of the passed `config`, else `conf`.
     - `attachment_allowed_extensions: frozenset[str] | None = None` — Override
-      allowed extensions (whitelist mode). When `None`, uses `conf` default.
+      allowed extensions (whitelist mode). When `None`, uses the passed
+      `config`'s default, else `conf`'s.
     - `attachment_blocked_extensions: frozenset[str] | None = None` — Override
-      blocked extensions. When `None`, uses `conf` default.
+      blocked extensions. When `None`, uses the passed `config`'s default, else
+      `conf`'s.
     - `attachment_allowed_directories: frozenset[pathlib.Path] | None = None` —
-      Override allowed directories. When `None`, uses `conf` default.
+      Override allowed directories. When `None`, uses the passed `config`'s
+      default, else `conf`'s.
     - `attachment_blocked_directories: frozenset[pathlib.Path] | None = None` —
-      Override blocked directories. When `None`, uses `conf` default.
+      Override blocked directories. When `None`, uses the passed `config`'s
+      default, else `conf`'s.
     - `attachment_max_size_bytes: int | None = None` — Override max attachment
-      size in bytes. When `None`, uses `conf` default.
+      size in bytes. When `None`, uses the passed `config`'s default, else
+      `conf`'s.
     - `attachment_allow_symlinks: bool | None = None` — Override symlink policy.
-      When `None`, uses `conf` default.
+      When `None`, uses the passed `config`'s default, else `conf`'s.
     - `attachment_raise_on_security_violation: bool | None = None` — Override
-      security violation behaviour. When `None`, uses `conf` default.
+      security violation behaviour. When `None`, uses the passed `config`'s
+      default, else `conf`'s.
     - `raise_on_missing_attachments: bool | None = None` — Override
-      `conf.raise_on_missing_attachments`. When `None`, uses `conf` default;
-      `True` raises on missing, `False` logs warning and skips.
+      `raise_on_missing_attachments` of the passed `config`, else `conf`. When
+      `None`, uses that default; `True` raises on missing, `False` logs warning
+      and skips.
     - `raise_on_invalid_recipient: bool | None = None` — Override
-      `conf.raise_on_invalid_recipient`. When `None`, uses `conf` default;
-      `True` raises on invalid, `False` logs warning and skips.
+      `raise_on_invalid_recipient` of the passed `config`, else `conf`. When
+      `None`, uses that default; `True` raises on invalid, `False` logs warning
+      and skips.
     - `config: ConfMail | None = None` — Settings used in place of the
       module-global `conf` for every value not passed explicitly; when given,
       `conf` is not read. Lets an application hold its own `ConfMail` (or

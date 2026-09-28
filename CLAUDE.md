@@ -23,6 +23,7 @@ src/btx_lib_mail/
   behaviors.py         # scaffold helpers (greeting, noop, intentional failure)
   cli.py               # rich-click CLI adapter (send, validate-email, validate-smtp-host, etc.)
   lib_mail.py          # core SMTP delivery logic, validators, configuration, security
+  secret_safety.py     # SecretSafeModel, redact_validation_error: credential-safe pydantic errors
 
 tests/
   conftest.py          # shared fixtures (cli_runner, traceback isolation)
@@ -44,7 +45,8 @@ tests/
 
 ## Testing Conventions
 
-- All tests use `RecordingSMTP` to stub `smtplib.SMTP`
+- Tests inject a `Transport` double through `send(transport=)`; wire tests use a real
+  in-process `aiosmtpd` server, never a socket-level monkeypatch
 - `_reset_conf_mail` autouse fixture restores global config between tests
 - Markers: `os_agnostic`, `integration` (real SMTP via `TEST_SMTP_*` env vars)
 - Doctests run via `--doctest-modules` in pytest config
@@ -65,6 +67,8 @@ from btx_lib_mail import (
     # Core
     ConfMail, conf, send, logger,
     validate_email_address, validate_smtp_host,
+    # Delivery seam
+    DeliveryOptions, Transport,
     # Security
     AttachmentSecurityError,
     AttachmentViolation,
@@ -73,6 +77,10 @@ from btx_lib_mail import (
     DANGEROUS_DIRECTORIES_POSIX,
     DANGEROUS_DIRECTORIES_WINDOWS,
     SENSITIVE_PATH_PATTERNS,
+    # Secret safety
+    SecretSafeModel,
+    redact_validation_error,
+    REDACTED_INPUT,
 )
 ```
 

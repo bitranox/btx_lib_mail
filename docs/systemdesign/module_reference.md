@@ -70,20 +70,26 @@ rendering, attachment security, and the delivery orchestration.
 
 #### ConfMail {#lib-mail-confmail}
 
-* **Purpose:** Authoritative SMTP configuration (Pydantic `BaseModel`) merging CLI
-  options, environment variables, and defaults with type and range checks.
+* **Purpose:** Authoritative SMTP configuration (a `SecretSafeModel`, so its own
+  validation errors are redacted) merging CLI options, environment variables, and
+  defaults with type and range checks.
 * **Fields:** `smtphosts` (`list[str]`), `raise_on_missing_attachments` (`bool`),
-  `raise_on_invalid_recipient` (`bool`), `smtp_username`/`smtp_password`
-  (`str | None`), `smtp_use_starttls` (`bool`, default `True`),
-  `smtp_starttls_verify` (`bool`, default `True`), `smtp_timeout` (`float`,
-  default `30.0`), and the attachment security fields
+  `raise_on_invalid_recipient` (`bool`), `smtp_username` (`str | None`),
+  `smtp_password` (`SecretStr | None`), `smtp_use_starttls` (`bool`, default
+  `True`), `smtp_starttls_verify` (`bool`, default `True`), `smtp_timeout`
+  (`float`, default `30.0`), and the attachment security fields
   (`attachment_allowed_extensions`, `attachment_blocked_extensions`,
   `attachment_allowed_directories`, `attachment_blocked_directories`,
   `attachment_max_size_bytes`, `attachment_allow_symlinks`,
   `attachment_raise_on_security_violation`).
-* **Validation:** coerces `smtphosts` from string/iterable, rejects a
-  non-positive `smtp_timeout` and `attachment_max_size_bytes`, and normalises
+* **Validation:** coerces `smtphosts` from string/iterable and refuses a host
+  carrying `@` or `/` (see `_refuse_credentials_in_host`), coerces `smtp_password`
+  from `str` or a whole `int` and refuses anything else without echoing it, rejects
+  a non-positive `smtp_timeout` and `attachment_max_size_bytes`, and normalises
   extension/directory sets.
+* **Secret safety:** `credential_fields = frozenset({"smtp_password",
+  "smtphosts"})`; a `ValidationError` raised while validating this model never
+  carries the value at either location (see `secret_safety.SecretSafeModel`).
 * **Global:** `conf` is the shared instance used when per-call overrides are
   absent.
 * **Location:** src/btx_lib_mail/lib_mail.py
@@ -125,8 +131,13 @@ rendering, attachment security, and the delivery orchestration.
 * **Input:** `mail_from`, `mail_recipients`, `mail_subject`, optional `mail_body`
   / `mail_body_html`, `smtphosts`, `attachment_file_paths`, and keyword overrides
   `credentials`, `use_starttls`, `starttls_verify`, `timeout`, the attachment
-  security parameters, and `raise_on_missing_attachments` /
-  `raise_on_invalid_recipient`. Omitted overrides fall back to `conf`.
+  security parameters, `raise_on_missing_attachments` /
+  `raise_on_invalid_recipient`, `config`, and `transport`. Omitted overrides fall
+  back to `config` when given, else to `conf`.
+* **`config: ConfMail | None = None`:** settings used in place of the module-global
+  `conf` for every value not passed explicitly; when given, `conf` is not read at
+  all. Lets a caller hold its own `ConfMail` (or subclass) without mutating the
+  global.
 * **Output:** `True` when every recipient is delivered. Failure raises rather than
   returning `False`.
 * **Raises:** `ValueError` (no valid recipients / invalid sender),
@@ -139,15 +150,38 @@ rendering, attachment security, and the delivery orchestration.
 
 * `_deliver_to_any_host` composes the message once into a `SpooledTemporaryFile`
   and iterates the host tuple, delegating to the injected `Transport` until one
-  accepts the message, logging a warning per failed host. The spool is reused
+  accepts the message, logging one credential-free `WARNING` per failed host (built
+  by `_describe_failure`, no traceback attached) and moving on. The spool is reused
   across host attempts.
+* `_describe_failure(error)` returns a one-line, credential-free description of a
+  delivery failure: for an `smtplib.SMTPResponseException` it is the exception class
+  name plus the server's numeric code and reply text; for any other `OSError`
+  (including one a custom `Transport` raises) it is the class name plus `str(error)`,
+  logged as given; for anything else it is only the class name. The text is run
+  through `_printable` and capped at `_FAILURE_TEXT_LIMIT` (200 characters) so a
+  hostile or chatty server reply cannot forge extra log lines or flood the log.
+* `_printable(text)` replaces every non-printable character (CR, LF, ESC, NUL, ...)
+  in `text` with a space, so a server reply cannot inject control sequences into
+  whatever renders the log record.
 * `Transport` is a protocol (delivery seam); `SmtplibTransport` is the default
   adapter. It opens the `smtplib.SMTP` session, runs STARTTLS via
   `_build_starttls_context(verify=...)` when enabled, logs in when credentials are
-  present, then streams the message to the socket in `_STREAM_CHUNK_SIZE` chunks:
-  RFC 3030 `BDAT` when the server advertises `CHUNKING`, otherwise the `DATA` phase
-  with `_DotStuffer` incremental dot-stuffing. `send` accepts a `transport=`
-  override for testing or alternative transports.
+  present via `_authenticate`, then streams the message to the socket in
+  `_STREAM_CHUNK_SIZE` chunks: RFC 3030 `BDAT` when the server advertises
+  `CHUNKING`, otherwise the `DATA` phase with `_DotStuffer` incremental
+  dot-stuffing. `send` accepts a `transport=` override for testing or alternative
+  transports.
+* `_authenticate(smtp_connection, username, password)` calls `smtplib.SMTP.login`
+  when both `username` and `password` are ASCII (the stdlib path, which tries
+  CRAM-MD5, PLAIN and LOGIN in turn); otherwise it calls `_login_plain_utf8`,
+  because stdlib `smtplib` encodes every AUTH exchange as ASCII and raises
+  `UnicodeEncodeError` (quoting the whole AUTH string, password included, in its
+  repr) on a non-ASCII credential.
+* `_login_plain_utf8(smtp_connection, username, password)` authenticates with RFC
+  4616 AUTH PLAIN, credentials encoded as UTF-8. Raises
+  `smtplib.SMTPNotSupportedError` when the server offers no AUTH extension or no
+  PLAIN mechanism, and `smtplib.SMTPAuthenticationError` (carrying only the server
+  reply) when the server rejects the credentials or answers an unexpected code.
 * `_build_starttls_context(*, verify)` returns `ssl.create_default_context()`; when
   `verify` is `False` it clears `check_hostname` and sets `verify_mode` to
   `CERT_NONE` (encrypted but unverified).
@@ -162,8 +196,12 @@ rendering, attachment security, and the delivery orchestration.
   match `EMAIL_PATTERN`.
 * `validate_smtp_host(host)` raises `ValueError` for a malformed host, accepting
   `hostname`, `hostname:port`, `[IPv6]`, and `[IPv6]:port`.
-* Both are public; `_parse_smtp_host` reuses `validate_smtp_host` before splitting
-  hostname and port.
+* `_refuse_credentials_in_host(host)` returns `host` unchanged, or raises
+  `ValueError` (without echoing the value) when it carries `@` or `/`: a host string
+  such as `user:password@relay` would put the password into every log line and
+  error text that names the host. `validate_smtp_host` calls it first.
+* `validate_email_address` and `validate_smtp_host` are public; `_parse_smtp_host`
+  reuses `validate_smtp_host` before splitting hostname and port.
 * **Location:** src/btx_lib_mail/lib_mail.py
 
 #### Attachment security checks (internal)
@@ -181,6 +219,59 @@ them before reading file bytes, honouring `raise_on_violation` and
 `DANGEROUS_DIRECTORIES_POSIX`, `DANGEROUS_DIRECTORIES_WINDOWS`, and
 `SENSITIVE_PATH_PATTERNS` provide the OS-appropriate blacklists. `EMAIL_PATTERN`
 is the compiled address regex.
+
+### btx_lib_mail.secret_safety {#module-btx-lib-mail-secret-safety}
+
+Credential-safe validation errors for pydantic models that hold secrets.
+
+#### SecretSafeModel {#secret-safety-secretsafemodel}
+
+* **Purpose:** Base class for a pydantic model holding a credential, so every
+  `ValidationError` it raises has had its inputs rebuilt to remove the secret.
+  `ConfMail` is a subclass.
+* **Mechanism:** wraps the model's whole core schema (`__get_pydantic_core_schema__`),
+  so it covers field validation, validated assignment (and assignment to a frozen
+  model, via an explicit `__setattr__` override), model-level validators,
+  `model_validate`, `model_validate_strings`, this model's own `model_validate_json`
+  (an explicit override, also for malformed JSON), `TypeAdapter(Model).validate_python`,
+  and validation of this model nested in a list or in another model.
+* **Class variable:** `credential_fields: ClassVar[frozenset[str]] = frozenset()` -
+  a subclass lists its credential field names here; every alias of those fields is
+  covered automatically.
+* **Not covered:** malformed JSON handed to `TypeAdapter(Model).validate_json`, and
+  malformed JSON handed to `model_validate_json` of a plain outer model that merely
+  nests a `SecretSafeModel` field - the JSON parser fails before either model's
+  schema runs. An outer model that nests a `SecretSafeModel` field AND defines its
+  own model-level validator must itself inherit `SecretSafeModel` and list the
+  nested field, because its own model-level errors quote its own input.
+* **Location:** src/btx_lib_mail/secret_safety.py
+
+#### redact_validation_error(exc, *, credential_fields, declared_names=frozenset()) {#secret-safety-redact-validation-error}
+
+* **Purpose:** Return a copy of `exc` whose error inputs and `ctx` cannot carry a
+  credential; the function `SecretSafeModel` wraps its schema with, callable
+  directly to redact a `ValidationError` from a plain (non-`SecretSafeModel`) model.
+* **Rule:** an error's input is kept only when it is a plain scalar (`str`, `bytes`,
+  `int`, `float`, `bool`, `None`, `Decimal`, a date/time value, or an `Enum` member
+  whose value is one of these); every other input becomes `REDACTED_INPUT`. An error
+  is always hidden when it is model-level, an `extra_forbidden` error, or at a
+  location in `credential_fields` (or an alias of one). A hidden error keeps no
+  `ctx`, and its message is scrubbed best-effort by walking the input (mapping keys
+  and values, collection members, object attributes, Enum values) and replacing
+  every text it finds, in its verbatim, `repr()`, `ascii()` or JSON-escaped form. A
+  mapping key equal to a name in `declared_names` is not walked (so a message
+  naming a field keeps the name), but a VALUE equal to such a name still is. An
+  input too large or deep to walk within the bound has its whole message replaced.
+  The rebuild never raises; a failure it cannot rebuild faithfully keeps only its
+  type and location, and total failure yields one opaque `redacted_error`.
+* **Usage note:** raise the returned error OUTSIDE the `except` block that caught
+  the original, or the unredacted error survives as `__context__`.
+* **Location:** src/btx_lib_mail/secret_safety.py
+
+#### REDACTED_INPUT {#secret-safety-redacted-input}
+
+* **Purpose:** The string (`"[redacted]"`) a hidden error's `input` is replaced by.
+* **Location:** src/btx_lib_mail/secret_safety.py
 
 ### btx_lib_mail.cli {#module-btx-lib-mail-cli}
 
@@ -275,11 +366,12 @@ development automation so runtime code never queries packaging APIs.
 ### btx_lib_mail.__init__
 
 Re-exports the public API. `__all__` covers: `AttachmentSecurityError`,
-`AttachmentViolation`, `CANONICAL_GREETING`, `ConfMail`,
+`AttachmentViolation`, `CANONICAL_GREETING`, `ConfMail`, `DeliveryOptions`,
 `DANGEROUS_DIRECTORIES_POSIX`, `DANGEROUS_DIRECTORIES_WINDOWS`,
-`DANGEROUS_EXTENSIONS_POSIX`, `DANGEROUS_EXTENSIONS_WINDOWS`,
-`SENSITIVE_PATH_PATTERNS`, `conf`, `emit_greeting`, `logger`, `noop_main`,
-`print_info`, `raise_intentional_failure`, `send`, `validate_email_address`,
-`validate_smtp_host`.
+`DANGEROUS_EXTENSIONS_POSIX`, `DANGEROUS_EXTENSIONS_WINDOWS`, `REDACTED_INPUT`,
+`SecretSafeModel`, `SENSITIVE_PATH_PATTERNS`, `Transport`, `conf`,
+`emit_greeting`, `logger`, `noop_main`, `print_info`,
+`raise_intentional_failure`, `redact_validation_error`, `send`,
+`validate_email_address`, `validate_smtp_host`.
 
 * **Location:** src/btx_lib_mail/__init__.py

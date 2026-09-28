@@ -16,16 +16,16 @@ not supply per-call overrides. Update it directly or replace it wholesale with
 
 **SMTP Settings:**
 
-| Field                          | Type          | Default | Description                                                                                                                             |
-|--------------------------------|---------------|---------|-----------------------------------------------------------------------------------------------------------------------------------------|
-| `smtphosts`                    | `list[str]`   | `[]`    | Ordered SMTP hosts (`"host[:port]"`). An empty list requires callers to supply `smtphosts` when sending.                                |
-| `raise_on_missing_attachments` | `bool`        | `True`  | When `True`, missing attachments raise `FileNotFoundError`; otherwise a warning is logged and delivery proceeds without the attachment. |
-| `raise_on_invalid_recipient`   | `bool`        | `True`  | When `True`, invalid recipient addresses raise `ValueError`; otherwise a warning is logged and the address is skipped.                  |
-| `smtp_username`                | `str \| None` | `None`  | Username used for SMTP authentication. Must be paired with `smtp_password`.                                                             |
-| `smtp_password`                | `str \| None` | `None`  | Password paired with `smtp_username`. Ignored when either value is missing.                                                             |
-| `smtp_use_starttls`            | `bool`        | `True`  | Enables `STARTTLS` negotiation before authentication. Set to `False` for servers that do not support STARTTLS.                          |
-| `smtp_starttls_verify`         | `bool`        | `True`  | Verifies the server certificate and hostname during `STARTTLS`. Set to `False` for internal self-signed relays (encrypted, unverified). |
-| `smtp_timeout`                 | `float`       | `30.0`  | Socket timeout in seconds applied to SMTP connections.                                                                                  |
+| Field                          | Type                | Default | Description                                                                                                                                                                                                                                               |
+|--------------------------------|---------------------|---------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `smtphosts`                    | `list[str]`         | `[]`    | Ordered SMTP hosts (`"host[:port]"`). An empty list requires callers to supply `smtphosts` when sending.                                                                                                                                                  |
+| `raise_on_missing_attachments` | `bool`              | `True`  | When `True`, missing attachments raise `FileNotFoundError`; otherwise a warning is logged and delivery proceeds without the attachment.                                                                                                                   |
+| `raise_on_invalid_recipient`   | `bool`              | `True`  | When `True`, invalid recipient addresses raise `ValueError`; otherwise a warning is logged and the address is skipped.                                                                                                                                    |
+| `smtp_username`                | `str \| None`       | `None`  | Username used for SMTP authentication. Must be paired with `smtp_password`.                                                                                                                                                                               |
+| `smtp_password`                | `SecretStr \| None` | `None`  | Password paired with `smtp_username`. Ignored when either value is missing. Masked in `repr()` and `model_dump()`; call `.get_secret_value()` for the plaintext. A plain `str` or an `int` is coerced; a validation error of `ConfMail` never carries it. |
+| `smtp_use_starttls`            | `bool`              | `True`  | Enables `STARTTLS` negotiation before authentication. Set to `False` for servers that do not support STARTTLS.                                                                                                                                            |
+| `smtp_starttls_verify`         | `bool`              | `True`  | Verifies the server certificate and hostname during `STARTTLS`. Set to `False` for internal self-signed relays (encrypted, unverified).                                                                                                                   |
+| `smtp_timeout`                 | `float`             | `30.0`  | Socket timeout in seconds applied to SMTP connections.                                                                                                                                                                                                    |
 
 **Attachment Security Settings:**
 
@@ -75,19 +75,20 @@ raises when every host fails for at least one recipient.
 
 **Core Parameters:**
 
-| Parameter               | Type                             | Default | Notes                                                                                                    |
-|-------------------------|----------------------------------|---------|----------------------------------------------------------------------------------------------------------|
-| `mail_from`             | `str`                            | -       | Envelope sender address (`local@domain`).                                                                |
-| `mail_recipients`       | `str \| Sequence[str]`           | -       | Deduplicated, validated recipient addresses.                                                             |
-| `mail_subject`          | `str`                            | -       | UTF-8 subject line.                                                                                      |
-| `mail_body`             | `str`                            | `""`    | Optional plain-text body.                                                                                |
-| `mail_body_html`        | `str`                            | `""`    | Optional HTML body (UTF-8).                                                                              |
-| `smtphosts`             | `Sequence[str] \| None`          | `None`  | Host override. Falls back to `conf.smtphosts`.                                                           |
-| `attachment_file_paths` | `Sequence[pathlib.Path] \| None` | `None`  | Iterable of attachment paths. Missing files raise unless `conf.raise_on_missing_attachments` is `False`. |
-| `credentials`           | `tuple[str, str] \| None`        | `None`  | `(username, password)` override. Defaults to `conf.resolved_credentials()`.                              |
-| `use_starttls`          | `bool \| None`                   | `None`  | When `None`, the helper uses `conf.smtp_use_starttls`.                                                   |
-| `starttls_verify`       | `bool \| None`                   | `None`  | When `None`, the helper uses `conf.smtp_starttls_verify`. `False` skips certificate verification.        |
-| `timeout`               | `float \| None`                  | `None`  | When `None`, the helper uses `conf.smtp_timeout`.                                                        |
+| Parameter               | Type                             | Default | Notes                                                                                                                                  |
+|-------------------------|----------------------------------|---------|----------------------------------------------------------------------------------------------------------------------------------------|
+| `mail_from`             | `str`                            | -       | Envelope sender address (`local@domain`).                                                                                              |
+| `mail_recipients`       | `str \| Sequence[str]`           | -       | Deduplicated, validated recipient addresses.                                                                                           |
+| `mail_subject`          | `str`                            | -       | UTF-8 subject line.                                                                                                                    |
+| `mail_body`             | `str`                            | `""`    | Optional plain-text body.                                                                                                              |
+| `mail_body_html`        | `str`                            | `""`    | Optional HTML body (UTF-8).                                                                                                            |
+| `smtphosts`             | `Sequence[str] \| None`          | `None`  | Host override. Falls back to `conf.smtphosts`.                                                                                         |
+| `attachment_file_paths` | `Sequence[pathlib.Path] \| None` | `None`  | Iterable of attachment paths. Missing files raise unless `conf.raise_on_missing_attachments` is `False`.                               |
+| `credentials`           | `tuple[str, str] \| None`        | `None`  | `(username, password)` override. Defaults to `conf.resolved_credentials()`.                                                            |
+| `use_starttls`          | `bool \| None`                   | `None`  | When `None`, the helper uses `conf.smtp_use_starttls`.                                                                                 |
+| `starttls_verify`       | `bool \| None`                   | `None`  | When `None`, the helper uses `conf.smtp_starttls_verify`. `False` skips certificate verification.                                      |
+| `timeout`               | `float \| None`                  | `None`  | When `None`, the helper uses `conf.smtp_timeout`.                                                                                      |
+| `config`                | `ConfMail \| None`               | `None`  | Settings used in place of the global `conf` for every value not passed explicitly. When `config` is passed, `conf` is not read at all. |
 
 **Attachment Security Parameters (keyword-only):**
 
@@ -100,6 +101,11 @@ raises when every host fails for at least one recipient.
 | `attachment_max_size_bytes`              | `int \| None`             | `26_214_400` (25 MiB)            | Override max attachment size. `None` uses conf default.                  |
 | `attachment_allow_symlinks`              | `bool \| None`            | `False`                          | Override symlink policy. `None` uses conf default.                       |
 | `attachment_raise_on_security_violation` | `bool \| None`            | `True`                           | Override security violation behaviour. `None` uses conf default.         |
+
+An empty `attachment_blocked_extensions` or `attachment_blocked_directories` set on
+`ConfMail` means "block nothing": it is not a way to ask for the OS defaults. To get the
+OS defaults, omit the field on `ConfMail` (the default factory fills it in) or pass
+`None` to `send()` for the matching parameter.
 
 #### Default Blocked Extensions
 
@@ -146,4 +152,71 @@ C:\Windows, C:\Windows\System32, C:\Program Files, C:\Program Files (x86), C:\Pr
   `attachment_raise_on_security_violation` is `True`.
 - `RuntimeError`  -  when every configured host fails for a recipient (the error
   lists recipients and host roster).
+
+**Per-host failure log:** when a host raises during delivery, `send` logs one
+credential-free `WARNING` for that host and moves on to the next one; no traceback is
+attached. The message is `can not send mail to "<recipient>" via host "<host>": <description>`,
+where `<description>` is built by `_describe_failure`: for an `smtplib.SMTPResponseException`
+(a server reply) it is `<ExceptionClassName> <smtp_code> <reply text>`; for any other `OSError`
+(including a custom `Transport`'s own `OSError`) it is `<ExceptionClassName>: <error text>`,
+logged as given; for anything else it is only the exception class name. Every logged text has
+its control characters (CR, LF, ESC, NUL, ...) replaced by spaces and is capped at 200
+characters, so a hostile or chatty server reply cannot forge extra log lines or flood the log.
+The log record also carries `extra={"error_type": ..., "smtp_code": ...}` (`smtp_code` is
+`None` when the exception has none), so a structured log sink can filter or aggregate by
+either without re-parsing the message text.
+
+## Secret safety {#public-api-secret-safety}
+
+`btx_lib_mail.secret_safety` provides the building blocks `ConfMail` uses to keep a
+credential out of a `pydantic.ValidationError`:
+
+- **`SecretSafeModel`**  -  base class for a pydantic model that holds a credential.
+  A subclass lists its credential field names in the class variable
+  `credential_fields: ClassVar[frozenset[str]]`; every alias of those fields (via
+  `Field(alias=...)` or `validation_alias=...`) is covered automatically, with no need
+  to list the alias separately. `ConfMail` is one such subclass
+  (`credential_fields = frozenset({"smtp_password", "smtphosts"})` -- `smtphosts` is
+  included because a host string carrying `user:password@` is refused there, and that
+  refusal must not echo the value).
+- **`redact_validation_error(exc, *, credential_fields, declared_names=frozenset())`**  -
+  the function `SecretSafeModel` wraps its schema with; call it directly to redact a
+  `ValidationError` from a plain (non-`SecretSafeModel`) pydantic model.
+- **`REDACTED_INPUT`**  -  the string (`"[redacted]"`) a hidden error's `input` is
+  replaced by.
+
+**What is covered:** every place pydantic can raise a `ValidationError` on a
+`SecretSafeModel` subclass or an instance of one -- `__init__`, every `model_validate*`
+method (`model_validate`, `model_validate_strings`, and this model's own
+`model_validate_json`, including malformed JSON handed to it directly), validated
+assignment (`model_config = ConfigDict(validate_assignment=True)`) and assignment to a
+frozen model, `TypeAdapter(Model).validate_python`, and validation of this model nested
+inside a list, a dict, or another model's field.
+
+**What is NOT covered**, because the error is raised before any hook of the model runs:
+malformed JSON handed to `TypeAdapter(Model).validate_json`, and malformed JSON handed
+to `model_validate_json` of a plain `BaseModel` that merely *nests* a `SecretSafeModel`
+field. In both cases the JSON parser fails first and its `json_invalid` error quotes the
+whole JSON text as its input, before pydantic ever reaches the nested model's schema.
+
+**Outer models with their own model-level validator:** a model that nests a
+`SecretSafeModel` field and also defines its own `@model_validator` must itself inherit
+`SecretSafeModel` and list the nested field name in its own `credential_fields`, because
+a model-level validator error on the OUTER model quotes the outer model's own input (the
+whole mapping being validated), not the inner model's.
+
+**The redaction rule** (see `redact_validation_error`'s docstring in
+`src/btx_lib_mail/secret_safety.py` for the full statement): an error's `input` is kept
+only when it is a plain scalar -- `str`, `bytes`, `int`, `float`, `bool`, `None`,
+`Decimal`, a `date`/`datetime`/`time`/`timedelta`, or an `Enum` member whose value is one
+of these. Every other input is replaced by `REDACTED_INPUT`. An error is always hidden
+when it is model-level, an `extra_forbidden` error, or located at a name in
+`credential_fields` (or one of its aliases). A hidden error keeps no `ctx`, and its
+message is scrubbed on a best-effort basis: the walk covers the input verbatim and in its
+`repr()`, `ascii()` and JSON-escaped forms; a mapping key equal to a declared field name
+(passed as `declared_names`) is not treated as a secret and is left in the message, but a
+VALUE equal to such a name is still scrubbed; a value a developer transforms before
+writing it into a message (`.strip()`, a slice, a hash) is not recognised and is not
+covered. If the redaction itself cannot be proven safe, the whole error is replaced
+(fails closed).
 

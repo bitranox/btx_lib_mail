@@ -99,6 +99,32 @@ btx-lib-mail send \
 Both commands (`btx_lib_mail` and `btx-lib-mail`) and `python -m btx_lib_mail` run the
 same CLI.
 
+`smtp_password` is a `SecretStr` (masked in `repr()` and logs); see
+[Configuration - Credentials](docs/configuration.md#credentials) for non-ASCII
+passwords, numeric passwords from environment layers, and what to keep out of a custom
+validator's error message.
+
+Use `send(config=...)` instead of the global `conf` when an application holds its own
+settings object (a worker with per-tenant credentials, a test that must not touch
+global state):
+
+```python
+from btx_lib_mail import ConfMail, send
+
+tenant_config = ConfMail(
+    smtphosts=["smtp.example.com:587"],
+    smtp_username="mailer",
+    smtp_password="s3cr3t",
+)
+send(
+    mail_from="alerts@example.com",
+    mail_recipients=["oncall@example.com"],
+    mail_subject="build failed",
+    mail_body="See CI logs for details.",
+    config=tenant_config,  # every value not also passed explicitly comes from here, not conf
+)
+```
+
 ## Use it from an AI agent (zero install)
 
 btx_lib_mail is built to be driven by LLMs and agents, not only by people. An agent can send mail

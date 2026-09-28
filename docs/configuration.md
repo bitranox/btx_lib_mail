@@ -80,6 +80,65 @@ Key behaviours:
   value via the `timeout=` argument, the `--timeout` CLI flag, or the
   `BTX_MAIL_SMTP_TIMEOUT` environment variable / `.env` entry.
 
+## Credentials
+
+- **Non-ASCII passwords need AUTH PLAIN.** An ASCII username and password use
+  `smtplib.SMTP.login`, which tries CRAM-MD5, PLAIN and LOGIN in turn. A username or
+  password with a non-ASCII character (an umlaut, a non-Latin script) instead goes
+  through RFC 4616 AUTH PLAIN with the credentials encoded as UTF-8, because stdlib
+  `smtplib`'s own login path encodes every AUTH exchange as ASCII and raises
+  `UnicodeEncodeError` on anything else. A server that offers only LOGIN (and XOAUTH2),
+  never PLAIN, refuses a non-ASCII credential with a clear `smtplib.SMTPNotSupportedError`
+  instead of a mid-handshake encoding crash. Microsoft 365 and Exchange are reported to
+  advertise no PLAIN mechanism (not verified in this repo); test against your own
+  server before relying on a non-ASCII credential.
+- **All-digit passwords from environment layers.** A layered config loader (env vars,
+  some `.env` readers) can parse an all-digit value as a number before it reaches
+  `ConfMail`; `smtp_password` accepts an `int` and coerces it to its decimal text, so the
+  password still works. But if the original password had a leading zero (`0123`), the
+  loader has already lost it when it parsed the digits as a number -- `ConfMail` cannot
+  restore what it never saw. Quote the value in a TOML config file (`smtp_password =
+  "0123"`) so the loader keeps it as text in the first place.
+- **Host strings never carry credentials.** A host string in `smtphosts` must be
+  `host[:port]`; it must not carry `user:password@` or a path. `ConfMail` refuses such a
+  host at load time (`ValueError`, without echoing the value) -- pass credentials as
+  `smtp_username` and `smtp_password` (or `credentials=` on `send`) instead of folding
+  them into the host.
+- **Failover repeats the same credential.** For an ASCII password the server rejects,
+  `smtplib` still tries CRAM-MD5, PLAIN and LOGIN in turn before giving up, and
+  `smtphosts` failover then sends that same credential to every remaining host. A wrong
+  password can therefore count several failed logins per `send()` call against an
+  account-lockout policy.
+- **Never put a secret into a custom validator's error message.** `ConfMail`'s own
+  validation errors never carry the password (see the "Secret safety" section of
+  `docs/api.md`), but that redaction scrubs a hidden error's MESSAGE only on a
+  best-effort basis: it recognises the input's verbatim text and its `repr()`, `ascii()`
+  and JSON-escaped forms, never a value a validator has transformed first (stripped,
+  sliced, hashed). Do not write a custom validator that formats a credential into its
+  own `raise ValueError(...)` message.
+- **Tracebacks with local variables still show the raw input.** Rendering a traceback
+  with local variables attached (`traceback.format_exception(..., capture_locals=True)`,
+  or an error-reporting integration such as Sentry that captures frame variables) shows
+  the unredacted input through pydantic's own validation frames, because the redaction
+  rebuilds the `ValidationError` object -- it cannot reach into a traceback frame that
+  already ran. Do not enable frame-variable capture in a process that validates
+  credentials.
+- **`TypeAdapter(Model).validate_json` on malformed JSON is not covered**, and neither is
+  `model_validate_json` of a plain `BaseModel` that merely nests a `SecretSafeModel`
+  field: the JSON parser fails before either model's schema runs, and its
+  `json_invalid` error quotes the whole JSON text as its input. Call the
+  `SecretSafeModel` subclass's own `model_validate_json` directly (`ConfMail.model_validate_json(text)`)
+  to get the redaction; it is covered from `__init__` and every `model_validate*` method
+  onward.
+- **`ConfMail.model_construct(...)` skips validation.** It builds an instance directly
+  from the fields you give it, so nothing refuses a host carrying `user:password@` or
+  rejects a malformed password -- use it only for data you already trust.
+
+An empty `attachment_blocked_extensions` or `attachment_blocked_directories` set on
+`ConfMail` means "block nothing"; it is not a way to ask for the OS defaults. Omit the
+field (the default factory fills it in) or pass `None` to `send()` for the matching
+parameter to get the OS defaults.
+
 ## Environment variables and precedence
 
 ### Environment Variables and Precedence {#mail-env-variables}

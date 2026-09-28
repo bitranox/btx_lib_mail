@@ -69,6 +69,35 @@ conf.smtp_username = "mailer"
 conf.smtp_password = "s3cr3t"  # SecretStr; a plain str is coerced. Per-call kwargs override conf.
 ```
 
+Pass `config=` instead of mutating the global `conf` when an application holds its own settings
+object (per-tenant credentials, a test that must not touch global state). Every value not also
+passed explicitly is then read from `config`, and `conf` is not read at all:
+
+```python
+from btx_lib_mail import ConfMail, send
+
+tenant_config = ConfMail(
+    smtphosts=["smtp.example.com:587"],
+    smtp_username="mailer",
+    smtp_password="s3cr3t",
+)
+send(
+    mail_from="alerts@example.com",
+    mail_recipients="oncall@example.com",
+    mail_subject="build failed",
+    config=tenant_config,
+)
+```
+
+A non-ASCII username or password (an umlaut, a non-Latin script) authenticates over RFC 4616 AUTH
+PLAIN automatically; stdlib `smtplib.SMTP.login` encodes every AUTH exchange as ASCII and would
+otherwise raise `UnicodeEncodeError`. A server offering only LOGIN (no PLAIN) refuses a non-ASCII
+credential with `smtplib.SMTPNotSupportedError` instead.
+
+Any settings model of your own that holds a password should subclass `ConfMail`, or inherit
+`btx_lib_mail.SecretSafeModel` directly and list the field name in `credential_fields`, so a
+`pydantic.ValidationError` raised while validating it never carries the password.
+
 ### Large attachments (streamed, bounded memory)
 
 Attachments are streamed from disk and sent to the server in chunks, so a multi-gigabyte file never
