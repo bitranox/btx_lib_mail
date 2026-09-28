@@ -838,6 +838,56 @@ def _resolve_attachment_security_options(  # noqa: PLR0913 - one keyword-only ov
     )
 
 
+# Bounds one logged failure line so a hostile or chatty server reply cannot
+# flood the log.
+_FAILURE_TEXT_LIMIT: Final[int] = 200
+
+
+def _printable(text: str) -> str:
+    """Return *text* with every control character (CR, LF, ESC, NUL, ...) replaced by a space.
+
+    Why
+        A multi-line or escape-laden server reply must not forge extra log
+        lines or terminal sequences in whatever renders the record.
+
+    Examples
+    --------
+    >>> _printable("535 denied" + chr(10) + "forged")
+    '535 denied forged'
+    """
+    return "".join(character if character.isprintable() else " " for character in text)
+
+
+def _describe_failure(error: BaseException) -> str:
+    """Return a one-line, credential-free description of a delivery failure.
+
+    Why
+        The per-host failure log used to attach the whole exception. An
+        exception raised while encoding SMTP AUTH quotes the AUTH string,
+        password included, in its repr, and structured loggers serialise that
+        repr. Only the text of an ``OSError`` is kept (every
+        ``smtplib.SMTPException`` is one): for the stdlib transport it comes
+        from the OS, the TLS layer or the server reply. A custom ``Transport``
+        can raise an ``OSError`` with any text, and that text is logged as
+        given. Anything else is logged by type name only.
+
+    Examples
+    --------
+    >>> _describe_failure(ValueError("anything"))
+    'ValueError'
+    >>> _describe_failure(smtplib.SMTPAuthenticationError(535, b"5.7.8 invalid"))
+    'SMTPAuthenticationError 535 5.7.8 invalid'
+    """
+    name = type(error).__name__
+    if isinstance(error, smtplib.SMTPResponseException):
+        reply = error.smtp_error
+        text = reply.decode("utf-8", "replace") if isinstance(reply, bytes) else str(reply)
+        return _printable(f"{name} {error.smtp_code} {text}")[:_FAILURE_TEXT_LIMIT]
+    if isinstance(error, OSError):
+        return _printable(f"{name}: {error}")[:_FAILURE_TEXT_LIMIT]
+    return name
+
+
 def _deliver_to_any_host(  # noqa: PLR0913 - one keyword-only param per piece of message/delivery state, all required
     *,
     sender: str,
@@ -880,7 +930,8 @@ def _deliver_to_any_host(  # noqa: PLR0913 - one keyword-only param per piece of
 
     Side Effects
     ------------
-    Composes a spooled message, performs network I/O, logs warnings on failure.
+    Composes a spooled message, performs network I/O, logs one credential-free
+    WARNING per failed host (no traceback attached).
     """
 
     spool = _compose_to_spool(
@@ -908,13 +959,19 @@ def _deliver_to_any_host(  # noqa: PLR0913 - one keyword-only param per piece of
                     extra={"sender": sender, "recipient": recipient, "host": host},
                 )
                 return True
-            except Exception:  # noqa: PERF203 - failover needs the try inside the loop to keep trying remaining hosts
+            except Exception as error:  # noqa: PERF203 - failover needs the try inside the loop to keep trying remaining hosts
                 logger.warning(
-                    'can not send mail to "%s" via host "%s"',
+                    'can not send mail to "%s" via host "%s": %s',
                     recipient,
                     host,
-                    exc_info=True,
-                    extra={"sender": sender, "recipient": recipient, "host": host},
+                    _describe_failure(error),
+                    extra={
+                        "sender": sender,
+                        "recipient": recipient,
+                        "host": host,
+                        "error_type": type(error).__name__,
+                        "smtp_code": getattr(error, "smtp_code", None),
+                    },
                 )
         return False
     finally:
@@ -987,7 +1044,10 @@ class Transport(Protocol):
 
     An implementation delivers one already-composed message to one recipient via
     one host and raises on any failure so the caller can fall over to the next
-    host.
+    host. An OSError (including any smtplib.SMTPException) raised by deliver()
+    is logged with its text, stripped of control characters; any other
+    exception is logged by type name only. Do not put a credential into the
+    text of an OSError.
     """
 
     def deliver(
