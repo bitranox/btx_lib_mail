@@ -62,11 +62,13 @@ send(
 fail for a recipient. Set global defaults on `conf` and override per call:
 
 ```python
+import os
+
 from btx_lib_mail import conf
 
 conf.smtphosts = ["smtp.example.com:587"]
 conf.smtp_username = "mailer"
-conf.smtp_password = "s3cr3t"  # SecretStr; a plain str is coerced. Per-call kwargs override conf.
+conf.smtp_password = os.environ["BTX_MAIL_SMTP_PASSWORD"]  # SecretStr; a plain str is coerced. Per-call kwargs override conf.
 ```
 
 Pass `config=` instead of mutating the global `conf` when an application holds its own settings
@@ -74,12 +76,14 @@ object (per-tenant credentials, a test that must not touch global state). Every 
 passed explicitly is then read from `config`, and `conf` is not read at all:
 
 ```python
+import os
+
 from btx_lib_mail import ConfMail, send
 
 tenant_config = ConfMail(
     smtphosts=["smtp.example.com:587"],
     smtp_username="mailer",
-    smtp_password="s3cr3t",
+    smtp_password=os.environ["BTX_MAIL_SMTP_PASSWORD"],
 )
 send(
     mail_from="alerts@example.com",
@@ -91,12 +95,35 @@ send(
 
 A non-ASCII username or password (an umlaut, a non-Latin script) authenticates over RFC 4616 AUTH
 PLAIN automatically; stdlib `smtplib.SMTP.login` encodes every AUTH exchange as ASCII and would
-otherwise raise `UnicodeEncodeError`. A server offering only LOGIN (no PLAIN) refuses a non-ASCII
-credential with `smtplib.SMTPNotSupportedError` instead.
+otherwise raise `UnicodeEncodeError`. A server offering only LOGIN (no PLAIN) cannot take a
+non-ASCII credential: that host's failure is logged as a WARNING (extra `error_type` is
+`SMTPNotSupportedError`) and delivery fails over to the next host. `send()` itself never raises
+`SMTPNotSupportedError`; it raises `RuntimeError` once every host has failed, so catch
+`RuntimeError` around `send()`.
 
-Any settings model of your own that holds a password should subclass `ConfMail`, or inherit
-`btx_lib_mail.SecretSafeModel` directly and list the field name in `credential_fields`, so a
-`pydantic.ValidationError` raised while validating it never carries the password.
+A settings model of your own that holds a password must name every secret field in
+`credential_fields`, a `ClassVar`, so a `pydantic.ValidationError` raised while validating it never
+carries the value. Listing the name is what keeps it out of errors, whatever the field's type;
+declaring the field `SecretStr` also masks it in the model's own `repr()`. Subclassing `ConfMail`
+does not cover a field you add: EXTEND the inherited set (it already protects `smtp_password` and
+`smtphosts`), never replace it, and keep `credential_fields` a `ClassVar` (an annotation without
+`ClassVar` turns it into an ordinary field and the listing is ignored):
+
+```python
+from typing import ClassVar
+
+from pydantic import SecretStr
+
+from btx_lib_mail import ConfMail
+
+
+class ServiceSettings(ConfMail):
+    credential_fields: ClassVar[frozenset[str]] = ConfMail.credential_fields | {"db_password"}
+    db_password: SecretStr
+```
+
+A model that holds no SMTP settings inherits `btx_lib_mail.SecretSafeModel` directly and lists its
+own secret fields the same way.
 
 ### Large attachments (streamed, bounded memory)
 
