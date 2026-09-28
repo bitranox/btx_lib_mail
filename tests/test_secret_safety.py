@@ -183,3 +183,52 @@ def test_no_log_call_in_the_package_hands_over_an_exception() -> None:
     assert any(path.name == "lib_mail.py" for path in sources), "positive control: the scan reaches lib_mail.py"
     offenders = [hit for path in sources for hit in _exception_leaking_log_calls(path.read_text(encoding="utf-8"), path.name)]
     assert offenders == []
+
+
+_HOST_DUMMY = "DUMMY-PLANTED-5e8b"
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    "host",
+    [f"user:{_HOST_DUMMY}@smtp.example.com", f"smtp://user:{_HOST_DUMMY}@smtp.example.com:587", "smtp.example.com/relay"],
+)
+def test_a_host_with_userinfo_or_a_path_is_refused_without_quoting_it(host: str) -> None:
+    with pytest.raises(ValueError, match="must not contain") as caught:
+        lib_mail.validate_smtp_host(host)
+    assert _HOST_DUMMY not in str(caught.value)
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("host", ["smtp.example.com", "smtp.example.com:587", "[::1]:25", "[::1]"])
+def test_plain_hosts_still_validate(host: str) -> None:
+    lib_mail.validate_smtp_host(host)
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    "hosts",
+    [[f"smtp://user:{_HOST_DUMMY}@smtp.example.com:587"], [f"smtp://user:{_HOST_DUMMY}@smtp.example.com:587", "good.example.com"]],
+    ids=["alone", "before a good host"],
+)
+def test_send_refuses_a_userinfo_host_before_any_delivery(hosts: list[str], caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.DEBUG, logger="btx_lib_mail")
+    transport = _RaisingTransport(AssertionError("transport must not be reached"))
+    with pytest.raises(ValueError, match="must not contain") as caught:
+        lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients="rcpt@example.com",
+            mail_subject="s",
+            smtphosts=hosts,
+            transport=transport,
+        )
+    assert _HOST_DUMMY not in str(caught.value)
+    assert _HOST_DUMMY not in caplog.text
+
+
+@pytest.mark.os_agnostic
+def test_delivery_options_repr_hides_the_credentials() -> None:
+    options = lib_mail.DeliveryOptions(credentials=("user", _HOST_DUMMY), use_starttls=True, starttls_verify=True, timeout=5.0)
+    assert "use_starttls=True" in repr(options), "positive control: the repr is still produced"
+    assert _HOST_DUMMY not in repr(options)
+    assert options.credentials == ("user", _HOST_DUMMY)

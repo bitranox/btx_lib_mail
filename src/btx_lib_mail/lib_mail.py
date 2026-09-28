@@ -29,7 +29,7 @@ import sys
 import tempfile
 import uuid
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from email import policy as email_policy
 from email.generator import BytesGenerator
 from email.message import EmailMessage
@@ -707,7 +707,8 @@ class DeliveryOptions:
     - `timeout: float` — Socket timeout (seconds) applied to SMTP connections.
     """
 
-    credentials: tuple[str, str] | None
+    # repr=False: a transport or a debugger printing the options must not print the password.
+    credentials: tuple[str, str] | None = field(repr=False)
     use_starttls: bool
     starttls_verify: bool
     timeout: float
@@ -1976,6 +1977,20 @@ def validate_email_address(address: str) -> None:
         raise ValueError(f"invalid email address: {address!r}")
 
 
+def _refuse_credentials_in_host(host: str) -> str:
+    """Return *host* unchanged, or raise when it carries userinfo or a path.
+
+    Why
+        ``smtp://user:<password>@relay`` in a host list puts the password into
+        every log line and error text that names the host. The error never
+        quotes the value.
+    """
+    if "@" in host or "/" in host:
+        # Never quote the value: a userinfo part here is a password in the wrong field.
+        raise ValueError("SMTP host must be host[:port]; it must not contain '@' or '/' (pass credentials as smtp_username and smtp_password)")
+    return host
+
+
 def validate_smtp_host(host: str) -> None:
     """Raise ``ValueError`` when *host* is not a valid SMTP host string.
 
@@ -1985,6 +2000,9 @@ def validate_smtp_host(host: str) -> None:
     - ``hostname:port``
     - ``[IPv6]:port``  (e.g. ``[::1]:25``)
     - ``[IPv6]``       (e.g. ``[::1]``)
+
+    Never accepted: userinfo (user:password@host) or a URL (smtp://...); the
+    error does not echo the value.
 
     Why
         Validates SMTP host syntax early so errors surface before delivery.
@@ -2014,6 +2032,8 @@ def validate_smtp_host(host: str) -> None:
 
     if not host:
         raise ValueError("empty SMTP host")
+
+    _refuse_credentials_in_host(host)
 
     if host.startswith("["):
         # IPv6 bracketed address: [addr] or [addr]:port
