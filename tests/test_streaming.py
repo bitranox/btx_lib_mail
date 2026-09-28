@@ -7,6 +7,7 @@ import contextlib
 # Tests reach into module internals (dot-stuffer, spool composer) by design, and
 # aiosmtpd ships no type stubs, so its server/handler objects are untyped here.
 # pyright: reportPrivateUsage=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false
+import smtplib
 import socket
 import time
 from email import message_from_bytes
@@ -547,3 +548,141 @@ def test_starttls_and_auth_path_delivers(tmp_path: Path) -> None:
     assert len(handler.messages) == 1
     received = message_from_bytes(handler.messages[0])
     assert "over TLS" in _plain_text(received)
+
+
+# ---------------------------------------------------------------------------
+# Non-ASCII credentials: stdlib smtplib encodes AUTH as ASCII only, so the
+# library sends RFC 4616 AUTH PLAIN with UTF-8 itself. Planted dummy only.
+# ---------------------------------------------------------------------------
+
+_UTF8_DUMMY = "DUMMY-p\u00e4ssw\u00f6rd-PLANTED-7f3a"
+
+
+def _utf8_authenticator(seen: list[bool]) -> Any:
+    from aiosmtpd.smtp import AuthResult, LoginPassword
+
+    def authenticator(server: Any, session: Any, envelope: Any, mechanism: str, auth_data: Any) -> Any:
+        ok = isinstance(auth_data, LoginPassword) and auth_data.login == b"user" and auth_data.password == _UTF8_DUMMY.encode("utf-8")
+        seen.append(ok)
+        # An explicit 535 message: a bare AuthResult(success=False) left aiosmtpd silent.
+        return AuthResult(success=ok, handled=False, message=None if ok else "535 5.7.8 Authentication credentials invalid")
+
+    return authenticator
+
+
+@pytest.mark.os_agnostic
+def test_a_non_ascii_password_authenticates_with_utf8_plain() -> None:
+    seen: list[bool] = []
+    handler = _CollectingHandler()
+    controller = _run_server(handler, authenticator=_utf8_authenticator(seen), auth_require_tls=False, auth_required=True)
+    try:
+        lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients="rcpt@example.com",
+            mail_subject="utf8 auth",
+            mail_body="body",
+            smtphosts=[f"127.0.0.1:{controller.port}"],
+            use_starttls=False,
+            credentials=("user", _UTF8_DUMMY),
+        )
+    finally:
+        controller.stop()
+
+    assert seen == [True]
+    assert len(handler.messages) == 1
+
+
+@pytest.mark.os_agnostic
+def test_a_wrong_non_ascii_password_is_refused_without_quoting_it(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level("WARNING", logger="btx_lib_mail")
+    seen: list[bool] = []
+    wrong = "DUMMY-w\u00f6ng-PLANTED-11aa"
+    handler = _CollectingHandler()
+    controller = _run_server(handler, authenticator=_utf8_authenticator(seen), auth_require_tls=False, auth_required=True)
+    try:
+        with pytest.raises(RuntimeError):
+            lib_mail.send(
+                mail_from="sender@example.com",
+                mail_recipients="rcpt@example.com",
+                mail_subject="s",
+                smtphosts=[f"127.0.0.1:{controller.port}"],
+                use_starttls=False,
+                credentials=("user", wrong),
+            )
+    finally:
+        controller.stop()
+
+    assert seen == [False], "positive control: the server received and judged the attempt"
+    assert "SMTPAuthenticationError 535" in caplog.text
+    assert wrong not in caplog.text
+    assert handler.messages == []
+
+
+@pytest.mark.os_agnostic
+def test_a_non_ascii_password_without_plain_fails_clearly(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level("WARNING", logger="btx_lib_mail")
+    seen: list[bool] = []
+    # The stock Controller forwards extra keywords to the SMTP instance; this one
+    # advertises AUTH LOGIN only (measured: EHLO shows " LOGIN").
+    controller = _run_server(
+        _CollectingHandler(),
+        authenticator=_utf8_authenticator(seen),
+        auth_require_tls=False,
+        auth_exclude_mechanism=["PLAIN"],
+    )
+    try:
+        with pytest.raises(RuntimeError):
+            lib_mail.send(
+                mail_from="sender@example.com",
+                mail_recipients="rcpt@example.com",
+                mail_subject="s",
+                smtphosts=[f"127.0.0.1:{controller.port}"],
+                use_starttls=False,
+                credentials=("user", _UTF8_DUMMY),
+            )
+    finally:
+        controller.stop()
+
+    assert "SMTPNotSupportedError" in caplog.text, "positive control: the refusal was logged"
+    assert "AUTH PLAIN" in caplog.text
+    assert seen == []
+    assert _UTF8_DUMMY not in caplog.text
+
+
+class _ScriptedSMTP:
+    """Stands in for smtplib.SMTP at the AUTH exchange: fixed EHLO features, scripted replies.
+
+    aiosmtpd cannot be made to answer an AUTH PLAIN initial response with 334,
+    so the continuation path is driven through this double at the connection
+    seam that _login_plain_utf8 takes as its parameter.
+    """
+
+    def __init__(self, replies: list[tuple[int, bytes]]) -> None:
+        self.esmtp_features = {"auth": "PLAIN LOGIN"}
+        self.replies = replies
+        self.sent: list[tuple[str, str]] = []
+
+    def has_extn(self, name: str) -> bool:
+        return name.lower() in self.esmtp_features
+
+    def docmd(self, cmd: str, args: str = "") -> tuple[int, bytes]:
+        self.sent.append((cmd, args))
+        return self.replies.pop(0)
+
+
+@pytest.mark.os_agnostic
+def test_a_334_continuation_gets_the_utf8_token_once() -> None:
+    server = _ScriptedSMTP([(334, b""), (235, b"2.7.0 Authentication successful")])
+    lib_mail._login_plain_utf8(cast("smtplib.SMTP", server), "user", _UTF8_DUMMY)
+    assert len(server.sent) == 2
+    assert server.sent[0][0] == "AUTH"
+    assert server.sent[1][0] == server.sent[0][1].removeprefix("PLAIN ")
+
+
+@pytest.mark.os_agnostic
+def test_a_second_334_is_refused_not_looped() -> None:
+    server = _ScriptedSMTP([(334, b""), (334, b"")])
+    with pytest.raises(smtplib.SMTPAuthenticationError) as caught:
+        lib_mail._login_plain_utf8(cast("smtplib.SMTP", server), "user", _UTF8_DUMMY)
+    assert caught.value.smtp_code == 334
+    assert len(server.sent) == 2

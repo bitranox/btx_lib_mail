@@ -1030,6 +1030,11 @@ _SMTP_OK: Final[int] = 250
 _SMTP_WILL_FORWARD: Final[int] = 251
 _SMTP_START_MAIL_INPUT: Final[int] = 354
 
+_SMTP_AUTH_OK: Final[int] = 235
+_SMTP_AUTH_CONTINUE: Final[int] = 334
+# smtplib.SMTP.login treats 503 ("already authenticated") as success; mirrored here.
+_SMTP_ALREADY_AUTHENTICATED: Final[int] = 503
+
 # Length of a CRLF line terminator; used to detect whether the DATA phase
 # already ended on a line boundary before appending the terminal "." line.
 _CRLF_LEN: Final[int] = 2
@@ -1091,7 +1096,7 @@ class SmtplibTransport:
                 smtp_connection.ehlo()
             if delivery.credentials is not None:
                 username, password = delivery.credentials
-                smtp_connection.login(username, password)
+                _authenticate(smtp_connection, username, password)
             smtp_connection.ehlo_or_helo_if_needed()
 
             message.seek(0)
@@ -1099,6 +1104,46 @@ class SmtplibTransport:
                 _send_via_bdat(smtp_connection, sender, recipient, message)
             else:
                 _send_via_data(smtp_connection, sender, recipient, message)
+
+
+def _authenticate(smtp_connection: smtplib.SMTP, username: str, password: str) -> None:
+    """Log in, using UTF-8 AUTH PLAIN only when the credentials are not ASCII.
+
+    Why
+        stdlib ``smtplib`` encodes every AUTH exchange as ASCII, so a non-ASCII
+        password raises ``UnicodeEncodeError`` whose repr quotes the whole AUTH
+        string. ASCII credentials keep the stdlib path unchanged.
+    """
+    if username.isascii() and password.isascii():
+        smtp_connection.login(username, password)
+        return
+    _login_plain_utf8(smtp_connection, username, password)
+
+
+def _login_plain_utf8(smtp_connection: smtplib.SMTP, username: str, password: str) -> None:
+    """Authenticate with RFC 4616 AUTH PLAIN, credentials encoded as UTF-8.
+
+    Raises
+    ------
+    smtplib.SMTPNotSupportedError
+        The server offers no AUTH, or no PLAIN mechanism.
+    smtplib.SMTPAuthenticationError
+        The server rejected the credentials, or answered a second 334;
+        carries only the server reply.
+    """
+    if not smtp_connection.has_extn("auth"):
+        raise smtplib.SMTPNotSupportedError("SMTP AUTH extension not supported by server.")
+    mechanisms = smtp_connection.esmtp_features["auth"].upper().split()
+    if "PLAIN" not in mechanisms:
+        raise smtplib.SMTPNotSupportedError("non-ASCII SMTP credentials need a server that offers AUTH PLAIN (RFC 4616)")
+    token = base64.b64encode(b"\0" + username.encode("utf-8") + b"\0" + password.encode("utf-8")).decode("ascii")
+    code, reply = smtp_connection.docmd("AUTH", "PLAIN " + token)
+    if code == _SMTP_AUTH_CONTINUE:
+        # A server that ignores the initial response asks for it with an empty
+        # 334 challenge (RFC 4954); smtplib.SMTP.auth answers the same way, once.
+        code, reply = smtp_connection.docmd(token)
+    if code not in (_SMTP_AUTH_OK, _SMTP_ALREADY_AUTHENTICATED):
+        raise smtplib.SMTPAuthenticationError(code, reply)
 
 
 def _require_socket(smtp_connection: smtplib.SMTP) -> Any:
