@@ -681,11 +681,11 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
     >>> class _NullTransport:  # a stand-in transport that accepts every message
     ...     def deliver(self, **kwargs: object) -> None:
     ...         return None
-    >>> conf.smtphosts = ["smtp.example.com"]
     >>> send(
     ...     mail_from="sender@example.com",
     ...     mail_recipients="receiver@example.com",
     ...     mail_subject="Hello",
+    ...     config=ConfMail(smtphosts=["smtp.example.com"]),
     ...     transport=_NullTransport(),
     ... )
     True
@@ -1038,15 +1038,13 @@ def _deliver_to_any_host(  # noqa: PLR0913 - one keyword-only param per piece of
                     extra={"sender": _printable(sender), "recipient": _printable(recipient), "host": _printable(host)},
                 )
                 return True
-            except Exception as error:  # noqa: PERF203 - failover needs the try inside the loop to keep trying remaining hosts
+            except Exception as error:
                 clean_recipient = _printable(recipient)
                 clean_host = _printable(host)
-                logger.warning(
+                warning_call = (
                     'can not send mail to "%s" via host "%s": %s',
-                    clean_recipient,
-                    clean_host,
-                    _describe_failure(error),
-                    extra={
+                    (clean_recipient, clean_host, _describe_failure(error)),
+                    {
                         "sender": _printable(sender),
                         "recipient": clean_recipient,
                         "host": clean_host,
@@ -1054,6 +1052,14 @@ def _deliver_to_any_host(  # noqa: PLR0913 - one keyword-only param per piece of
                         "smtp_code": getattr(error, "smtp_code", None),
                     },
                 )
+            # Logged OUTSIDE the except block: once that block exits, this
+            # host's failure is no longer the active exception, so a handler
+            # or formatter that itself raises (handleError, a broken sink)
+            # cannot chain it in as __context__ and print it via "During
+            # handling of the above exception ...". Reached only through the
+            # except branch above (the try's success path returns already).
+            message, args, extra = warning_call
+            logger.warning(message, *args, extra=extra)
         return False
     finally:
         spool.close()

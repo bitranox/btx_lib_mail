@@ -680,6 +680,14 @@ def test_a_334_continuation_gets_the_utf8_token_once() -> None:
 
 
 @pytest.mark.os_agnostic
+def test_a_503_already_authenticated_reply_is_treated_as_success() -> None:
+    """smtplib.SMTP.login treats 503 the same as 235; _login_plain_utf8 mirrors that."""
+    server = _ScriptedSMTP([(503, b"5.5.1 already authenticated")])
+    lib_mail._login_plain_utf8(cast("smtplib.SMTP", server), "user", _UTF8_DUMMY)
+    assert len(server.sent) == 1, "one AUTH command, no continuation, no raise"
+
+
+@pytest.mark.os_agnostic
 def test_a_second_334_is_refused_not_looped() -> None:
     server = _ScriptedSMTP([(334, b""), (334, b"")])
     with pytest.raises(smtplib.SMTPAuthenticationError) as caught:

@@ -1364,6 +1364,26 @@ class TestRaiseOnMissingAttachmentsParameter:
         assert "Attachment File" in caplog.text
         assert recorder.created[0].sent_messages[0][2]
 
+    @pytest.mark.os_agnostic
+    def test_config_param_supplies_the_default_not_the_global_conf(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """With no per-call override, a passed config's own setting governs, not the global conf's opposite one."""
+        recorder = _install_fake_transport(monkeypatch)
+        lib_mail.conf.raise_on_missing_attachments = True  # global: strict
+        settings = ConfMail(smtphosts=["smtp.example.com"], raise_on_missing_attachments=False)  # config: tolerant
+        missing_file = tmp_path / "missing.txt"
+
+        result = lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients="recipient@example.com",
+            mail_subject="Subject",
+            attachment_file_paths=[missing_file],
+            attachment_blocked_directories=frozenset(),
+            config=settings,
+        )
+
+        assert result is True, "the passed config's tolerant setting must win over the global conf's strict one"
+        assert recorder.created[0].sent_messages[0][2]
+
 
 class TestRaiseOnInvalidRecipientParameter:
     """Tests for raise_on_invalid_recipient per-call override."""
@@ -1442,6 +1462,23 @@ class TestRaiseOnInvalidRecipientParameter:
 
         assert result is True
         assert "invalid recipient invalid@" in caplog.text
+        assert recorder.created[0].sent_messages[0][1] == "valid@example.com"
+
+    @pytest.mark.os_agnostic
+    def test_config_param_supplies_the_default_not_the_global_conf(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """With no per-call override, a passed config's own setting governs, not the global conf's opposite one."""
+        recorder = _install_fake_transport(monkeypatch)
+        lib_mail.conf.raise_on_invalid_recipient = True  # global: strict
+        settings = ConfMail(smtphosts=["smtp.example.com"], raise_on_invalid_recipient=False)  # config: tolerant
+
+        result = lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients=["invalid@", "valid@example.com"],
+            mail_subject="Subject",
+            config=settings,
+        )
+
+        assert result is True, "the passed config's tolerant setting must win over the global conf's strict one"
         assert recorder.created[0].sent_messages[0][1] == "valid@example.com"
 
 

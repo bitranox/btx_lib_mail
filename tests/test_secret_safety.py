@@ -39,7 +39,7 @@ from pydantic import (
 from pydantic_core import PydanticCustomError
 
 import btx_lib_mail
-from btx_lib_mail import REDACTED_INPUT, ConfMail, SecretSafeModel, lib_mail, redact_validation_error
+from btx_lib_mail import REDACTED_INPUT, ConfMail, SecretSafeModel, lib_mail, redact_validation_error, secret_safety
 from btx_lib_mail.secret_safety import _MAX_VISITS
 
 if TYPE_CHECKING:
@@ -106,6 +106,50 @@ def test_a_failed_host_logs_the_smtp_code_and_server_text(caplog: pytest.LogCapt
     assert "SMTPAuthenticationError 535 5.7.8 Authentication credentials invalid" in record.getMessage()
     assert record.__dict__["error_type"] == "SMTPAuthenticationError"
     assert record.__dict__["smtp_code"] == 535
+
+
+class _FailingFormatter(logging.Formatter):
+    """Formatter that always raises, to trigger the handler's own error path."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        raise RuntimeError("formatter exploded PLANTED-FORMATTER-BOOM")
+
+
+# Held in a name, not inlined at the call site: logging.Handler.handleError's
+# "Call stack:" section prints each live frame's CURRENT SOURCE LINE, so an
+# inline `ValueError("PLANTED ...")` literal would leak through that
+# diagnostic regardless of the fix under test. A name keeps the call site's
+# source line free of the plant, isolating the __context__-chaining bug this
+# test targets from that unrelated (and much older) stdlib behaviour.
+_PLANTED_TRANSPORT_ERROR = ValueError("PLANTED-DELIVERY-6c2e in transport")
+
+
+@pytest.mark.os_agnostic
+def test_a_failing_log_handler_does_not_chain_the_original_delivery_exception(capsys: pytest.CaptureFixture[str]) -> None:
+    """logging.Handler.handleError prints via sys.exc_info(); the delivery error must not be chained onto it.
+
+    A per-host WARNING logged INSIDE the ``except`` block that caught the delivery
+    failure keeps that failure as ``__context__`` on anything the log call itself
+    raises: a broken handler/formatter then has Python's default traceback printer
+    walk the chain and print the delivery error too ("During handling of the above
+    exception..."), even though nothing asked for a traceback.
+    """
+    handler = logging.StreamHandler()
+    handler.setFormatter(_FailingFormatter())
+    logger = logging.getLogger("btx_lib_mail")
+    logger.addHandler(handler)
+    logger.setLevel(logging.WARNING)
+    original = logging.raiseExceptions
+    logging.raiseExceptions = True
+    try:
+        with pytest.raises(RuntimeError):
+            _send_through(_RaisingTransport(_PLANTED_TRANSPORT_ERROR))
+    finally:
+        logger.removeHandler(handler)
+        logging.raiseExceptions = original
+    captured = capsys.readouterr()
+    assert "PLANTED-FORMATTER-BOOM" in captured.err, "positive control: the broken handler's own failure is reported"
+    assert "PLANTED-DELIVERY-6c2e" not in captured.err, "the delivery exception must not be chained onto the handler's own failure"
 
 
 @pytest.mark.os_agnostic
@@ -248,7 +292,7 @@ def test_send_refuses_a_userinfo_host_before_any_delivery(hosts: list[str], capl
             transport=transport,
         )
     assert _HOST_DUMMY not in str(caught.value)
-    assert _HOST_DUMMY not in caplog.text
+    assert caplog.records == [], "send() must refuse the userinfo host before logging anything, not merely before logging the dummy"
 
 
 @pytest.mark.os_agnostic
@@ -796,6 +840,37 @@ def test_an_input_too_deep_to_check_hides_the_message() -> None:
     errors = deep_caught.value.errors()
     assert errors, "positive control"
     assert all(e["msg"] == REDACTED_INPUT and e["input"] == REDACTED_INPUT for e in errors), "an input too deep to check hides the message whole"
+
+
+@pytest.mark.os_agnostic
+def test_a_failure_computing_the_declared_names_fails_closed_instead_of_leaking_the_raw_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    """If collecting the schema's own names raises, the redaction must still hide the raw input.
+
+    ``SecretSafeModel._redacted`` calls the module-level ``_declared_names`` by its
+    global name, so patching ``btx_lib_mail.secret_safety._declared_names`` is the real
+    seam ``_redacted`` reads at call time (not a copy bound elsewhere).
+    """
+    with pytest.raises(ValidationError) as control:
+        ConfMail(smtp_password=[_DUMMY])  # type: ignore[arg-type]
+    control_errors = control.value.errors()
+    assert control_errors, "positive control: a broken declared-names collector is not the only way to reach an error here"
+    assert _DUMMY not in str(control.value), "positive control: the plant is checked against the working path first"
+
+    def _boom(model: type[BaseModel]) -> frozenset[str]:
+        raise ValueError("boom")
+
+    monkeypatch.setattr(secret_safety, "_declared_names", _boom)
+    with pytest.raises(ValidationError) as caught:
+        ConfMail(smtp_password=[_DUMMY])  # type: ignore[arg-type]
+    exc = caught.value
+    errors = exc.errors()
+    assert errors, "positive control: the patch is reached and still raises"
+    assert [(e["type"], e["loc"], e["input"]) for e in errors] == [("redacted_error", (), REDACTED_INPUT)]
+    assert errors[0]["msg"] == "validation failed; the details could not be redacted and were dropped"
+    assert _DUMMY not in str(exc)
+    assert _DUMMY not in repr(exc)
+    assert _DUMMY not in json.dumps(errors, default=str)
+    assert exc.__context__ is None, "the unredacted original must not survive on the chain"
 
 
 _ESCAPED_QUOTES: list[tuple[type[_QuotedToken], Callable[[str], str], str, str]] = [

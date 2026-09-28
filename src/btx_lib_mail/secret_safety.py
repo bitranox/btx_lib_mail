@@ -450,7 +450,18 @@ class SecretSafeModel(BaseModel):
 
     @classmethod
     def _redacted(cls, original: ValidationError) -> ValidationError:
-        return redact_validation_error(original, credential_fields=cls._hidden_locations(), declared_names=_declared_names(cls))
+        # Both calls below can raise (a subclass's model_fields access, a bad
+        # alias, a schema walk): guard them here too, not just the rebuild
+        # inside redact_validation_error, so a raise from EITHER path fails
+        # closed instead of letting pydantic-core catch it at the schema
+        # boundary and rebuild a value_error whose input is the raw mapping
+        # this method was never given a chance to redact.
+        try:
+            hidden_locations = cls._hidden_locations()
+            declared_names = _declared_names(cls)
+        except Exception:
+            return _failed_redaction()
+        return redact_validation_error(original, credential_fields=hidden_locations, declared_names=declared_names)
 
     @classmethod
     def __get_pydantic_core_schema__(cls, source: type[BaseModel], handler: GetCoreSchemaHandler) -> CoreSchema:
