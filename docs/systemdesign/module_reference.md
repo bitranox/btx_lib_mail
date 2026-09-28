@@ -83,10 +83,12 @@ rendering, attachment security, and the delivery orchestration.
   `attachment_max_size_bytes`, `attachment_allow_symlinks`,
   `attachment_raise_on_security_violation`).
 * **Validation:** coerces `smtphosts` from string/iterable and refuses a host
-  carrying `@` or `/` (see `_refuse_credentials_in_host`), coerces `smtp_password`
-  from `str` or a whole `int` and refuses anything else without echoing it, rejects
-  a non-positive `smtp_timeout` and `attachment_max_size_bytes`, and normalises
-  extension/directory sets.
+  carrying `@` or `/`, or any interior whitespace or control character (see
+  `_refuse_credentials_in_host`; outer whitespace is trimmed first, so it does not
+  count). `smtp_password` accepts `str`, `bytes` and `SecretStr` unchanged, coerces a
+  whole `int` (not `bool`) to its decimal text, and refuses anything else without
+  echoing it. `smtp_timeout` and `attachment_max_size_bytes` reject a non-positive
+  value, and extension/directory sets are normalised.
 * **Secret safety:** `credential_fields = frozenset({"smtp_password",
   "smtphosts"})`; a `ValidationError` raised while validating this model never
   carries the value at either location (see `secret_safety.SecretSafeModel`).
@@ -152,7 +154,11 @@ rendering, attachment security, and the delivery orchestration.
   and iterates the host tuple, delegating to the injected `Transport` until one
   accepts the message, logging one credential-free `WARNING` per failed host (built
   by `_describe_failure`, no traceback attached) and moving on. The spool is reused
-  across host attempts.
+  across host attempts. The `host` and `recipient` logged in the `WARNING` (message
+  and `extra` alike) are also run through `_printable` before logging, as defense in
+  depth: `_refuse_credentials_in_host` already refuses a host carrying whitespace or
+  a control character before delivery starts, so this second cleaning guards against
+  whatever reaches this call directly rather than through `send()`'s own validation.
 * `_describe_failure(error)` returns a one-line, credential-free description of a
   delivery failure: for an `smtplib.SMTPResponseException` it is the exception class
   name plus the server's numeric code and reply text; for any other `OSError`
@@ -173,7 +179,8 @@ rendering, attachment security, and the delivery orchestration.
   transports.
 * `_authenticate(smtp_connection, username, password)` calls `smtplib.SMTP.login`
   when both `username` and `password` are ASCII (the stdlib path, which tries
-  CRAM-MD5, PLAIN and LOGIN in turn); otherwise it calls `_login_plain_utf8`,
+  CRAM-MD5, PLAIN and LOGIN in turn among the mechanisms the server advertises);
+  otherwise it calls `_login_plain_utf8`,
   because stdlib `smtplib` encodes every AUTH exchange as ASCII and raises
   `UnicodeEncodeError` (quoting the whole AUTH string, password included, in its
   repr) on a non-ASCII credential.
@@ -199,7 +206,12 @@ rendering, attachment security, and the delivery orchestration.
 * `_refuse_credentials_in_host(host)` returns `host` unchanged, or raises
   `ValueError` (without echoing the value) when it carries `@` or `/`: a host string
   such as `user:password@relay` would put the password into every log line and
-  error text that names the host. `validate_smtp_host` calls it first.
+  error text that names the host. It also raises for any INTERIOR whitespace or
+  control character (a newline or an escape sequence could forge a log line or a
+  terminal control sequence); callers run it after `_normalise_host`, which trims
+  OUTER whitespace, so an ordinary `" smtp.example.com "` still validates.
+  `validate_smtp_host` calls it first, and `ConfMail`'s `smtphosts` coercion
+  (`_collect_host_inputs`) calls it directly.
 * `validate_email_address` and `validate_smtp_host` are public; `_parse_smtp_host`
   reuses `validate_smtp_host` before splitting hostname and port.
 * **Location:** src/btx_lib_mail/lib_mail.py

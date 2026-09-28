@@ -603,8 +603,8 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
     - `mail_body: str = ""` — Optional plain-text body.
     - `mail_body_html: str = ""` — Optional HTML body.
     - `smtphosts: Sequence[str] | None = None` — Override host list. When
-      `None`, the helper falls back to the passed `config`, else the global
-      `conf.smtphosts`.
+      `None`, the helper falls back to the passed `config.smtphosts`, else the
+      global `conf.smtphosts`.
     - `attachment_file_paths: Sequence[pathlib.Path] | None = None` — Optional
       iterable of filesystem paths. Each existing file becomes an attachment.
     - `credentials: tuple[str, str] | None = None` — Override credentials. When
@@ -659,7 +659,8 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
     **Raises:**
     - `ValueError` — When no valid recipients remain after validation.
     - `FileNotFoundError` — When required attachments are missing and
-      `conf.raise_on_missing_attachments` is `True`.
+      `raise_on_missing_attachments` is `True` on the config in use (the
+      passed `config`, else the global `conf`).
     - `AttachmentSecurityError` — When an attachment violates security policies
       and `attachment_raise_on_security_violation` is `True`.
     - `RuntimeError` — When every SMTP host fails for a recipient; the error

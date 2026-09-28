@@ -10,7 +10,7 @@ from btx_lib_mail import conf, send
 conf.smtphosts = ["smtp.example.com:587", "smtp.backup.example.com"]
 conf.smtp_use_starttls = True
 conf.smtp_username = "mailer"
-conf.smtp_password = "s3cr3t"
+conf.smtp_password = "DUMMY-PLANTED-password"
 
 send(
     mail_from="alerts@example.com",
@@ -33,7 +33,7 @@ send(
     mail_subject="Status update",
     mail_body="All systems operational.",
     smtphosts=("smtp-main.example.com:587", "smtp-dr.example.com:587"),
-    credentials=("smtp-user", "smtp-pass"),
+    credentials=("smtp-user", "DUMMY-PLANTED-password"),
     use_starttls=True,
     timeout=15,
 )
@@ -48,7 +48,7 @@ from btx_lib_mail import ConfMail, conf
 settings = {
     "smtphosts": ["smtp.example.com:587"],
     "smtp_username": "svc-user",
-    "smtp_password": "svc-pass",
+    "smtp_password": "DUMMY-PLANTED-password",
     "smtp_use_starttls": True,
     "smtp_timeout": 20.0,
 }
@@ -83,27 +83,35 @@ Key behaviours:
 ## Credentials
 
 - **Non-ASCII passwords need AUTH PLAIN.** An ASCII username and password use
-  `smtplib.SMTP.login`, which tries CRAM-MD5, PLAIN and LOGIN in turn. A username or
-  password with a non-ASCII character (an umlaut, a non-Latin script) instead goes
-  through RFC 4616 AUTH PLAIN with the credentials encoded as UTF-8, because stdlib
-  `smtplib`'s own login path encodes every AUTH exchange as ASCII and raises
-  `UnicodeEncodeError` on anything else. A server that offers only LOGIN (and XOAUTH2),
-  never PLAIN, refuses a non-ASCII credential with a clear `smtplib.SMTPNotSupportedError`
-  instead of a mid-handshake encoding crash. Microsoft 365 and Exchange are reported to
-  advertise no PLAIN mechanism (not verified in this repo); test against your own
-  server before relying on a non-ASCII credential.
+  `smtplib.SMTP.login`, which tries CRAM-MD5, PLAIN and LOGIN in turn, among the
+  mechanisms the server advertises. A username or password with a non-ASCII character
+  (an umlaut, a non-Latin script) instead goes through RFC 4616 AUTH PLAIN with the
+  credentials encoded as UTF-8, because stdlib `smtplib`'s own login path encodes every
+  AUTH exchange as ASCII and raises `UnicodeEncodeError` on anything else. A server that
+  offers only LOGIN (and XOAUTH2), never PLAIN, refuses a non-ASCII credential with
+  `smtplib.SMTPNotSupportedError` instead of a mid-handshake encoding crash. Microsoft
+  365 and Exchange are reported to advertise no PLAIN mechanism (not verified in this
+  repo); test against your own server before relying on a non-ASCII credential.
+  `send()` never raises `smtplib.SMTPNotSupportedError` itself: it is caught per host
+  (like every delivery failure), named in that host's `WARNING` log line
+  (`extra["error_type"] == "SMTPNotSupportedError"`), and `send()` raises `RuntimeError`
+  once every configured host has failed. Do not write `except smtplib.SMTPNotSupportedError`
+  around `send()`; catch `RuntimeError`, or inspect `error_type` in the log record.
 - **All-digit passwords from environment layers.** A layered config loader (env vars,
   some `.env` readers) can parse an all-digit value as a number before it reaches
   `ConfMail`; `smtp_password` accepts an `int` and coerces it to its decimal text, so the
   password still works. But if the original password had a leading zero (`0123`), the
-  loader has already lost it when it parsed the digits as a number -- `ConfMail` cannot
+  loader has already lost it when it parsed the digits as a number, and `ConfMail` cannot
   restore what it never saw. Quote the value in a TOML config file (`smtp_password =
   "0123"`) so the loader keeps it as text in the first place.
-- **Host strings never carry credentials.** A host string in `smtphosts` must be
-  `host[:port]`; it must not carry `user:password@` or a path. `ConfMail` refuses such a
-  host at load time (`ValueError`, without echoing the value) -- pass credentials as
-  `smtp_username` and `smtp_password` (or `credentials=` on `send`) instead of folding
-  them into the host.
+- **Host strings never carry credentials, whitespace, or control characters.** A host
+  string in `smtphosts` must be `host[:port]`; it must not carry `user:password@` or a
+  path, and it must not carry an interior whitespace or control character (a newline or
+  an escape sequence could forge a log line or a terminal control sequence wherever a
+  failed host is later logged). `ConfMail` refuses such a host at load time (`ValueError`,
+  without echoing the value); pass credentials as `smtp_username` and `smtp_password` (or
+  `credentials=` on `send`) instead of folding them into the host. Outer whitespace is
+  trimmed first, so an ordinary `" smtp.example.com "` from an env file still validates.
 - **Failover repeats the same credential.** For an ASCII password the server rejects,
   `smtplib` still tries CRAM-MD5, PLAIN and LOGIN in turn before giving up, and
   `smtphosts` failover then sends that same credential to every remaining host. A wrong
@@ -120,7 +128,7 @@ Key behaviours:
   with local variables attached (`traceback.format_exception(..., capture_locals=True)`,
   or an error-reporting integration such as Sentry that captures frame variables) shows
   the unredacted input through pydantic's own validation frames, because the redaction
-  rebuilds the `ValidationError` object -- it cannot reach into a traceback frame that
+  rebuilds the `ValidationError` object and cannot reach into a traceback frame that
   already ran. Do not enable frame-variable capture in a process that validates
   credentials.
 - **`TypeAdapter(Model).validate_json` on malformed JSON is not covered**, and neither is
@@ -132,12 +140,14 @@ Key behaviours:
   onward.
 - **`ConfMail.model_construct(...)` skips validation.** It builds an instance directly
   from the fields you give it, so nothing refuses a host carrying `user:password@` or
-  rejects a malformed password -- use it only for data you already trust.
+  rejects a malformed password; use it only for data you already trust.
 
 An empty `attachment_blocked_extensions` or `attachment_blocked_directories` set on
-`ConfMail` means "block nothing"; it is not a way to ask for the OS defaults. Omit the
-field (the default factory fills it in) or pass `None` to `send()` for the matching
-parameter to get the OS defaults.
+`ConfMail` means "block nothing"; it is not a way to ask for the OS defaults. Passing
+`None` to `send()` for the matching parameter uses the value already on the config in use
+(the passed `config`, else the global `conf`), so it repeats an explicit empty set rather
+than restoring the OS defaults. To get the OS defaults, leave the field at its factory
+default on the config in use (do not set it to `frozenset()`).
 
 ## Environment variables and precedence
 
@@ -161,7 +171,7 @@ Environment variables understood by the CLI:
 | `BTX_MAIL_SMTP_USE_STARTTLS`    | Boolean flag (`1`, `true`, `yes`, `on`) enabling STARTTLS.                      | `true`                                    |
 | `BTX_MAIL_SMTP_STARTTLS_VERIFY` | Boolean flag verifying the server certificate during STARTTLS (default `true`). | `false`                                   |
 | `BTX_MAIL_SMTP_USERNAME`        | Username used when STARTTLS/authentication is required.                         | `smtp-user`                               |
-| `BTX_MAIL_SMTP_PASSWORD`        | Password paired with the SMTP username.                                         | `s3cr3t`                                  |
+| `BTX_MAIL_SMTP_PASSWORD`        | Password paired with the SMTP username.                                         | `DUMMY-PLANTED-password`                  |
 | `BTX_MAIL_SMTP_TIMEOUT`         | Socket timeout in seconds (defaults to `30`).                                   | `12.5`                                    |
 
 **Attachment Security Settings:**

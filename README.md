@@ -65,7 +65,7 @@ send(
     mail_subject="build failed",
     mail_body="See CI logs for details.",
     smtphosts=["smtp.example.com:587"],
-    credentials=("mailer", "s3cr3t"),
+    credentials=("mailer", "DUMMY-PLANTED-password"),
 )
 ```
 
@@ -114,7 +114,7 @@ from btx_lib_mail import ConfMail, send
 tenant_config = ConfMail(
     smtphosts=["smtp.example.com:587"],
     smtp_username="mailer",
-    smtp_password="s3cr3t",
+    smtp_password="DUMMY-PLANTED-password",
 )
 send(
     mail_from="alerts@example.com",

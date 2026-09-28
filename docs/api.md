@@ -82,30 +82,32 @@ raises when every host fails for at least one recipient.
 | `mail_subject`          | `str`                            | -       | UTF-8 subject line.                                                                                                                    |
 | `mail_body`             | `str`                            | `""`    | Optional plain-text body.                                                                                                              |
 | `mail_body_html`        | `str`                            | `""`    | Optional HTML body (UTF-8).                                                                                                            |
-| `smtphosts`             | `Sequence[str] \| None`          | `None`  | Host override. Falls back to `conf.smtphosts`.                                                                                         |
-| `attachment_file_paths` | `Sequence[pathlib.Path] \| None` | `None`  | Iterable of attachment paths. Missing files raise unless `conf.raise_on_missing_attachments` is `False`.                               |
-| `credentials`           | `tuple[str, str] \| None`        | `None`  | `(username, password)` override. Defaults to `conf.resolved_credentials()`.                                                            |
-| `use_starttls`          | `bool \| None`                   | `None`  | When `None`, the helper uses `conf.smtp_use_starttls`.                                                                                 |
-| `starttls_verify`       | `bool \| None`                   | `None`  | When `None`, the helper uses `conf.smtp_starttls_verify`. `False` skips certificate verification.                                      |
-| `timeout`               | `float \| None`                  | `None`  | When `None`, the helper uses `conf.smtp_timeout`.                                                                                      |
+| `smtphosts`             | `Sequence[str] \| None`          | `None`  | Host override. Falls back to `smtphosts` of the config in use (the passed `config`, else the global `conf`).                           |
+| `attachment_file_paths` | `Sequence[pathlib.Path] \| None` | `None`  | Iterable of attachment paths. Missing files raise unless `raise_on_missing_attachments` is `False` on the config in use.               |
+| `credentials`           | `tuple[str, str] \| None`        | `None`  | `(username, password)` override. Defaults to `resolved_credentials()` of the config in use.                                            |
+| `use_starttls`          | `bool \| None`                   | `None`  | When `None`, the helper uses `smtp_use_starttls` of the config in use.                                                                 |
+| `starttls_verify`       | `bool \| None`                   | `None`  | When `None`, the helper uses `smtp_starttls_verify` of the config in use. `False` skips certificate verification.                      |
+| `timeout`               | `float \| None`                  | `None`  | When `None`, the helper uses `smtp_timeout` of the config in use.                                                                      |
 | `config`                | `ConfMail \| None`               | `None`  | Settings used in place of the global `conf` for every value not passed explicitly. When `config` is passed, `conf` is not read at all. |
 
 **Attachment Security Parameters (keyword-only):**
 
-| Parameter                                | Type                      | Default                          | Notes                                                                    |
-|------------------------------------------|---------------------------|----------------------------------|--------------------------------------------------------------------------|
-| `attachment_allowed_extensions`          | `frozenset[str] \| None`  | `None` (blacklist mode)          | Override allowed extensions (whitelist mode). `None` uses blocked list.  |
-| `attachment_blocked_extensions`          | `frozenset[str] \| None`  | OS-specific dangerous extensions | Override blocked extensions. `None` uses conf default.                   |
-| `attachment_allowed_directories`         | `frozenset[Path] \| None` | `None` (blacklist mode)          | Override allowed directories (whitelist mode). `None` uses blocked list. |
-| `attachment_blocked_directories`         | `frozenset[Path] \| None` | OS-specific sensitive dirs       | Override blocked directories. `None` uses conf default.                  |
-| `attachment_max_size_bytes`              | `int \| None`             | `26_214_400` (25 MiB)            | Override max attachment size. `None` uses conf default.                  |
-| `attachment_allow_symlinks`              | `bool \| None`            | `False`                          | Override symlink policy. `None` uses conf default.                       |
-| `attachment_raise_on_security_violation` | `bool \| None`            | `True`                           | Override security violation behaviour. `None` uses conf default.         |
+| Parameter                                | Type                      | Default                          | Notes                                                                           |
+|------------------------------------------|---------------------------|----------------------------------|---------------------------------------------------------------------------------|
+| `attachment_allowed_extensions`          | `frozenset[str] \| None`  | `None` (blacklist mode)          | Override allowed extensions (whitelist mode). `None` uses blocked list.         |
+| `attachment_blocked_extensions`          | `frozenset[str] \| None`  | OS-specific dangerous extensions | Override blocked extensions. `None` uses the config in use's default.           |
+| `attachment_allowed_directories`         | `frozenset[Path] \| None` | `None` (blacklist mode)          | Override allowed directories (whitelist mode). `None` uses blocked list.        |
+| `attachment_blocked_directories`         | `frozenset[Path] \| None` | OS-specific sensitive dirs       | Override blocked directories. `None` uses the config in use's default.          |
+| `attachment_max_size_bytes`              | `int \| None`             | `26_214_400` (25 MiB)            | Override max attachment size. `None` uses the config in use's default.          |
+| `attachment_allow_symlinks`              | `bool \| None`            | `False`                          | Override symlink policy. `None` uses the config in use's default.               |
+| `attachment_raise_on_security_violation` | `bool \| None`            | `True`                           | Override security violation behaviour. `None` uses the config in use's default. |
 
 An empty `attachment_blocked_extensions` or `attachment_blocked_directories` set on
-`ConfMail` means "block nothing": it is not a way to ask for the OS defaults. To get the
-OS defaults, omit the field on `ConfMail` (the default factory fills it in) or pass
-`None` to `send()` for the matching parameter.
+`ConfMail` means "block nothing": it is not a way to ask for the OS defaults. Passing
+`None` to `send()` for the matching parameter uses the value already on the config in use
+(the passed `config`, else the global `conf`), so it repeats an explicit empty set rather
+than restoring the OS defaults. To get the OS defaults, leave the field at its factory
+default on the config in use (do not set it to `frozenset()`).
 
 #### Default Blocked Extensions
 
@@ -159,9 +161,15 @@ attached. The message is `can not send mail to "<recipient>" via host "<host>": 
 where `<description>` is built by `_describe_failure`: for an `smtplib.SMTPResponseException`
 (a server reply) it is `<ExceptionClassName> <smtp_code> <reply text>`; for any other `OSError`
 (including a custom `Transport`'s own `OSError`) it is `<ExceptionClassName>: <error text>`,
-logged as given; for anything else it is only the exception class name. Every logged text has
-its control characters (CR, LF, ESC, NUL, ...) replaced by spaces and is capped at 200
-characters, so a hostile or chatty server reply cannot forge extra log lines or flood the log.
+logged as given; for anything else it is only the exception class name. The description text
+has its control characters (CR, LF, ESC, NUL, ...) replaced by spaces and is capped at 200
+characters. `<host>` and `<recipient>` are cleaned the same way before they are logged (message
+and `extra` alike). A host carrying whitespace or a control character is refused before any
+delivery is attempted (`ConfMail` construction/assignment and `send()`-time host validation
+both refuse it, without echoing the value), so this cleaning of `<host>` is defense in depth
+rather than the only guard; a hostile or chatty server reply, on the other hand, reaches this
+log line as `<description>` and relies on the cleaning above to not forge extra log lines or
+flood the log.
 The log record also carries `extra={"error_type": ..., "smtp_code": ...}` (`smtp_code` is
 `None` when the exception has none), so a structured log sink can filter or aggregate by
 either without re-parsing the message text.
@@ -176,17 +184,29 @@ credential out of a `pydantic.ValidationError`:
   `credential_fields: ClassVar[frozenset[str]]`; every alias of those fields (via
   `Field(alias=...)` or `validation_alias=...`) is covered automatically, with no need
   to list the alias separately. `ConfMail` is one such subclass
-  (`credential_fields = frozenset({"smtp_password", "smtphosts"})` -- `smtphosts` is
+  (`credential_fields = frozenset({"smtp_password", "smtphosts"})`; `smtphosts` is
   included because a host string carrying `user:password@` is refused there, and that
   refusal must not echo the value).
 - **`redact_validation_error(exc, *, credential_fields, declared_names=frozenset())`**  -
   the function `SecretSafeModel` wraps its schema with; call it directly to redact a
-  `ValidationError` from a plain (non-`SecretSafeModel`) pydantic model.
+  `ValidationError` from a plain (non-`SecretSafeModel`) pydantic model. Raise the
+  returned error OUTSIDE the `except` block that caught the original, never inside it:
+  raising inside keeps the unredacted original as `__context__` (`from None` only hides
+  it from the printed traceback; the attribute still holds it). The safe shape:
+  ```python
+  error: ValidationError | None = None
+  try:
+      Model(**data)
+  except ValidationError as caught:
+      error = caught
+  if error is not None:
+      raise redact_validation_error(error, credential_fields=frozenset({"password"}))
+  ```
 - **`REDACTED_INPUT`**  -  the string (`"[redacted]"`) a hidden error's `input` is
   replaced by.
 
 **What is covered:** every place pydantic can raise a `ValidationError` on a
-`SecretSafeModel` subclass or an instance of one -- `__init__`, every `model_validate*`
+`SecretSafeModel` subclass or an instance of one: `__init__`, every `model_validate*`
 method (`model_validate`, `model_validate_strings`, and this model's own
 `model_validate_json`, including malformed JSON handed to it directly), validated
 assignment (`model_config = ConfigDict(validate_assignment=True)`) and assignment to a
@@ -207,7 +227,7 @@ whole mapping being validated), not the inner model's.
 
 **The redaction rule** (see `redact_validation_error`'s docstring in
 `src/btx_lib_mail/secret_safety.py` for the full statement): an error's `input` is kept
-only when it is a plain scalar -- `str`, `bytes`, `int`, `float`, `bool`, `None`,
+only when it is a plain scalar: `str`, `bytes`, `int`, `float`, `bool`, `None`,
 `Decimal`, a `date`/`datetime`/`time`/`timedelta`, or an `Enum` member whose value is one
 of these. Every other input is replaced by `REDACTED_INPUT`. An error is always hidden
 when it is model-level, an `extra_forbidden` error, or located at a name in
@@ -217,6 +237,8 @@ message is scrubbed on a best-effort basis: the walk covers the input verbatim a
 (passed as `declared_names`) is not treated as a secret and is left in the message, but a
 VALUE equal to such a name is still scrubbed; a value a developer transforms before
 writing it into a message (`.strip()`, a slice, a hash) is not recognised and is not
-covered. If the redaction itself cannot be proven safe, the whole error is replaced
-(fails closed).
+covered. The rebuild never raises: when one error cannot be rebuilt faithfully, that
+error keeps only its type and location (message and input replaced by `REDACTED_INPUT`);
+only when the whole rebuild fails is the entire `ValidationError` replaced by one opaque
+`redacted_error` (fails closed).
 
