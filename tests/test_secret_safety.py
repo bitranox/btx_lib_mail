@@ -9,13 +9,17 @@ from __future__ import annotations
 # Tests reach module internals (the failure describer, the transport seam) on purpose.
 # pyright: reportPrivateUsage=false
 import ast
+import json
 import logging
 import pickle
 import smtplib
+import threading
+import time
 from collections import deque
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from typing import IO, TYPE_CHECKING, Literal, cast
 
 import pytest
@@ -341,6 +345,71 @@ class _Unprintable:
         raise RuntimeError(_MODEL_DUMMY)
 
 
+# A backslash is doubled by repr() and by json.dumps(); umlauts are escaped by
+# ascii() and by json.dumps(). Either way the message no longer holds the input
+# verbatim, so a scrub of the raw text alone finds nothing.
+_BACKSLASH_DUMMY = "DUMMY-PLANTED-5b2d\\x"
+_UMLAUT_DUMMY = "DUMMY-PLANTED-6c3e-äöü"
+# repr() keeps the umlaut and doubles the backslash; ascii() and json.dumps()
+# escape the umlaut too, so only the repr() form of the text matches.
+_UMLAUT_BACKSLASH_DUMMY = "DUMMY-PLANTED-8e5a-ä\\x"
+# Bytes are quoted by their own repr (b'...\xc3\xa4'), which no form of the
+# decoded text matches.
+_BYTES_DUMMY = "DUMMY-PLANTED-9f6b-ä".encode()
+
+
+class _QuotedToken(SecretSafeModel):
+    credential_fields = frozenset({"token"})
+    token: str = ""
+
+
+class _TokenQuotedByRepr(_QuotedToken):
+    @field_validator("token")
+    @classmethod
+    def _check(cls, value: str) -> str:
+        raise ValueError(f"bad token {value!r}")
+
+
+class _TokenQuotedByAscii(_QuotedToken):
+    @field_validator("token")
+    @classmethod
+    def _check(cls, value: str) -> str:
+        raise ValueError(f"bad token {value!a}")
+
+
+class _TokenQuotedByJson(_QuotedToken):
+    @field_validator("token")
+    @classmethod
+    def _check(cls, value: str) -> str:
+        raise ValueError(f"bad token {json.dumps(value)}")
+
+
+class _MappingEnum(Enum):
+    HELD = MappingProxyType({"password": _MODEL_DUMMY})
+
+
+class _BytesTokenQuotedByRepr(SecretSafeModel):
+    credential_fields = frozenset({"token"})
+    token: bytes = b""
+
+    @field_validator("token")
+    @classmethod
+    def _check(cls, value: bytes) -> bytes:
+        raise ValueError(f"bad token {value!r}")
+
+
+class _TupleEnum(Enum):
+    HELD = ("x", _MODEL_DUMMY)
+
+
+class _ScalarEnum(Enum):
+    SHOWN = "abc"
+
+
+class _EnumOfEnum(Enum):
+    SHOWN = _ScalarEnum.SHOWN
+
+
 class _Outer(SecretSafeModel):
     credential_fields = frozenset({"mail"})
     mail: _Creds
@@ -414,6 +483,14 @@ _LEAK_CASES: list[tuple[str, Callable[[], object], str]] = [
     ("SimpleNamespace in a non-credential field", lambda: _Creds(timeout=SimpleNamespace(password=_MODEL_DUMMY)), _MODEL_DUMMY),  # type: ignore[arg-type]
     ("deque in a non-credential field", lambda: _Creds(timeout=deque(["x", _MODEL_DUMMY])), _MODEL_DUMMY),  # type: ignore[arg-type]
     ("dict values view in a non-credential field", lambda: _Creds(timeout={"password": _MODEL_DUMMY}.values()), _MODEL_DUMMY),  # type: ignore[arg-type]
+    ("mapping-valued Enum in a non-credential field", lambda: _Creds(timeout=_MappingEnum.HELD), _MODEL_DUMMY),  # type: ignore[arg-type]
+    ("tuple-valued Enum in a non-credential field", lambda: _Creds(timeout=_TupleEnum.HELD), _MODEL_DUMMY),  # type: ignore[arg-type]
+    ("token quoted by repr()", lambda: _TokenQuotedByRepr(token=_BACKSLASH_DUMMY), "PLANTED-5b2d"),
+    ("token quoted by ascii()", lambda: _TokenQuotedByAscii(token=_UMLAUT_DUMMY), "PLANTED-6c3e"),
+    ("token quoted by json.dumps()", lambda: _TokenQuotedByJson(token=_UMLAUT_DUMMY), "PLANTED-6c3e"),
+    ("backslash token quoted by json.dumps()", lambda: _TokenQuotedByJson(token=_BACKSLASH_DUMMY), "PLANTED-5b2d"),
+    ("umlaut and backslash token quoted by repr()", lambda: _TokenQuotedByRepr(token=_UMLAUT_BACKSLASH_DUMMY), "PLANTED-8e5a"),
+    ("bytes token quoted by repr()", lambda: _BytesTokenQuotedByRepr(token=_BYTES_DUMMY), "PLANTED-9f6b"),
     ("custom error type", lambda: _CredsWithCustomRule(password=_MODEL_DUMMY), _MODEL_DUMMY),  # type: ignore[arg-type]
     ("custom error reusing value_error", lambda: _CredsWithValueErrorNamedRule(password=_MODEL_DUMMY), _MODEL_DUMMY),  # type: ignore[arg-type]
     ("custom error reusing int_parsing", lambda: _CredsWithIntParsingNamedRule(password=_MODEL_DUMMY), _MODEL_DUMMY),  # type: ignore[arg-type]
@@ -538,6 +615,118 @@ def test_an_input_too_deep_to_check_hides_the_message() -> None:
     errors = deep_caught.value.errors()
     assert errors, "positive control"
     assert all(e["msg"] == REDACTED_INPUT and e["input"] == REDACTED_INPUT for e in errors), "an input too deep to check hides the message whole"
+
+
+_ESCAPED_QUOTES: list[tuple[type[_QuotedToken], Callable[[str], str], str, str]] = [
+    (_TokenQuotedByRepr, repr, _BACKSLASH_DUMMY, f"Value error, bad token '{REDACTED_INPUT}'"),
+    (_TokenQuotedByAscii, ascii, _UMLAUT_DUMMY, f"Value error, bad token '{REDACTED_INPUT}'"),
+    (_TokenQuotedByJson, json.dumps, _UMLAUT_DUMMY, f'Value error, bad token "{REDACTED_INPUT}"'),
+    (_TokenQuotedByJson, json.dumps, _BACKSLASH_DUMMY, f'Value error, bad token "{REDACTED_INPUT}"'),
+    (_TokenQuotedByRepr, repr, _UMLAUT_BACKSLASH_DUMMY, f"Value error, bad token '{REDACTED_INPUT}'"),
+]
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    ("model", "quote", "token", "message"),
+    _ESCAPED_QUOTES,
+    ids=["repr backslash", "ascii umlauts", "json umlauts", "json backslash", "repr umlaut and backslash"],
+)
+def test_an_escaped_copy_of_a_hidden_input_is_scrubbed_from_the_message(
+    model: type[_QuotedToken], quote: Callable[[str], str], token: str, message: str
+) -> None:
+    assert quote(token)[1:-1] != token, "fixture: the quoting changes the text, so a verbatim scrub cannot find it"
+    with pytest.raises(ValidationError) as caught:
+        model(token=token)
+    errors = caught.value.errors()
+    assert [(e["type"], e["loc"], e["input"]) for e in errors] == [("value_error", ("token",), REDACTED_INPUT)], "positive control"
+    assert errors[0]["msg"] == message
+
+
+@pytest.mark.os_agnostic
+def test_an_enum_is_shown_only_when_its_value_is_a_shown_scalar() -> None:
+    for member in (_ScalarEnum.SHOWN, _EnumOfEnum.SHOWN):
+        with pytest.raises(ValidationError) as shown:
+            _Creds(timeout=member)  # type: ignore[arg-type]
+        assert shown.value.errors()[0]["input"] is member, f"control: {member!r} renders a scalar, so it stays visible"
+    for member in (_MappingEnum.HELD, _TupleEnum.HELD):
+        with pytest.raises(ValidationError) as hidden:
+            _Creds(timeout=member)  # type: ignore[arg-type]
+        assert [e["loc"] for e in hidden.value.errors()] == [("timeout",)], "positive control"
+        assert hidden.value.errors()[0]["input"] == REDACTED_INPUT, f"{member.name} of {type(member).__name__} renders a container"
+
+
+@pytest.mark.os_agnostic
+def test_the_repr_of_hidden_bytes_is_scrubbed_from_the_message() -> None:
+    assert repr(_BYTES_DUMMY)[2:-1] != _BYTES_DUMMY.decode(), "fixture: the bytes repr differs from the decoded text"
+    with pytest.raises(ValidationError) as caught:
+        _BytesTokenQuotedByRepr(token=_BYTES_DUMMY)
+    errors = caught.value.errors()
+    assert [(e["type"], e["loc"], e["input"]) for e in errors] == [("value_error", ("token",), REDACTED_INPUT)], "positive control"
+    assert errors[0]["msg"] == f"Value error, bad token b'{REDACTED_INPUT}'"
+
+
+def _enum_member_whose_value_is_itself() -> Enum:
+    class _Cyclic(Enum):
+        LOOP = 1
+
+    member = _Cyclic.LOOP
+    member._value_ = member
+    return member
+
+
+@pytest.mark.os_agnostic
+def test_an_enum_whose_value_leads_back_to_itself_is_hidden_without_looping() -> None:
+    member = _enum_member_whose_value_is_itself()
+    assert member.value is member, "fixture: following the value never reaches a non-Enum"
+    caught: list[ValidationError] = []
+
+    def build() -> None:
+        try:
+            _Creds(timeout=member)  # type: ignore[arg-type]
+        except ValidationError as error:
+            caught.append(error)
+
+    # A daemon thread and a join timeout bound the call from outside the code under
+    # test, so a loop that never ends fails this test instead of hanging the suite.
+    worker = threading.Thread(target=build, daemon=True)
+    worker.start()
+    worker.join(timeout=5)
+    assert not worker.is_alive(), "the redaction kept following an Enum value that leads back to itself"
+    assert [(e["loc"], e["input"]) for e in caught[0].errors()] == [(("timeout",), REDACTED_INPUT)]
+
+
+@pytest.mark.os_agnostic
+def test_an_input_with_more_members_than_the_walk_allows_hides_the_message() -> None:
+    with pytest.raises(ValidationError) as few:
+        _Creds(timeout=[f"member-{index}" for index in range(10)])  # type: ignore[arg-type]
+    assert few.value.errors()[0]["msg"] != REDACTED_INPUT, "control: an input small enough to check keeps its message"
+    with pytest.raises(ValidationError) as many:
+        _Creds(timeout=[f"member-{index}" for index in range(5000)])  # type: ignore[arg-type]
+    errors = many.value.errors()
+    assert [(e["loc"], e["input"]) for e in errors] == [(("timeout",), REDACTED_INPUT)], "positive control"
+    assert errors[0]["msg"] == REDACTED_INPUT, "an input with more members than the walk visits hides the message whole"
+
+
+# The walk over an input takes its members one at a time, so a huge input is
+# refused after a bounded number of them. A walk that first materialises every
+# member costs ~0.07 s per million members (measured), so the smaller size is
+# still well over the bound when the walk is eager; the larger one would need
+# tens of gigabytes that way.
+_HUGE_INPUT_SECONDS: float = 0.5
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("size", [30_000_000, 10**9], ids=["3e7", "1e9"])
+def test_an_input_with_a_huge_number_of_members_is_refused_without_walking_it(size: int) -> None:
+    started = time.perf_counter()
+    with pytest.raises(ValidationError) as caught:
+        _Creds(timeout=range(size))  # type: ignore[arg-type]
+    elapsed = time.perf_counter() - started
+    errors = caught.value.errors()
+    assert [(e["loc"], e["input"]) for e in errors] == [(("timeout",), REDACTED_INPUT)], "positive control"
+    assert errors[0]["msg"] == REDACTED_INPUT, "an input too large to check hides the message whole"
+    assert elapsed < _HUGE_INPUT_SECONDS, f"refusing a range({size}) took {elapsed:.2f} s"
 
 
 class _BrokenError:

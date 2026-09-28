@@ -12,10 +12,18 @@ covered: malformed JSON handed to ``TypeAdapter(Model).validate_json``, and
 malformed JSON handed to ``model_validate_json`` of a plain (non-secret-safe)
 model that nests a ``SecretSafeModel``. The JSON parser fails first, and its
 ``json_invalid`` error carries the whole JSON text as its input.
+
+The error MESSAGE of a hidden error is scrubbed on a best-effort basis only:
+every text reachable in its input is replaced where the message repeats it
+verbatim or in its ``repr()``, ``ascii()`` or JSON-escaped form. A value a
+developer TRANSFORMS before writing it into a message (``strip()``, a slice,
+other formatting, a hash) cannot be recognised and is not covered; keep
+credentials out of messages you write.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Collection, Iterator, Mapping
 from datetime import date, datetime, time, timedelta
@@ -34,10 +42,10 @@ if TYPE_CHECKING:
 REDACTED_INPUT: Final[str] = "[redacted]"
 """Stand-in for an error input that could carry a credential."""
 
-# An input is shown only when it is one of these scalars; anything else (a
-# mapping, a model, a dataclass, a deque, a dict view, any object) can hold a
-# credential somewhere inside it, so it is hidden.
-_SHOWN_INPUT_TYPES: Final = (str, bytes, int, float, bool, type(None), Decimal, date, datetime, time, timedelta, Enum)
+# An input is shown only when it is one of these scalars, or an Enum member
+# whose value is one; anything else (a mapping, a model, a dataclass, a deque, a
+# dict view, any object) can hold a credential somewhere inside it, so it is hidden.
+_SHOWN_SCALAR_TYPES: Final = (str, bytes, int, float, bool, type(None), Decimal, date, datetime, time, timedelta)
 
 # An unexpected key is often a misspelled credential name (pasword=...), so the
 # value under it is hidden whatever the key is called.
@@ -50,10 +58,15 @@ _KNOWN_ERROR_TYPES: Final[frozenset[str]] = frozenset(get_args(core_schema.Error
 # alone, so a one-letter value does not shred every word holding that letter.
 _MIN_FREE_TEXT: Final = 4
 
-# Bounds on the walk over an input when collecting the texts to scrub; an input
-# larger than this cannot be proven absent from a message, so the message is hidden.
+# Bounds on the walk over an input when collecting the texts to scrub (also on
+# the chain of Enum values followed); an input larger than this cannot be proven
+# absent from a message, so the message is hidden.
 _MAX_TEXT_DEPTH: Final = 8
-_MAX_TEXTS: Final = 1000
+_MAX_VISITS: Final = 1000
+
+_NO_CHILDREN: Final[tuple[object, ...]] = ()
+# Marks an exhausted member iterator; no input can be this object.
+_EXHAUSTED: Final = object()
 
 _FAILED_TITLE: Final = "ValidationError"
 _FAILED_TYPE: Final = "redacted_error"
@@ -68,7 +81,17 @@ def _must_hide(error: ErrorDetails, hidden_locations: frozenset[str]) -> bool:
     location = error["loc"]
     if not location or error["type"] in _ALWAYS_HIDDEN_TYPES or str(location[0]) in hidden_locations:
         return True
-    return not isinstance(error["input"], _SHOWN_INPUT_TYPES)
+    return not _is_shown_scalar(error["input"])
+
+
+def _is_shown_scalar(value: object) -> bool:
+    # An Enum member renders its value (in the errors() repr and in json()), so
+    # it is shown only when the value it finally stands for is a shown scalar.
+    for _ in range(_MAX_TEXT_DEPTH):
+        if not isinstance(value, Enum):
+            return isinstance(value, _SHOWN_SCALAR_TYPES)
+        value = cast("object", value.value)
+    return False
 
 
 def _children(value: object) -> Iterator[object]:
@@ -86,40 +109,69 @@ def _own_texts(value: object) -> tuple[str, ...]:
     return () if isinstance(value, Collection) else (str(value),)
 
 
+def _texts_and_children(value: object) -> tuple[tuple[str, ...], Iterator[object]]:
+    """Return the texts *value* renders by itself and a lazy iterator over its members."""
+    if isinstance(value, bool) or value is None:
+        return (), iter(_NO_CHILDREN)
+    if isinstance(value, str):
+        return (value,), iter(_NO_CHILDREN)
+    if isinstance(value, Enum):
+        return (str(value),), iter((cast("object", value.value),))
+    if isinstance(value, (bytes, bytearray)):
+        raw = bytes(value)
+        # A message can quote bytes decoded or as their repr (b'...' with escapes).
+        return (raw.decode("utf-8", "replace"), repr(raw)[2:-1]), iter(_NO_CHILDREN)
+    if isinstance(value, (int, float, Decimal)):
+        return (str(value),), iter(_NO_CHILDREN)
+    return _own_texts(value), _children(value)
+
+
 def _input_texts(value: object) -> set[str]:
-    """Collect the text of *value* and of every scalar reachable inside it."""
+    """Collect the text of *value* and of every scalar reachable inside it.
+
+    Members are taken one at a time from a stack of iterators, never collected
+    up front, so an input with a huge number of them (``range(10**9)``) is
+    refused after ``_MAX_VISITS`` members instead of being materialised first.
+    """
     texts: set[str] = set()
-    pending: list[tuple[object, int]] = [(value, 0)]
+    pending: list[tuple[Iterator[object], int]] = [(iter((value,)), 0)]
+    visits = 0
     while pending:
-        current, depth = pending.pop()
-        if len(texts) > _MAX_TEXTS or depth > _MAX_TEXT_DEPTH:
-            raise _UnprovableError
-        if isinstance(current, bool) or current is None:
+        members, depth = pending[-1]
+        current = next(members, _EXHAUSTED)
+        if current is _EXHAUSTED:
+            pending.pop()
             continue
-        if isinstance(current, str):
-            texts.add(current)
-        elif isinstance(current, Enum):
-            texts.add(str(current))
-            pending.append((current.value, depth + 1))
-        elif isinstance(current, (bytes, bytearray)):
-            texts.add(bytes(current).decode("utf-8", "replace"))
-        elif isinstance(current, (int, float, Decimal)):
-            texts.add(str(current))
-        else:
-            texts.update(_own_texts(current))
-            pending.extend((child, depth + 1) for child in _children(current))
+        visits += 1
+        if visits > _MAX_VISITS or depth > _MAX_TEXT_DEPTH:
+            raise _UnprovableError
+        own, children = _texts_and_children(current)
+        texts.update(own)
+        pending.append((children, depth + 1))
     return texts
 
 
+def _written_forms(text: str) -> set[str]:
+    """Return *text* as a message can repeat it: verbatim, or escaped by repr(), ascii() or json.dumps()."""
+    return {text, repr(text)[1:-1], ascii(text)[1:-1], json.dumps(text)[1:-1]}
+
+
+def _scrub_pattern(form: str) -> str:
+    escaped = re.escape(form)
+    return escaped if len(form) >= _MIN_FREE_TEXT else rf"(?<![^\W_]){escaped}(?![^\W_])"
+
+
 def _scrubbed(message: str, error_input: object) -> str:
-    """Return *message* with every text of *error_input* replaced by ``REDACTED_INPUT``."""
-    patterns = [
-        re.escape(text) if len(text) >= _MIN_FREE_TEXT else rf"(?<![^\W_]){re.escape(text)}(?![^\W_])"
-        for text in sorted(_input_texts(error_input), key=len, reverse=True)
-        if text.strip()
-    ]
-    if not patterns:
+    """Return *message* with every text of *error_input* replaced by ``REDACTED_INPUT``.
+
+    Best effort: a text is found only where the message repeats it verbatim or in
+    one of its escaped forms (``_written_forms``). Longer forms are tried first,
+    so an escaped form is replaced whole rather than piecewise.
+    """
+    forms = {form for text in _input_texts(error_input) if text.strip() for form in _written_forms(text)}
+    if not forms:
         return message
+    patterns = [_scrub_pattern(form) for form in sorted(forms, key=lambda form: (-len(form), form))]
     return re.sub("|".join(patterns), lambda _match: REDACTED_INPUT, message)
 
 
@@ -170,11 +222,17 @@ def _failed_redaction() -> ValidationError:
 
 
 def redact_validation_error(exc: ValidationError, *, credential_fields: frozenset[str]) -> ValidationError:
-    """Return a copy of *exc* whose errors cannot carry a credential.
+    """Return a copy of *exc* whose error inputs and ctx cannot carry a credential.
 
     The rebuild never raises: an error it cannot rebuild faithfully keeps only
     its type and location, and if even that fails the result is one opaque
     ``redacted_error``.
+
+    Raise the returned error OUTSIDE the ``except`` block that caught *exc*:
+    ``raise redact_validation_error(exc, ...)`` inside that block keeps the
+    unredacted original as ``__context__`` (``from None`` only hides it from the
+    printed traceback; the attribute still holds it). Capture the original in
+    the block and redact and raise after it, as the example shows.
 
     Args:
         exc: The error pydantic raised.
@@ -186,9 +244,13 @@ def redact_validation_error(exc: ValidationError, *, credential_fields: frozense
         messages. An error's input is replaced by ``REDACTED_INPUT`` when it is
         model-level, an ``extra_forbidden`` error, at a credential location, or
         not a plain scalar (str, bytes, int, float, bool, None, Decimal, a date
-        or time value, an Enum member). Such a hidden error also loses its
-        ``ctx`` and has the input's text scrubbed from its message. Other
-        errors keep their input and ctx.
+        or time value, or an Enum member whose value is one of these). Such a
+        hidden error also loses its ``ctx``, and its message is scrubbed on a
+        best-effort basis: every text of the input is replaced where the message
+        repeats it verbatim or in its ``repr()``, ``ascii()`` or JSON-escaped
+        form. A value a developer transforms before writing it into a message
+        (``strip()``, a slice, other formatting, a hash) is not recognised.
+        Other errors keep their input and ctx.
 
     Examples:
         >>> from pydantic import BaseModel
@@ -197,8 +259,15 @@ def redact_validation_error(exc: ValidationError, *, credential_fields: frozense
         >>> try:
         ...     M(password=123)
         ... except ValidationError as caught:
-        ...     redact_validation_error(caught, credential_fields=frozenset({"password"})).errors()[0]["input"]
+        ...     original = caught
+        >>> redacted = redact_validation_error(original, credential_fields=frozenset({"password"}))
+        >>> redacted.errors()[0]["input"]
         '[redacted]'
+        >>> try:
+        ...     raise redacted
+        ... except ValidationError as raised:
+        ...     raised.__context__ is None
+        True
     """
     try:
         details = [_redacted_detail(error, credential_fields) for error in exc.errors(include_url=False)]
@@ -232,6 +301,12 @@ class SecretSafeModel(BaseModel):
     for malformed JSON), ``TypeAdapter(Model).validate_python``, and the errors
     raised while validating this model nested in a list or in another model.
     ``strict=`` and ``context=`` pass through unchanged.
+
+    The rule for each error is that of ``redact_validation_error``: hidden
+    inputs and ctx are replaced whole, while the message of a hidden error is
+    scrubbed on a best-effort basis only (the input verbatim or in its
+    ``repr()``, ``ascii()`` or JSON-escaped form). A credential a validator
+    transforms before writing it into its own message is not covered.
 
     Not covered, because the JSON parser fails before this model is reached and
     its ``json_invalid`` error quotes the whole JSON text: malformed JSON handed
