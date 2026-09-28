@@ -15,15 +15,24 @@ model that nests a ``SecretSafeModel``. The JSON parser fails first, and its
 
 The error MESSAGE of a hidden error is scrubbed on a best-effort basis only.
 The scrub WALKS the input: the input itself, every mapping key and value,
-every collection member, and every attribute of a plain object, up to
-``_MAX_VISITS`` members and ``_MAX_TEXT_DEPTH`` levels deep (an input past
-that bound cannot be proven absent from the message, so the whole message is
-replaced instead of being searched). Every text the walk reaches is replaced
-where the message repeats it verbatim or in its ``repr()``, ``ascii()`` or
-JSON-escaped form (``json.dumps`` with ``ensure_ascii`` both true and false).
-A value a developer TRANSFORMS before writing it into a message (``strip()``,
-a slice, other formatting, a hash) cannot be recognised and is not covered;
-keep credentials out of messages you write.
+every collection member, every attribute of a plain object, and the value of
+an Enum member, up to ``_MAX_VISITS`` members and ``_MAX_TEXT_DEPTH`` levels
+deep (an input past that bound cannot be proven absent from the message, so
+the whole message is replaced instead of being searched). A mapping KEY equal
+to a name the schema declares (a field name or alias of the model, or of a
+model reachable from its field annotations) is not walked, so a message that
+names a field keeps the name; a VALUE equal to such a name is still walked.
+The walk collects the ``str()`` of each str, number, Enum member and other
+non-collection object it reaches, and each bytes value both decoded as UTF-8
+and in its ``repr()`` form; True, False and None give no text, and a
+whitespace-only text is skipped. Every collected text is replaced where the
+message repeats it verbatim or in its ``repr()``, ``ascii()`` or JSON-escaped
+form (``json.dumps`` with ``ensure_ascii`` both true and false); a text
+shorter than 4 characters is replaced only where it stands alone, not
+directly next to a letter or digit. A value a developer TRANSFORMS before
+writing it into a message (``strip()``, a slice, other formatting, a hash)
+cannot be recognised and is not covered; keep credentials out of messages you
+write.
 """
 
 from __future__ import annotations
@@ -34,7 +43,8 @@ from collections.abc import Collection, Iterator, Mapping
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from enum import Enum
-from typing import TYPE_CHECKING, Any, ClassVar, Final, cast, get_args
+from typing import TYPE_CHECKING, Any, ClassVar, Final, cast, get_args, get_origin
+from weakref import WeakKeyDictionary
 
 from pydantic import AliasChoices, AliasPath, BaseModel, ConfigDict, ValidationError
 from pydantic_core import InitErrorDetails, PydanticCustomError, core_schema
@@ -99,14 +109,17 @@ def _is_shown_scalar(value: object) -> bool:
     return False
 
 
-def _children(value: object) -> Iterator[object]:
+def _children(value: object, declared_names: frozenset[str]) -> Iterator[object]:
     if isinstance(value, Mapping):
         mapping = cast("Mapping[object, object]", value)
         for key, item in mapping.items():
             # A message can quote a credential used AS a key (a misspelled
-            # scope name, a header name), so the key is walked and counted
-            # toward the visit bound exactly like a value.
-            yield key
+            # scope name, a header name), so a key is walked and counted toward
+            # the visit bound like a value. A key the schema declares is a field
+            # name, not a secret, and a model-level message naming that field
+            # must keep it; the exemption never extends to the VALUE.
+            if not (isinstance(key, str) and key in declared_names):
+                yield key
             yield item
     elif isinstance(value, Collection):
         yield from cast("Collection[object]", value)
@@ -120,7 +133,7 @@ def _own_texts(value: object) -> tuple[str, ...]:
     return () if isinstance(value, Collection) else (str(value),)
 
 
-def _texts_and_children(value: object) -> tuple[tuple[str, ...], Iterator[object]]:
+def _texts_and_children(value: object, declared_names: frozenset[str]) -> tuple[tuple[str, ...], Iterator[object]]:
     """Return the texts *value* renders by itself and a lazy iterator over its members."""
     if isinstance(value, bool) or value is None:
         return (), iter(_NO_CHILDREN)
@@ -134,15 +147,16 @@ def _texts_and_children(value: object) -> tuple[tuple[str, ...], Iterator[object
         return (raw.decode("utf-8", "replace"), repr(raw)[2:-1]), iter(_NO_CHILDREN)
     if isinstance(value, (int, float, Decimal)):
         return (str(value),), iter(_NO_CHILDREN)
-    return _own_texts(value), _children(value)
+    return _own_texts(value), _children(value, declared_names)
 
 
-def _input_texts(value: object) -> set[str]:
+def _input_texts(value: object, declared_names: frozenset[str]) -> set[str]:
     """Collect the text of *value* and of every scalar reachable inside it.
 
     Members are taken one at a time from a stack of iterators, never collected
     up front, so an input with a huge number of them (``range(10**9)``) is
     refused after ``_MAX_VISITS`` members instead of being materialised first.
+    A mapping key in *declared_names* is not visited; its value is.
     """
     texts: set[str] = set()
     pending: list[tuple[Iterator[object], int]] = [(iter((value,)), 0)]
@@ -156,7 +170,7 @@ def _input_texts(value: object) -> set[str]:
         visits += 1
         if visits > _MAX_VISITS or depth > _MAX_TEXT_DEPTH:
             raise _UnprovableError
-        own, children = _texts_and_children(current)
+        own, children = _texts_and_children(current, declared_names)
         texts.update(own)
         pending.append((children, depth + 1))
     return texts
@@ -177,14 +191,14 @@ def _scrub_pattern(form: str) -> str:
     return escaped if len(form) >= _MIN_FREE_TEXT else rf"(?<![^\W_]){escaped}(?![^\W_])"
 
 
-def _scrubbed(message: str, error_input: object) -> str:
+def _scrubbed(message: str, error_input: object, *, declared_names: frozenset[str]) -> str:
     """Return *message* with every text of *error_input* replaced by ``REDACTED_INPUT``.
 
     Best effort: a text is found only where the message repeats it verbatim or in
     one of its escaped forms (``_written_forms``). Longer forms are tried first,
     so an escaped form is replaced whole rather than piecewise.
     """
-    forms = {form for text in _input_texts(error_input) if text.strip() for form in _written_forms(text)}
+    forms = {form for text in _input_texts(error_input, declared_names) if text.strip() for form in _written_forms(text)}
     if not forms:
         return message
     patterns = [_scrub_pattern(form) for form in sorted(forms, key=lambda form: (-len(form), form))]
@@ -200,9 +214,9 @@ def _renders_as(detail: InitErrorDetails, error_type: str, message: str) -> bool
     return probe["type"] == error_type and probe["msg"] == message
 
 
-def _faithful_detail(error: ErrorDetails, *, hide: bool) -> InitErrorDetails:
+def _faithful_detail(error: ErrorDetails, *, hide: bool, declared_names: frozenset[str]) -> InitErrorDetails:
     error_type, location = error["type"], error["loc"]
-    message = _scrubbed(error["msg"], error["input"]) if hide else error["msg"]
+    message = _scrubbed(error["msg"], error["input"], declared_names=declared_names) if hide else error["msg"]
     error_input: Any = REDACTED_INPUT if hide else error["input"]
     # ctx can repeat the input (union_tag_invalid's ctx["tag"]), so a hidden error keeps none.
     context = None if hide else error.get("ctx")
@@ -224,9 +238,9 @@ def _faithful_detail(error: ErrorDetails, *, hide: bool) -> InitErrorDetails:
     return next((candidate for candidate in candidates if _renders_as(candidate, error_type, message)), fallback)
 
 
-def _redacted_detail(error: ErrorDetails, hidden_locations: frozenset[str]) -> InitErrorDetails:
+def _redacted_detail(error: ErrorDetails, *, hidden_locations: frozenset[str], declared_names: frozenset[str]) -> InitErrorDetails:
     try:
-        return _faithful_detail(error, hide=_must_hide(error, hidden_locations))
+        return _faithful_detail(error, hide=_must_hide(error, hidden_locations), declared_names=declared_names)
     except Exception:
         # Fail closed: keep only the type and location, which pydantic produced.
         return {"type": PydanticCustomError(cast("LiteralString", str(error["type"])), REDACTED_INPUT), "loc": error["loc"], "input": REDACTED_INPUT}
@@ -237,7 +251,12 @@ def _failed_redaction() -> ValidationError:
     return ValidationError.from_exception_data(_FAILED_TITLE, [detail], hide_input=True)
 
 
-def redact_validation_error(exc: ValidationError, *, credential_fields: frozenset[str]) -> ValidationError:
+def redact_validation_error(
+    exc: ValidationError,
+    *,
+    credential_fields: frozenset[str],
+    declared_names: frozenset[str] = frozenset(),
+) -> ValidationError:
     """Return a copy of *exc* whose error inputs and ctx cannot carry a credential.
 
     The rebuild never raises: an error it cannot rebuild faithfully keeps only
@@ -254,6 +273,12 @@ def redact_validation_error(exc: ValidationError, *, credential_fields: frozense
         exc: The error pydantic raised.
         credential_fields: Top-level locations whose input is always hidden:
             field names and every alias pydantic may report in ``loc``.
+        declared_names: Names the schema declares (field names and aliases),
+            which a message may quote as they are. When the scrub walks a
+            mapping, a KEY equal to one of these is not walked, so a message
+            such as "timeout must be positive" keeps the field name. The
+            exemption is for keys only: a VALUE equal to a declared name is
+            still walked and scrubbed. Empty by default, so every key is walked.
 
     Returns:
         A new ``ValidationError`` with the same title, types, locations and
@@ -262,16 +287,22 @@ def redact_validation_error(exc: ValidationError, *, credential_fields: frozense
         not a plain scalar (str, bytes, int, float, bool, None, Decimal, a date
         or time value, or an Enum member whose value is one of these). Such a
         hidden error also loses its ``ctx``, and its message is scrubbed on a
-        best-effort basis: every text reached by walking the input -- the
-        input itself, every mapping key and value, every collection member,
-        and every attribute of a plain object, up to a bounded number of
-        members and levels deep -- is replaced where the message repeats it
-        verbatim or in its ``repr()``, ``ascii()`` or JSON-escaped form
-        (``ensure_ascii`` true or false). An input past that bound cannot be
-        proven absent from the message, so the whole message is replaced
-        instead. A value a developer transforms before writing it into a
-        message (``strip()``, a slice, other formatting, a hash) is not
-        recognised. Other errors keep their input and ctx.
+        best-effort basis. The scrub walks the input: the input itself, every
+        mapping key and value (except a key in *declared_names*), every
+        collection member, every attribute of a plain object, and the value of
+        an Enum member, up to a bounded number of members and levels deep. It
+        collects the ``str()`` of each str, number, Enum member and other
+        non-collection object it reaches, and each bytes value both decoded as
+        UTF-8 and in its ``repr()`` form; True, False and None give no text,
+        and a whitespace-only text is skipped. Each text is replaced
+        where the message repeats it verbatim or in its ``repr()``, ``ascii()``
+        or JSON-escaped form (``ensure_ascii`` true or false); a text shorter
+        than 4 characters only where it stands alone, not directly next to a
+        letter or digit. An input past the walk's bound cannot be proven absent
+        from the message, so the whole message is replaced instead. A value a
+        developer transforms before writing it into a message (``strip()``, a
+        slice, other formatting, a hash) is not recognised. Other errors keep
+        their input and ctx.
 
     Examples:
         >>> from pydantic import BaseModel
@@ -291,7 +322,7 @@ def redact_validation_error(exc: ValidationError, *, credential_fields: frozense
         True
     """
     try:
-        details = [_redacted_detail(error, credential_fields) for error in exc.errors(include_url=False)]
+        details = [_redacted_detail(error, hidden_locations=credential_fields, declared_names=declared_names) for error in exc.errors(include_url=False)]
         return ValidationError.from_exception_data(exc.title, details, hide_input=True)
     except Exception:
         # Fail closed: nothing of the original survives.
@@ -311,6 +342,62 @@ def _alias_names(alias: str | AliasPath | AliasChoices | None) -> frozenset[str]
     return frozenset(names)
 
 
+def _alias_keys(alias: str | AliasPath | AliasChoices | None) -> frozenset[str]:
+    """Return every mapping key *alias* can name: an ``AliasPath`` names one per string element."""
+    if alias is None:
+        return frozenset()
+    if isinstance(alias, str):
+        return frozenset({alias})
+    if isinstance(alias, AliasPath):
+        return frozenset(element for element in alias.path if isinstance(element, str))
+    keys: set[str] = set()
+    for choice in alias.choices:
+        keys |= _alias_keys(choice)
+    return frozenset(keys)
+
+
+def _annotation_models(annotation: object) -> Iterator[type[BaseModel]]:
+    """Yield every model class named in *annotation*, through Optional, Union, list, dict and the like."""
+    # get_origin first: on Python 3.10 a parametrised generic such as list[int]
+    # passes isinstance(..., type) but is refused by issubclass.
+    if get_origin(annotation) is None and isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        yield annotation
+        return
+    for argument in get_args(annotation):
+        yield from _annotation_models(argument)
+
+
+# Collected once per model class; weak keys so a model class that goes away
+# (one built inside a function) is not kept alive by the cache.
+_DECLARED_NAMES: Final[WeakKeyDictionary[type[BaseModel], frozenset[str]]] = WeakKeyDictionary()
+
+
+def _declared_names(model: type[BaseModel]) -> frozenset[str]:
+    """Return the field names and alias keys of *model* and of every model reachable from its field annotations.
+
+    Nested models, the members of Optional, Union, list and dict annotations,
+    and the members of a discriminated union (so their discriminator field) are
+    all included. A model that refers back to itself is visited once.
+    """
+    cached = _DECLARED_NAMES.get(model)
+    if cached is not None:
+        return cached
+    names: set[str] = set()
+    seen: set[type[BaseModel]] = set()
+    pending = [model]
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        for name, info in current.model_fields.items():
+            names |= {name} | _alias_keys(info.alias) | _alias_keys(info.validation_alias)
+            pending.extend(_annotation_models(info.annotation))
+    declared = frozenset(names)
+    _DECLARED_NAMES[model] = declared
+    return declared
+
+
 class SecretSafeModel(BaseModel):
     """Base for models holding credentials: their validation errors are redacted.
 
@@ -326,11 +413,18 @@ class SecretSafeModel(BaseModel):
     The rule for each error is that of ``redact_validation_error``: hidden
     inputs and ctx are replaced whole, while the message of a hidden error is
     scrubbed on a best-effort basis only -- every text reached by walking the
-    input (mapping keys and values, collection members, object attributes),
-    in its verbatim, ``repr()``, ``ascii()`` or JSON-escaped form, up to the
-    walk's visit and depth bound; an input past that bound has its whole
-    message replaced instead. A credential a validator transforms before
-    writing it into its own message is not covered.
+    input (mapping keys and values, collection members, object attributes,
+    Enum values; bytes also in their ``repr()`` form), in its verbatim,
+    ``repr()``, ``ascii()`` or JSON-escaped form, up to the walk's visit and
+    depth bound; an input past that bound has its whole message replaced
+    instead. A whitespace-only text is skipped, and a text under 4 characters
+    is replaced only where it stands alone. The model passes its declared
+    names (every field name and alias of this model and of every model
+    reachable from its field annotations) as ``declared_names``, so a mapping
+    KEY equal to one of them is not walked and a message naming a field keeps
+    the name; a VALUE equal to such a name is still scrubbed. A credential a
+    validator transforms before writing it into its own message is not
+    covered.
 
     Not covered, because the JSON parser fails before this model is reached and
     its ``json_invalid`` error quotes the whole JSON text: malformed JSON handed
@@ -355,6 +449,10 @@ class SecretSafeModel(BaseModel):
         return frozenset(hidden)
 
     @classmethod
+    def _redacted(cls, original: ValidationError) -> ValidationError:
+        return redact_validation_error(original, credential_fields=cls._hidden_locations(), declared_names=_declared_names(cls))
+
+    @classmethod
     def __get_pydantic_core_schema__(cls, source: type[BaseModel], handler: GetCoreSchemaHandler) -> CoreSchema:
         schema = handler(source)
 
@@ -367,7 +465,7 @@ class SecretSafeModel(BaseModel):
             # error is never kept as __context__. pydantic also rebuilds an error
             # raised here at its own boundary and drops the chain (measured on
             # 2.13.5); this placement does not rely on that.
-            raise redact_validation_error(original, credential_fields=cls._hidden_locations())
+            raise cls._redacted(original)
 
         return core_schema.no_info_wrap_validator_function(redact, schema)
 
@@ -385,7 +483,7 @@ class SecretSafeModel(BaseModel):
                 original = exc
             else:
                 return
-            raise redact_validation_error(original, credential_fields=type(self)._hidden_locations())
+            raise type(self)._redacted(original)
 
         @classmethod
         def model_validate_json(cls, *args: Any, **kwargs: Any) -> Any:
@@ -393,7 +491,7 @@ class SecretSafeModel(BaseModel):
                 return super().model_validate_json(*args, **kwargs)
             except ValidationError as exc:
                 original = exc
-            raise redact_validation_error(original, credential_fields=cls._hidden_locations())
+            raise cls._redacted(original)
 
 
 __all__ = ["REDACTED_INPUT", "SecretSafeModel", "redact_validation_error"]

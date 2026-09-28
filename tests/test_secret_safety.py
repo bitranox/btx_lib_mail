@@ -24,6 +24,7 @@ from typing import IO, TYPE_CHECKING, Literal, cast
 import pytest
 from pydantic import (
     AliasChoices,
+    AliasPath,
     BaseModel,
     ConfigDict,
     Field,
@@ -615,10 +616,156 @@ def test_a_hidden_error_drops_ctx_and_scrubs_the_input_from_its_message() -> Non
     errors = caught.value.errors()
     assert [(e["type"], e["loc"], e["input"]) for e in errors] == [("union_tag_invalid", ("auth",), REDACTED_INPUT)], "positive control"
     assert "ctx" not in errors[0]
-    # 'kind' is also a KEY of the hidden input dict (the discriminator field
-    # name coincides with it here), so it is scrubbed too now that mapping
-    # keys are walked; over-redaction is the safe direction.
-    assert errors[0]["msg"] == f"Input tag '{REDACTED_INPUT}' found using '{REDACTED_INPUT}' does not match any of the expected tags: 'pw', 'token'"
+    # 'kind' is also a KEY of the hidden input dict, but it is the discriminator
+    # field of a model the schema declares, so it is not walked and survives.
+    assert errors[0]["msg"] == f"Input tag '{REDACTED_INPUT}' found using 'kind' does not match any of the expected tags: 'pw', 'token'"
+
+
+class _PositiveTimeout(SecretSafeModel):
+    """A model-level rule whose message names a top-level field."""
+
+    credential_fields = frozenset({"password"})
+    password: SecretStr | None = None
+    timeout: float = 30.0
+
+    @model_validator(mode="after")
+    def _rule(self) -> _PositiveTimeout:
+        if self.timeout < 0:
+            raise ValueError("timeout must be positive")
+        return self
+
+
+class _SubConfig(BaseModel):
+    valid: bool = True
+
+
+class _WithSubConfig(SecretSafeModel):
+    """A model-level rule whose message names a field of a NESTED model."""
+
+    credential_fields = frozenset({"password"})
+    password: SecretStr | None = None
+    sub: _SubConfig | None = None
+
+    @model_validator(mode="after")
+    def _rule(self) -> _WithSubConfig:
+        if self.sub is not None and not self.sub.valid:
+            raise ValueError("sub config is not valid")
+        return self
+
+
+class _AliasedLimit(SecretSafeModel):
+    """A model-level rule whose message names every alias a field accepts."""
+
+    credential_fields = frozenset({"password"})
+    password: SecretStr | None = None
+    limit: int = Field(default=1, validation_alias=AliasChoices("maximum", AliasPath("settings", "ceiling")))
+
+    @model_validator(mode="after")
+    def _rule(self) -> _AliasedLimit:
+        if self.limit > 5:
+            raise ValueError("maximum or settings.ceiling must not exceed 5")
+        return self
+
+
+# (label, build, message): the input of each hidden model-level error holds, as
+# a mapping KEY, the name the message quotes.
+_DECLARED_NAME_CASES: list[tuple[str, Callable[[], object], str]] = [
+    ("top-level field", lambda: _PositiveTimeout(password=_MODEL_DUMMY, timeout=-1), "Value error, timeout must be positive"),  # type: ignore[arg-type]
+    (
+        "field of a nested model",
+        lambda: _WithSubConfig.model_validate({"password": _MODEL_DUMMY, "sub": {"valid": False}}),
+        "Value error, sub config is not valid",
+    ),
+    (
+        "alias choice and alias path elements",
+        lambda: _AliasedLimit.model_validate({"password": _MODEL_DUMMY, "maximum": 9, "settings": {"ceiling": 1}}),
+        "Value error, maximum or settings.ceiling must not exceed 5",
+    ),
+]
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(("label", "build", "message"), _DECLARED_NAME_CASES, ids=[case[0] for case in _DECLARED_NAME_CASES])
+def test_a_declared_name_used_as_an_input_key_survives_in_the_message(label: str, build: Callable[[], object], message: str) -> None:
+    with pytest.raises(ValidationError) as caught:
+        build()
+    errors = caught.value.errors()
+    assert [(e["type"], e["loc"], e["input"]) for e in errors] == [("value_error", (), REDACTED_INPUT)], f"positive control ({label})"
+    assert errors[0]["msg"] == message
+    assert _leaks(caught.value, _MODEL_DUMMY) == [], "the credential VALUE is still hidden"
+
+
+class _ErrorNamedField(SecretSafeModel):
+    """A field named like the word in pydantic's own 'Value error,' prefix."""
+
+    credential_fields = frozenset({"password"})
+    password: SecretStr | None = None
+    error: str = ""
+
+    @model_validator(mode="after")
+    def _rule(self) -> _ErrorNamedField:
+        if self.error:
+            raise ValueError(f"error holds {self.error}")
+        return self
+
+
+@pytest.mark.os_agnostic
+def test_a_field_named_error_keeps_the_value_error_prefix_and_its_value_is_scrubbed() -> None:
+    with pytest.raises(ValidationError) as caught:
+        _ErrorNamedField(error=_MODEL_DUMMY)
+    errors = caught.value.errors()
+    assert [(e["type"], e["loc"], e["input"]) for e in errors] == [("value_error", (), REDACTED_INPUT)], "positive control"
+    assert errors[0]["msg"] == f"Value error, error holds {REDACTED_INPUT}"
+    assert _leaks(caught.value, _MODEL_DUMMY) == []
+
+
+class _TreeNode(SecretSafeModel):
+    """A model whose field annotation refers back to the model itself."""
+
+    credential_fields = frozenset({"password"})
+    password: SecretStr | None = None
+    child: _TreeNode | None = None
+    depth: int = 0
+
+    @model_validator(mode="after")
+    def _rule(self) -> _TreeNode:
+        if self.depth < 0:
+            raise ValueError("depth must not be negative")
+        return self
+
+
+@pytest.mark.os_agnostic
+def test_a_self_referencing_model_collects_its_declared_names_without_looping() -> None:
+    caught: list[ValidationError] = []
+
+    def build() -> None:
+        try:
+            _TreeNode(password=_MODEL_DUMMY, depth=-1)  # type: ignore[arg-type]
+        except ValidationError as error:
+            caught.append(error)
+
+    # A daemon thread and a join timeout bound the call from outside the code under
+    # test, so a collection that never ends fails this test instead of hanging the suite.
+    worker = threading.Thread(target=build, daemon=True)
+    worker.start()
+    worker.join(timeout=5)
+    assert not worker.is_alive(), "collecting the declared names kept following the model's reference to itself"
+    assert caught, "positive control: the worker finished by raising, not by returning silently"
+    assert [(e["loc"], e["msg"]) for e in caught[0].errors()] == [((), "Value error, depth must not be negative")]
+
+
+@pytest.mark.os_agnostic
+def test_a_value_equal_to_a_declared_name_is_still_scrubbed() -> None:
+    # The exemption is for mapping KEYS only: a credential whose value happens
+    # to equal a field name is still found and replaced.
+    with pytest.raises(ValidationError) as control:
+        _PositiveTimeout(password=_MODEL_DUMMY, timeout=-1)  # type: ignore[arg-type]
+    assert control.value.errors()[0]["msg"] == "Value error, timeout must be positive", "control: the name alone survives"
+    with pytest.raises(ValidationError) as caught:
+        _PositiveTimeout(password="timeout", timeout=-1)  # type: ignore[arg-type]
+    errors = caught.value.errors()
+    assert [(e["type"], e["loc"], e["input"]) for e in errors] == [("value_error", (), REDACTED_INPUT)], "positive control"
+    assert errors[0]["msg"] == f"Value error, {REDACTED_INPUT} must be positive"
 
 
 @pytest.mark.os_agnostic
@@ -788,10 +935,12 @@ def test_an_input_with_a_huge_number_of_members_is_refused_without_walking_it() 
     members = _CountingCollection(10 * _MAX_VISITS)
     with pytest.raises(ValidationError) as caught:
         _Creds(timeout=members)  # type: ignore[arg-type]
-    assert caught.value.error_count() >= 1, "positive control: an error was produced"
     errors = caught.value.errors()
     assert [(e["loc"], e["input"]) for e in errors] == [(("timeout",), REDACTED_INPUT)], "positive control"
     assert errors[0]["msg"] == REDACTED_INPUT, "an input too large to check hides the message whole"
+    # The lower bound proves the walk really ran up to the bound: a walk that
+    # gave up at once would also hide the message (through the fail-closed path).
+    assert members.pulls >= _MAX_VISITS - 1, f"the walk pulled only {members.pulls} members before giving up"
     assert members.pulls <= _MAX_VISITS + 1, f"the walk pulled {members.pulls} members from a bound of {_MAX_VISITS}"
 
 
