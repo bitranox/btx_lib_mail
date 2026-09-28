@@ -9,7 +9,7 @@ authentication, multi-host failover, and comprehensive attachment security.
 ## Quick Commands
 
 ```bash
-make test          # ruff lint + pyright + bandit + pytest (100% coverage target)
+make test          # ruff lint + pyright + bandit + pytest (coverage gated at >=85%, see below)
 make clean         # remove build artifacts
 ```
 
@@ -38,8 +38,10 @@ tests/
 ## Key Architecture
 
 - **Config**: `ConfMail` (Pydantic model) holds SMTP and security settings; global `conf` instance
-- **Delivery**: `send()` → `_prepare_*` helpers → `_compose_to_spool` (once) → `_deliver_to_any_host` → injected `Transport` (`SmtplibTransport` streams DATA/BDAT)
-- **Validation**: `validate_email_address()` and `validate_smtp_host()` are public
+- **Delivery**: `send()` -> `_prepare_*` helpers -> `_compose_to_spool` (once) -> `_deliver_to_any_host` -> injected `Transport` (`SmtplibTransport` streams DATA/BDAT)
+- **Validation**: `validate_email_address()` and `validate_smtp_host()` are public;
+  `validate_smtp_host()` refuses a host carrying `@` or `/`, or an interior whitespace or
+  control character, without echoing the value
 - **Security**: `AttachmentSecurityOptions` + `_validate_attachment_security()` orchestrate checks
 - **CLI**: `cli.py` uses rich-click groups; `lib_cli_exit_tools` handles exit codes
 
@@ -48,9 +50,12 @@ tests/
 - Tests inject a `Transport` double through `send(transport=)`; wire tests use a real
   in-process `aiosmtpd` server, never a socket-level monkeypatch
 - `_reset_conf_mail` autouse fixture restores global config between tests
-- Markers: `os_agnostic`, `integration` (real SMTP via `TEST_SMTP_*` env vars)
+- Markers: `os_agnostic`, `os_windows`, `os_macos`, `os_posix`, `os_linux`, `local_only`
+  (real SMTP via `TEST_SMTP_*` env vars)
 - Doctests run via `--doctest-modules` in pytest config
-- Coverage must be ≥85% (currently ~97%)
+- Coverage must be ≥85% (`fail_under = 85` in `pyproject.toml`); read the actual figure
+  from `make test`'s coverage summary or `coverage.xml` rather than a number restated
+  here
 
 ## Style & Tooling
 

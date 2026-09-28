@@ -77,3 +77,21 @@ The CLI wraps the same behaviour through rich-click. Highlights:
 
 `python -m btx_lib_mail` delegates to the same command group, so the examples
 above apply verbatim.
+
+### Invalid `--host` values
+
+`--host` (and `BTX_MAIL_SMTP_HOSTS`) is validated before any delivery is attempted. A
+host carrying `@` or `/` (for example `smtp://user:pw@relay`, which would put a
+credential into the host field) or an interior whitespace or control character is
+refused with a `ValueError` that never echoes the value:
+
+```console
+$ btx-lib-mail send --host "user:pw@relay" --sender a@example.com \
+    --recipient b@example.com --subject s --body b
+ValueError: SMTP host must be host[:port]; it must not contain '@' or '/' (pass credentials as smtp_username and smtp_password)
+```
+
+The CLI does not catch this itself; it surfaces through `lib_cli_exit_tools`, which maps
+a `ValueError` to a non-zero exit code (`22`, `errno.EINVAL`) and prints the message to
+stderr. Pass credentials via `--username`/`--password` instead of folding them into
+`--host`. The same check runs for `validate-smtp-host`.

@@ -12,11 +12,10 @@ For alternative install paths (pipx, uv, source builds, etc.), see
 
 - The project targets **Python 3.10 and newer only**. Helpers freely rely on conveniences
   such as `Path.unlink(missing_ok=True)` and modern `contextlib` utilities.
-- **Dependency audit (October 16, 2025):** runtime requirements continue to
-  match the latest stable releases (`rich-click>=1.9.3`,
-  `lib_cli_exit_tools>=2.1.0`, `pydantic>=2.12.2`). Development extras were
-  reconfirmed via `python -m pip index versions ...`, with no upgrades required.
-- GitHub Actions jobs keep using the rolling runners (`ubuntu-latest`,
-  `macos-latest`, `windows-latest`) and now cache pip downloads via
-  `actions/setup-python@v6` while pinning CodeQL to `v4.30.8`, preserving
-  parity with the latest 2025 ruleset.
+- Runtime dependency floors live in `pyproject.toml` (`[project].dependencies`); read
+  them there rather than a number restated here, since a floor is bumped independently
+  of this page.
+- GitHub Actions jobs run on the rolling `ubuntu-latest`, `macos-latest` and
+  `windows-latest` runners; the workflow files under `.github/workflows/` are
+  distributed from the `default_cicd_public` template and are the source of truth for
+  the exact job matrix and pinned action versions.

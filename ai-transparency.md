@@ -67,7 +67,7 @@ platform.
 What CI does not do is send real mail to a real mailbox. The in-process server speaks the SMTP
 protocol but is a local test double, not a relay that delivers anywhere. Delivery to an actual
 inbox is exercised only through an opt-in integration path (the `TEST_SMTP_*` environment
-variables and the `integration` test marker) against a server the operator supplies; with those
+variables and the `local_only` test marker) against a server the operator supplies; with those
 unset, the live send is skipped. So the last hop to your own relay is something you verify, not
 something CI asserts for you.
 
