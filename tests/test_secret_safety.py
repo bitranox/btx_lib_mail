@@ -12,8 +12,11 @@ import ast
 import logging
 import pickle
 import smtplib
+from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, TYPE_CHECKING
+from types import SimpleNamespace
+from typing import IO, TYPE_CHECKING, Literal, cast
 
 import pytest
 from pydantic import (
@@ -31,7 +34,7 @@ from pydantic import (
 from pydantic_core import PydanticCustomError
 
 import btx_lib_mail
-from btx_lib_mail import REDACTED_INPUT, SecretSafeModel, lib_mail
+from btx_lib_mail import REDACTED_INPUT, SecretSafeModel, lib_mail, redact_validation_error
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -291,6 +294,53 @@ class _CredsWithCustomRule(_Creds):
         raise PydanticCustomError("my_rule", "custom {what} broke", {"what": "thing"})
 
 
+class _CredsWithValueErrorNamedRule(_Creds):
+    # A custom error reusing a built-in type name that REQUIRES a ctx pydantic
+    # would otherwise supply ('error'): rebuilding it by name without that ctx fails.
+    @model_validator(mode="after")
+    def _rule(self) -> _CredsWithValueErrorNamedRule:
+        raise PydanticCustomError("value_error", "my message")
+
+
+class _CredsWithIntParsingNamedRule(_Creds):
+    # A custom error reusing a built-in type name whose own message differs:
+    # rebuilding it by name replaces the custom message with pydantic's.
+    @model_validator(mode="after")
+    def _rule(self) -> _CredsWithIntParsingNamedRule:
+        raise PydanticCustomError("int_parsing", "my own text")
+
+
+class _PwAuth(BaseModel):
+    kind: Literal["pw"]
+    password: str
+
+
+class _TokenAuth(BaseModel):
+    kind: Literal["token"]
+    token: str
+
+
+class _TaggedCreds(SecretSafeModel):
+    # union_tag_invalid repeats the input's tag in ctx["tag"] and in msg.
+    credential_fields = frozenset({"auth"})
+    auth: _PwAuth | _TokenAuth = Field(discriminator="kind")
+
+
+@dataclass
+class _Holder:
+    secret: str
+
+
+class _Unprintable:
+    """An input whose text cannot be rendered: its str() and repr() raise."""
+
+    def __str__(self) -> str:
+        raise RuntimeError(_MODEL_DUMMY)
+
+    def __repr__(self) -> str:
+        raise RuntimeError(_MODEL_DUMMY)
+
+
 class _Outer(SecretSafeModel):
     credential_fields = frozenset({"mail"})
     mail: _Creds
@@ -360,7 +410,15 @@ _LEAK_CASES: list[tuple[str, Callable[[], object], str]] = [
     ("list password", lambda: _Creds(password=["x", _MODEL_DUMMY]), _MODEL_DUMMY),  # type: ignore[arg-type]
     ("scalar password", lambda: _Creds(password=64518273), "64518273"),  # type: ignore[arg-type]
     ("container in a non-credential field", lambda: _Creds(timeout={"password": _MODEL_DUMMY}), _MODEL_DUMMY),  # type: ignore[arg-type]
+    ("dataclass in a non-credential field", lambda: _Creds(timeout=_Holder(_MODEL_DUMMY)), _MODEL_DUMMY),  # type: ignore[arg-type]
+    ("SimpleNamespace in a non-credential field", lambda: _Creds(timeout=SimpleNamespace(password=_MODEL_DUMMY)), _MODEL_DUMMY),  # type: ignore[arg-type]
+    ("deque in a non-credential field", lambda: _Creds(timeout=deque(["x", _MODEL_DUMMY])), _MODEL_DUMMY),  # type: ignore[arg-type]
+    ("dict values view in a non-credential field", lambda: _Creds(timeout={"password": _MODEL_DUMMY}.values()), _MODEL_DUMMY),  # type: ignore[arg-type]
     ("custom error type", lambda: _CredsWithCustomRule(password=_MODEL_DUMMY), _MODEL_DUMMY),  # type: ignore[arg-type]
+    ("custom error reusing value_error", lambda: _CredsWithValueErrorNamedRule(password=_MODEL_DUMMY), _MODEL_DUMMY),  # type: ignore[arg-type]
+    ("custom error reusing int_parsing", lambda: _CredsWithIntParsingNamedRule(password=_MODEL_DUMMY), _MODEL_DUMMY),  # type: ignore[arg-type]
+    ("union tag at a credential location", lambda: _TaggedCreds(auth={"kind": _MODEL_DUMMY, "password": "x"}), _MODEL_DUMMY),  # type: ignore[arg-type]
+    ("input whose text cannot be rendered", lambda: _Creds(password=_Unprintable()), _MODEL_DUMMY),  # type: ignore[arg-type]
     ("outer model rule", lambda: _Outer(mail={"password": _MODEL_DUMMY}, retries=9), _MODEL_DUMMY),  # type: ignore[arg-type]
     ("assignment re-runs a subclass rule", lambda: _assign_retries(_PlaintextToken(token=_MODEL_DUMMY)), _MODEL_DUMMY),
     ("assignment to a frozen model", lambda: _assign_password(_FrozenCreds()), _MODEL_DUMMY),
@@ -412,6 +470,8 @@ def test_a_non_credential_field_keeps_its_input() -> None:
     errors = caught.value.errors()
     assert [e["loc"] for e in errors] == [("timeout",)]
     assert errors[0]["input"] == "abc"
+    assert errors[0]["msg"] == "Input should be a valid number, unable to parse string as a number"
+    assert "url" in errors[0], "a visible built-in error is rebuilt as that built-in type, so it keeps its documentation link"
 
 
 @pytest.mark.os_agnostic
@@ -422,6 +482,81 @@ def test_a_redacted_error_keeps_type_location_and_message() -> None:
     assert error["type"] == "my_rule"
     assert error["msg"] == "custom thing broke"
     assert error["input"] == REDACTED_INPUT
+
+
+_CUSTOM_ERRORS: list[tuple[type[_Creds], str, str]] = [
+    (_CredsWithCustomRule, "my_rule", "custom thing broke"),
+    (_CredsWithValueErrorNamedRule, "value_error", "my message"),
+    (_CredsWithIntParsingNamedRule, "int_parsing", "my own text"),
+]
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(("model", "error_type", "message"), _CUSTOM_ERRORS, ids=[case[1] for case in _CUSTOM_ERRORS])
+def test_a_custom_error_keeps_its_own_type_and_message(model: type[_Creds], error_type: str, message: str) -> None:
+    with pytest.raises(ValidationError) as caught:
+        model(password=_MODEL_DUMMY)  # type: ignore[arg-type]
+    errors = caught.value.errors()
+    assert [(e["type"], e["loc"], e["msg"], e["input"]) for e in errors] == [(error_type, (), message, REDACTED_INPUT)]
+    assert "ctx" not in errors[0], "a hidden error keeps no ctx: ctx can repeat the input"
+
+
+@pytest.mark.os_agnostic
+def test_a_hidden_error_drops_ctx_and_scrubs_the_input_from_its_message() -> None:
+    with pytest.raises(ValidationError) as caught:
+        _TaggedCreds(auth={"kind": _MODEL_DUMMY, "password": "x"})  # type: ignore[arg-type]
+    errors = caught.value.errors()
+    assert [(e["type"], e["loc"], e["input"]) for e in errors] == [("union_tag_invalid", ("auth",), REDACTED_INPUT)], "positive control"
+    assert "ctx" not in errors[0]
+    assert errors[0]["msg"] == f"Input tag '{REDACTED_INPUT}' found using 'kind' does not match any of the expected tags: 'pw', 'token'"
+
+
+@pytest.mark.os_agnostic
+def test_an_input_whose_text_cannot_be_rendered_fails_closed() -> None:
+    with pytest.raises(ValidationError) as caught:
+        _Creds(password=_Unprintable())  # type: ignore[arg-type]
+    errors = caught.value.errors()
+    assert errors, "positive control: the error survived the failed rendering"
+    assert [e["loc"][:1] for e in errors] == [("password",)] * len(errors), "each error keeps its own location"
+    assert all(e["input"] == REDACTED_INPUT for e in errors)
+    assert all(e["msg"] == REDACTED_INPUT for e in errors), "the message could not be checked, so it is hidden whole"
+
+
+@pytest.mark.os_agnostic
+def test_an_input_too_deep_to_check_hides_the_message() -> None:
+    shallow: object = _MODEL_DUMMY
+    for _ in range(3):
+        shallow = [shallow]
+    deep: object = _MODEL_DUMMY
+    for _ in range(12):
+        deep = [deep]
+    with pytest.raises(ValidationError) as shallow_caught:
+        _Creds(password=shallow)  # type: ignore[arg-type]
+    assert all(e["msg"] != REDACTED_INPUT for e in shallow_caught.value.errors()), "control: a checkable input keeps its message"
+    with pytest.raises(ValidationError) as deep_caught:
+        _Creds(password=deep)  # type: ignore[arg-type]
+    errors = deep_caught.value.errors()
+    assert errors, "positive control"
+    assert all(e["msg"] == REDACTED_INPUT and e["input"] == REDACTED_INPUT for e in errors), "an input too deep to check hides the message whole"
+
+
+class _BrokenError:
+    """Stands in for a ValidationError whose errors cannot even be listed."""
+
+    title = "Broken"
+
+    def errors(self, *, include_url: bool = True) -> list[object]:
+        raise RuntimeError(_MODEL_DUMMY)
+
+
+@pytest.mark.os_agnostic
+def test_redaction_that_cannot_run_returns_one_opaque_error() -> None:
+    result = redact_validation_error(cast("ValidationError", _BrokenError()), credential_fields=frozenset())
+    assert isinstance(result, ValidationError), "positive control: the redaction returned instead of raising"
+    assert result.errors(include_url=False) == [
+        {"type": "redacted_error", "loc": (), "msg": "validation failed; the details could not be redacted and were dropped", "input": REDACTED_INPUT}
+    ]
+    assert _leaks(result, _MODEL_DUMMY) == []
 
 
 @pytest.mark.os_agnostic
@@ -470,3 +605,11 @@ def test_the_redaction_keeps_ordinary_model_behaviour() -> None:
     restored = pickle.loads(pickle.dumps(model))  # noqa: S301 - round-trips an object this test built
     assert restored == model
     assert _Creds.model_construct(timeout=1.0).timeout == 1.0
+    # The wrap turns the core schema into a function-wrap schema; serialisation and
+    # the JSON schema must still come from the model's own schema inside it.
+    assert model.model_dump() == {"password": SecretStr(_MODEL_DUMMY), "timeout": 7.0}
+    assert model.model_dump_json() == '{"password":"**********","timeout":7.0}'
+    schema = _Creds.model_json_schema()
+    assert schema["title"] == "_Creds"
+    assert set(schema["properties"]) == {"password", "timeout"}
+    assert schema["properties"]["timeout"] == {"default": 30.0, "title": "Timeout", "type": "number"}
