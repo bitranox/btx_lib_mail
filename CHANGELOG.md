@@ -2,6 +2,71 @@
 
 ## [Unreleased]
 
+## [1.6.0] 2026-09-29 01:04:40
+
+### Security
+
+- The per-host delivery WARNING no longer attaches the exception. A non-ASCII
+  SMTP password made smtplib raise `UnicodeEncodeError`, whose repr quotes the
+  whole AUTH string, and structured loggers (for example lib_log_rich JSON dumps)
+  wrote the password out in full. Upgrade to stop the leak. Applications with
+  their own settings model for SMTP credentials are NOT covered by this release
+  until they build that model on `ConfMail` or `SecretSafeModel`.
+- `ConfMail` validation errors never carry the password (not in `str()`,
+  `errors()` or `json()`), including errors raised by a subclass's own
+  model-level validators.
+- SMTP host strings containing `@` or `/` (for example `smtp://user:pw@host`)
+  are refused without echoing them, both by `send()` and when a `ConfMail` is
+  built or assigned; they were previously quoted in the log, in the delivery
+  `RuntimeError`, and in `repr()` / `model_dump_json()` of the config.
+- `DeliveryOptions` no longer prints its credentials in `repr()`.
+- Host, recipient, sender and attachment-path values are passed through a
+  control-character cleaner before they reach any log line, log `extra` or
+  raised error text (a recipient or a filename containing a newline or an ESC
+  sequence could forge log lines or inject terminal sequences);
+  `AttachmentSecurityError` cleans its reason and rendered path.
+- A host containing interior whitespace or a control character is refused, at
+  `send()` and at `ConfMail` time (outer whitespace is still trimmed).
+- A hidden validation error's message is scrubbed of the input's text
+  (best-effort: verbatim, repr, ascii and JSON-escaped forms; a transformed
+  value is not recognised).
+
+### Added
+
+- `send(config=...)`: deliver with a given `ConfMail` instead of the global
+  `conf`; when `config` is passed, `conf` is not read.
+- `SecretSafeModel`, `redact_validation_error`, `REDACTED_INPUT` for settings
+  models that hold credentials; `DeliveryOptions` and `Transport` exported.
+- Non-ASCII SMTP credentials authenticate with UTF-8 AUTH PLAIN (RFC 4616).
+- `redact_validation_error(..., declared_names=...)`: keyword-only; mapping
+  keys equal to declared field names are not scrubbed from messages.
+- The shipped python-send-mail skill documents `send(config=)`, non-ASCII
+  credentials and AUTH PLAIN, that `send()` raises `RuntimeError` (never
+  `SMTPNotSupportedError`) when every host failed, and how a settings model
+  extends `credential_fields`.
+
+### Changed
+
+- **Breaking:** a host list containing a `user:pw@` or URL entry (anything
+  with `@` or `/`) is now refused as a whole with `ValueError` before any
+  delivery; it previously failed over past that entry to the next host. A
+  `ConfMail` with such a host now raises `ValidationError` at construction or
+  assignment instead of failing at send time. Remove the entry and pass the
+  credentials as `smtp_username` / `smtp_password`.
+- The per-host WARNING reads `can not send mail to "<rcpt>" via host "<host>":
+  <failure>` (one line, control characters replaced) and carries `error_type`
+  and `smtp_code` extras; the traceback is no longer attached.
+- `smtp_password` accepts an int as its decimal text; float, bool and container
+  values are refused with only their type named.
+- The `ConfMail` / `SecretSafeModel` redaction keeps an error's input only for
+  simple scalar types (str, bytes, int, float, bool, None, Decimal,
+  date/datetime/time/timedelta, and an Enum whose value is such a scalar); any
+  other input (a dict, list, dataclass, namespace, ...) is shown as
+  `"[redacted]"` in every error, not only at credential fields. Hidden custom
+  validation errors keep their message but lose their `ctx`.
+- Hosts with interior whitespace or control characters are refused (such hosts
+  could never deliver).
+
 ## [1.5.2] 2026-07-30 18:08:05
 
 ### Changed
