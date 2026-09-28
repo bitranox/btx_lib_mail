@@ -24,6 +24,7 @@ from .lib_mail import (
     validate_email_address,
     validate_smtp_host,
 )
+from .secret_safety import REDACTED_INPUT, SecretSafeModel, redact_validation_error
 
 __all__ = [
     "CANONICAL_GREETING",
@@ -31,16 +32,19 @@ __all__ = [
     "DANGEROUS_DIRECTORIES_WINDOWS",
     "DANGEROUS_EXTENSIONS_POSIX",
     "DANGEROUS_EXTENSIONS_WINDOWS",
+    "REDACTED_INPUT",
     "SENSITIVE_PATH_PATTERNS",
     "AttachmentSecurityError",
     "AttachmentViolation",
     "ConfMail",
+    "SecretSafeModel",
     "conf",
     "emit_greeting",
     "logger",
     "noop_main",
     "print_info",
     "raise_intentional_failure",
+    "redact_validation_error",
     "send",
     "validate_email_address",
     "validate_smtp_host",
