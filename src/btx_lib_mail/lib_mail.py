@@ -246,22 +246,33 @@ class AttachmentSecurityError(Exception):
 
     **Fields:**
     - `path: pathlib.Path` — The offending attachment path.
-    - `reason: str` — Human-readable description of the violation.
+    - `reason: str` — Human-readable description of the violation, with every
+      control character (CR, LF, ESC, NUL, ...) already replaced by a space, since
+      the path embedded in it is filesystem-supplied and could otherwise forge a
+      line in whatever renders `str(exc)`, `repr(exc)`, or a log line built from
+      this field.
     - `violation_type: AttachmentViolation` — Category of the violation
       (`AttachmentViolation.SYMLINK`, `.EXTENSION`, `.SIZE`, etc.). Members
       subclass `str`, so `== "symlink"` comparisons keep working.
     """
 
     def __init__(self, path: pathlib.Path, reason: str, violation_type: AttachmentViolation) -> None:
-        super().__init__(reason)
+        # `reason` is built with an f-string at every call site and usually
+        # embeds `path` (filesystem-supplied), so it is cleaned once here:
+        # this also cleans `self.args` (via `super().__init__`), so neither
+        # `str(exc)` nor the default `repr(exc)` (which renders `self.args`
+        # unclean-through-`__str__`) can carry a forged line, whether this
+        # exception is logged or propagated to the caller in strict mode.
+        clean_reason = _printable(reason)
+        super().__init__(clean_reason)
         self.path = path
-        self.reason = reason
+        self.reason = clean_reason
         self.violation_type = violation_type
 
     def __str__(self) -> str:
         # .value keeps the message text stable across Python versions, where
         # f-string formatting of a `str, Enum` member is inconsistent.
-        return f"Attachment security violation ({self.violation_type.value}): {self.reason} [path={self.path}]"
+        return f"Attachment security violation ({self.violation_type.value}): {self.reason} [path={_printable(str(self.path))}]"
 
 
 """Compiled regex used by :func:`validate_email_address`."""
@@ -1013,18 +1024,21 @@ def _deliver_to_any_host(  # noqa: PLR0913 - one keyword-only param per piece of
                     message=spool,
                     delivery=delivery,
                 )
+                # sender, recipient and host normally reach here already
+                # validated (no control characters), but the log call cleans
+                # them again as defense in depth: nothing upstream of this
+                # call is trusted to be the last guard against a forged log
+                # line, and `_deliver_to_any_host` is reachable directly
+                # (tests do exactly that) without going through `send()`'s
+                # own validation first.
                 logger.debug(
                     'mail sent to "%s" via host "%s"',
-                    recipient,
-                    host,
-                    extra={"sender": sender, "recipient": recipient, "host": host},
+                    _printable(recipient),
+                    _printable(host),
+                    extra={"sender": _printable(sender), "recipient": _printable(recipient), "host": _printable(host)},
                 )
                 return True
             except Exception as error:  # noqa: PERF203 - failover needs the try inside the loop to keep trying remaining hosts
-                # host and recipient normally reach here already validated (no
-                # control characters), but the WARNING cleans them again as
-                # defense in depth: nothing upstream of this log call is trusted
-                # to be the last guard against a forged log line.
                 clean_recipient = _printable(recipient)
                 clean_host = _printable(host)
                 logger.warning(
@@ -1033,7 +1047,7 @@ def _deliver_to_any_host(  # noqa: PLR0913 - one keyword-only param per piece of
                     clean_host,
                     _describe_failure(error),
                     extra={
-                        "sender": sender,
+                        "sender": _printable(sender),
                         "recipient": clean_recipient,
                         "host": clean_host,
                         "error_type": type(error).__name__,
@@ -1791,11 +1805,15 @@ def _prepare_attachments(
         except AttachmentSecurityError as exc:
             if security.raise_on_violation:
                 raise
+            # `exc.reason` and `original_path_str` are both built from the
+            # caller-supplied path; `AttachmentSecurityError.__init__` already
+            # cleans `.reason`, but the path is cleaned again here too, as
+            # defense in depth and for consistency with every other log call.
             logger.warning(
                 "Attachment security violation: %s",
-                exc.reason,
+                _printable(exc.reason),
                 extra={
-                    "attachment_path": original_path_str,
+                    "attachment_path": _printable(original_path_str),
                     "violation_type": exc.violation_type.value,
                 },
             )
@@ -1803,12 +1821,13 @@ def _prepare_attachments(
 
         # Check file existence
         if not validated_path.is_file():
+            clean_path = _printable(str(validated_path))
             if raise_on_missing:
-                raise FileNotFoundError(f'Attachment File "{validated_path}" can not be found')
+                raise FileNotFoundError(f'Attachment File "{clean_path}" can not be found')
             logger.warning(
                 'Attachment File "%s" can not be found',
-                validated_path,
-                extra={"attachment_path": str(validated_path)},
+                clean_path,
+                extra={"attachment_path": clean_path},
             )
             continue
 
@@ -1905,9 +1924,14 @@ def _prepare_recipients(
         try:
             validate_email_address(entry)
         except ValueError:
+            # `entry` is exactly the value that FAILED validation, so unlike
+            # `recipients`/`failed_recipients` elsewhere in this module it is
+            # not provably free of control characters; clean it before it
+            # reaches a log line or an exception message a caller may log.
+            clean_entry = _printable(entry)
             if raise_on_invalid:
-                raise ValueError(f"invalid recipient {entry}") from None
-            logger.warning("invalid recipient %s", entry, extra={"recipient": entry})
+                raise ValueError(f"invalid recipient {clean_entry}") from None
+            logger.warning("invalid recipient %s", clean_entry, extra={"recipient": clean_entry})
             continue
         valid.append(entry)
 

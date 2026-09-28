@@ -13,6 +13,7 @@ import json
 import logging
 import pickle
 import smtplib
+import sys
 import threading
 from collections import deque
 from dataclasses import dataclass
@@ -1142,8 +1143,14 @@ def test_a_confmail_host_with_whitespace_or_control_characters_is_refused(hosts:
     error = caught.value.errors()[0]
     assert error["loc"] == ("smtphosts",), "positive control: the refusal is about the hosts"
     assert "whitespace or control characters" in error["msg"]
-    assert "\n" not in caught.value.json()
-    assert "\x1b" not in caught.value.json()
+    # Minor 1 fix: pydantic's own `.json()` always escapes U+0000-U+001F, so
+    # "\n" / "\x1b" not in .json() can never fail regardless of this
+    # module's own cleaning. `_leaks` checks `str()`, `repr()`, `errors()`
+    # and `.json()` together and fails if the raw offending text (which
+    # ConfMail's redaction already replaces with "[redacted]") ever
+    # reappears in any of them.
+    assert _leaks(caught.value, "FORGED") == []
+    assert _leaks(caught.value, "\x1b") == []
 
 
 @pytest.mark.os_agnostic
@@ -1188,8 +1195,14 @@ def test_the_per_host_warning_cannot_carry_a_forged_log_line_or_escape_sequence(
     caplog.set_level(logging.WARNING, logger="btx_lib_mail")
     delivery = lib_mail.DeliveryOptions(credentials=None, use_starttls=False, starttls_verify=True, timeout=5.0)
 
+    # sender/recipient reach `email.message.EmailMessage["From"/"To"]` inside
+    # `_compose_to_spool` before the WARNING is ever logged, and stdlib's
+    # policy rejects a header value containing an actual newline outright
+    # (ValueError, unrelated to this fix); the ESC sequence alone (no
+    # newline) still exercises `isprintable()` cleaning without tripping
+    # that stdlib guard. `host` is not used as a header, so it keeps CR/LF.
     ok = lib_mail._deliver_to_any_host(
-        sender="sender@example.com",
+        sender="sender\x1b[31mFORGED sender@example.com",
         recipient="rcpt@example.com",
         subject="s",
         plain_body="b",
@@ -1209,3 +1222,149 @@ def test_the_per_host_warning_cannot_carry_a_forged_log_line_or_escape_sequence(
     assert all(character.isprintable() for character in message)
     assert all(character.isprintable() for character in str(record.__dict__["host"])), "extras must be cleaned too"
     assert all(character.isprintable() for character in str(record.__dict__["recipient"]))
+    assert "FORGED sender" in str(record.__dict__["sender"]), "positive control: sender text survives, just cleaned"
+    assert all(character.isprintable() for character in str(record.__dict__["sender"])), "extra['sender'] must be cleaned too"
+
+
+class _SucceedingTransport:
+    """Transport double that accepts every delivery."""
+
+    def deliver(self, *, host: str, sender: str, recipient: str, message: IO[bytes], delivery: DeliveryOptions) -> None:
+        return None
+
+
+_RECIPIENT_DUMMY = "dummy-planted-2f9c"
+
+
+@pytest.mark.os_agnostic
+def test_the_success_path_debug_line_cannot_carry_a_forged_log_line_or_escape_sequence(caplog: pytest.LogCaptureFixture) -> None:
+    """Defense in depth: values bypassing send()'s own validation cannot forge the success DEBUG line either."""
+    caplog.set_level(logging.DEBUG, logger="btx_lib_mail")
+    delivery = lib_mail.DeliveryOptions(credentials=None, use_starttls=False, starttls_verify=True, timeout=5.0)
+
+    # See the ESC-only note above: sender/recipient become email headers
+    # inside `_compose_to_spool`, which rejects an actual newline outright;
+    # `host` does not, so it keeps CR/LF.
+    ok = lib_mail._deliver_to_any_host(
+        sender="sender\x1b[31mFORGED sender@example.com",
+        recipient="rcpt\x1b[31mFORGED recipient@example.com",
+        subject="s",
+        plain_body="b",
+        html_body="",
+        hosts=("evil\nFORGED host\x1b[31m",),
+        attachments=(),
+        delivery=delivery,
+        transport=_SucceedingTransport(),
+    )
+
+    assert ok is True
+    records = [r for r in caplog.records if r.name == "btx_lib_mail" and r.levelno == logging.DEBUG and "mail sent to" in r.msg]
+    assert len(records) == 1, "positive control: the success path still logs the DEBUG line"
+    record = records[0]
+    message = record.getMessage()
+    assert "FORGED recipient" in message, "positive control: the recipient text survives, just cleaned"
+    assert "FORGED host" in message, "positive control: the host text survives, just cleaned"
+    assert all(character.isprintable() for character in message)
+    for key in ("sender", "recipient", "host"):
+        assert all(character.isprintable() for character in str(record.__dict__[key])), f"extra[{key!r}] must be cleaned too"
+    assert "FORGED sender" in str(record.__dict__["sender"]), "positive control: sender text survives, just cleaned"
+
+
+@pytest.mark.os_agnostic
+def test_an_invalid_recipient_warning_cannot_carry_a_forged_log_line_or_escape_sequence(caplog: pytest.LogCaptureFixture) -> None:
+    """A recipient that fails validation is still logged in tolerant mode; it must not forge a log line."""
+    caplog.set_level(logging.WARNING, logger="btx_lib_mail")
+    forged = f"x\nwarning {_RECIPIENT_DUMMY} forged admin login ok\x1b[31m"
+
+    ok = lib_mail.send(
+        mail_from="sender@example.com",
+        mail_recipients=["good@example.com", forged],
+        mail_subject="s",
+        smtphosts=["smtp.example.com"],
+        raise_on_invalid_recipient=False,
+        transport=_SucceedingTransport(),
+    )
+
+    assert ok is True
+    records = [r for r in caplog.records if r.name == "btx_lib_mail" and r.levelno == logging.WARNING and "invalid recipient" in r.msg]
+    assert len(records) == 1, "positive control: the tolerant path still logs the invalid recipient"
+    record = records[0]
+    message = record.getMessage()
+    assert _RECIPIENT_DUMMY in message, "positive control: the recipient text survives, just cleaned"
+    assert all(character.isprintable() for character in message)
+    assert all(character.isprintable() for character in str(record.__dict__["recipient"])), "extras must be cleaned too"
+
+
+@pytest.mark.os_agnostic
+def test_an_invalid_recipient_raises_a_valueerror_free_of_control_characters() -> None:
+    forged = f"x\nwarning {_RECIPIENT_DUMMY} forged admin login ok\x1b[31m"
+
+    with pytest.raises(ValueError, match="invalid recipient") as caught:
+        lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients=[forged],
+            mail_subject="s",
+            smtphosts=["smtp.example.com"],
+            raise_on_invalid_recipient=True,
+            transport=_SucceedingTransport(),
+        )
+
+    text = str(caught.value)
+    assert _RECIPIENT_DUMMY in text, "positive control: the recipient text survives, just cleaned"
+    assert all(character.isprintable() for character in text)
+
+
+_WINDOWS_FILENAME_NEWLINE_SKIP_REASON = "POSIX filenames can contain a literal newline; Windows forbids it entirely, so this file could never be created there"
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.skipif(sys.platform.startswith("win"), reason=_WINDOWS_FILENAME_NEWLINE_SKIP_REASON)
+def test_an_attachment_path_warning_cannot_carry_a_forged_log_line(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.WARNING, logger="btx_lib_mail")
+    forged_name = f"evil\nFORGED {_RECIPIENT_DUMMY}.sh"
+    forged_path = tmp_path / forged_name
+    forged_path.write_bytes(b"not actually a script")
+
+    ok = lib_mail.send(
+        mail_from="sender@example.com",
+        mail_recipients="rcpt@example.com",
+        mail_subject="s",
+        smtphosts=["smtp.example.com"],
+        attachment_file_paths=[forged_path],
+        attachment_raise_on_security_violation=False,
+        transport=_SucceedingTransport(),
+    )
+
+    assert ok is True
+    records = [r for r in caplog.records if r.name == "btx_lib_mail" and r.levelno == logging.WARNING and "Attachment security violation" in r.msg]
+    assert len(records) == 1, "positive control: the tolerant path still logs the security violation"
+    record = records[0]
+    message = record.getMessage()
+    assert _RECIPIENT_DUMMY in message, "positive control: the path text survives, just cleaned"
+    assert all(character.isprintable() for character in message)
+    assert all(character.isprintable() for character in str(record.__dict__["attachment_path"])), "extras must be cleaned too"
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.skipif(sys.platform.startswith("win"), reason=_WINDOWS_FILENAME_NEWLINE_SKIP_REASON)
+def test_an_attachment_security_error_raised_to_the_caller_cannot_carry_a_forged_line(tmp_path: Path) -> None:
+    """AttachmentSecurityError propagates to the caller in strict mode (the default); str()/repr() must not forge a line either."""
+    forged_name = f"evil\nFORGED {_RECIPIENT_DUMMY}.sh"
+    forged_path = tmp_path / forged_name
+    forged_path.write_bytes(b"not actually a script")
+
+    with pytest.raises(lib_mail.AttachmentSecurityError) as caught:
+        lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients="rcpt@example.com",
+            mail_subject="s",
+            smtphosts=["smtp.example.com"],
+            attachment_file_paths=[forged_path],
+            transport=_SucceedingTransport(),
+        )
+
+    exc = caught.value
+    assert _RECIPIENT_DUMMY in str(exc), "positive control: the path text survives, just cleaned"
+    assert all(character.isprintable() for character in str(exc))
+    assert all(character.isprintable() for character in repr(exc))
+    assert all(character.isprintable() for character in exc.reason)

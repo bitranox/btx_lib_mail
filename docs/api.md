@@ -163,16 +163,24 @@ where `<description>` is built by `_describe_failure`: for an `smtplib.SMTPRespo
 (including a custom `Transport`'s own `OSError`) it is `<ExceptionClassName>: <error text>`,
 logged as given; for anything else it is only the exception class name. The description text
 has its control characters (CR, LF, ESC, NUL, ...) replaced by spaces and is capped at 200
-characters. `<host>` and `<recipient>` are cleaned the same way before they are logged (message
-and `extra` alike). A host carrying whitespace or a control character is refused before any
-delivery is attempted (`ConfMail` construction/assignment and `send()`-time host validation
-both refuse it, without echoing the value), so this cleaning of `<host>` is defense in depth
-rather than the only guard; a hostile or chatty server reply, on the other hand, reaches this
-log line as `<description>` and relies on the cleaning above to not forge extra log lines or
-flood the log.
-The log record also carries `extra={"error_type": ..., "smtp_code": ...}` (`smtp_code` is
-`None` when the exception has none), so a structured log sink can filter or aggregate by
-either without re-parsing the message text.
+characters; `<host>` and `<recipient>` are run through the same control-character cleaning
+(`_printable`), but are not capped at 200 characters, since a description text is the one value
+this log line takes from an untrusted server reply. A host carrying interior whitespace or a
+control character is refused before any delivery is attempted (`ConfMail` construction/assignment
+and `send()`-time host validation both refuse it, without echoing the value), so this cleaning of
+`<host>` is defense in depth rather than the only guard; a hostile or chatty server reply, on the
+other hand, reaches this log line as `<description>` and relies on the cleaning above to not forge
+extra log lines or flood the log.
+The log record also carries `extra={"sender": ..., "recipient": ..., "host": ..., "error_type":
+..., "smtp_code": ...}` (`smtp_code` is `None` when the exception has none; `sender`, `recipient`
+and `host` are the same cleaned values used in the message), so a structured log sink can filter
+or aggregate by any of them without re-parsing the message text. The same cleaning (`_printable`
+on every caller- or filesystem-supplied value, in the message and in `extra` alike) also applies
+to the success-path `DEBUG` log line (`mail sent to "<recipient>" via host "<host>"`), the
+`WARNING` logged for a recipient that fails validation in tolerant mode (and the `ValueError` it
+raises in strict mode) together with the two attachment-path `WARNING`s (a security violation, a
+missing file), and `AttachmentSecurityError`'s own `str()`/`repr()` when it propagates to the
+caller in strict mode - none of these log a caller- or filesystem-supplied string unclean.
 
 ## Secret safety {#public-api-secret-safety}
 

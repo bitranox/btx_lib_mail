@@ -57,7 +57,13 @@ rendering, attachment security, and the delivery orchestration.
 * **Fields:** `path` (`pathlib.Path`), `reason` (`str`), `violation_type`
   (`AttachmentViolation`).
 * **Notes:** `__str__` renders `violation_type.value` to keep the message stable
-  across Python versions.
+  across Python versions. `__init__` runs `reason` through `_printable` before
+  storing it (`reason` is built with an f-string at every raise site and usually
+  embeds the offending path), and `__str__` runs `path` through `_printable` too,
+  so neither `str(exc)` nor `repr(exc)` (which renders the cleaned `self.args`)
+  can carry a forged line, whether this exception is logged or raised to the
+  caller in strict mode (`attachment_raise_on_security_violation=True`, the
+  default).
 * **Location:** src/btx_lib_mail/lib_mail.py
 
 #### AttachmentPayload {#lib-mail-attachmentpayload}
@@ -153,12 +159,15 @@ rendering, attachment security, and the delivery orchestration.
 * `_deliver_to_any_host` composes the message once into a `SpooledTemporaryFile`
   and iterates the host tuple, delegating to the injected `Transport` until one
   accepts the message, logging one credential-free `WARNING` per failed host (built
-  by `_describe_failure`, no traceback attached) and moving on. The spool is reused
-  across host attempts. The `host` and `recipient` logged in the `WARNING` (message
-  and `extra` alike) are also run through `_printable` before logging, as defense in
-  depth: `_refuse_credentials_in_host` already refuses a host carrying whitespace or
-  a control character before delivery starts, so this second cleaning guards against
-  whatever reaches this call directly rather than through `send()`'s own validation.
+  by `_describe_failure`, no traceback attached) and moving on, or a `DEBUG` line on
+  success. The spool is reused across host attempts. `sender`, `host` and
+  `recipient` logged in either the `DEBUG` line or the `WARNING` (message and
+  `extra` alike) are all run through `_printable` before logging, as defense in
+  depth: `_refuse_credentials_in_host` already refuses a host carrying interior
+  whitespace or a control character before delivery starts, and `send()` validates
+  `sender`/`recipient` before calling this function, so this cleaning guards against
+  whatever reaches this function directly rather than through `send()`'s own
+  validation (tests do exactly that).
 * `_describe_failure(error)` returns a one-line, credential-free description of a
   delivery failure: for an `smtplib.SMTPResponseException` it is the exception class
   name plus the server's numeric code and reply text; for any other `OSError`
@@ -214,6 +223,11 @@ rendering, attachment security, and the delivery orchestration.
   (`_collect_host_inputs`) calls it directly.
 * `validate_email_address` and `validate_smtp_host` are public; `_parse_smtp_host`
   reuses `validate_smtp_host` before splitting hostname and port.
+* `_prepare_recipients` validates each address with `validate_email_address`; in
+  tolerant mode (`raise_on_invalid_recipient=False`) the entry that FAILED
+  validation is, by definition, not provably free of control characters, so it is
+  run through `_printable` before it reaches the `WARNING` (message and
+  `extra["recipient"]` alike) or the `ValueError` message raised in strict mode.
 * **Location:** src/btx_lib_mail/lib_mail.py
 
 #### Attachment security checks (internal)
@@ -223,7 +237,12 @@ rendering, attachment security, and the delivery orchestration.
 `_check_extension`, and `_check_file_size`. Each raises `AttachmentSecurityError`
 with the matching `AttachmentViolation` category. `_prepare_attachments` applies
 them before reading file bytes, honouring `raise_on_violation` and
-`raise_on_missing`.
+`raise_on_missing`. In tolerant mode (`raise_on_violation=False` /
+`raise_on_missing=False`) it logs one `WARNING` per skipped attachment, running
+the path (and, for a security violation, `exc.reason`, already cleaned by
+`AttachmentSecurityError.__init__`) through `_printable` again, in both the
+message and `extra["attachment_path"]`, as defense in depth; a
+`FileNotFoundError` raised in strict mode is cleaned the same way.
 
 #### Public constants
 
