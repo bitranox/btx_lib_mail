@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.7.0] 2026-09-29 11:30:27
+
 ### Security
 
 - `ConfMail` refuses an empty `attachment_blocked_extensions` or
