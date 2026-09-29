@@ -6,12 +6,12 @@ console scripts and `python -m` entry points.
 
 **Contents:**
 - `CLICK_CONTEXT_SETTINGS`, `TRACEBACK_SUMMARY_LIMIT`, `TRACEBACK_VERBOSE_LIMIT`
-  — shared configuration constants.
+  - shared configuration constants.
 - `apply_traceback_preferences`, `snapshot_traceback_state`,
-  `restore_traceback_state` — shared traceback state helpers.
+  `restore_traceback_state` - shared traceback state helpers.
 - `cli` and its subcommands (`cli_info`, `cli_hello`, `cli_send_mail`, `cli_fail`)
-  plus `cli_main` — the public CLI surface.
-- `main` — composition helper driving execution through `lib_cli_exit_tools`.
+  plus `cli_main` - the public CLI surface.
+- `main` - composition helper driving execution through `lib_cli_exit_tools`.
 
 **System Role:** Documented in
 `docs/systemdesign/module_reference.md#feature-cli-components`; this module is
@@ -295,7 +295,7 @@ def apply_traceback_preferences(enabled: bool) -> None:  # noqa: FBT001 - public
     present identical diagnostics.
 
     **Parameters:**
-    - `enabled: bool` — `True` enables verbose, colourised tracebacks;
+    - `enabled: bool` - `True` enables verbose, colourised tracebacks;
       `False` restores compact summaries.
 
     **Returns:** `None`.
@@ -316,7 +316,7 @@ def snapshot_traceback_state() -> TracebackState:
     **Purpose:** Capture the current verbose/colour traceback settings so they
     can be restored after a CLI run modifies them.
 
-    **Returns:** `TracebackState` — Tuple `(traceback_enabled, force_color)`
+    **Returns:** `TracebackState` - Tuple `(traceback_enabled, force_color)`
     describing the current configuration.
 
     **Example:**
@@ -337,7 +337,7 @@ def restore_traceback_state(state: TracebackState) -> None:
     state looks untouched to callers after CLI execution.
 
     **Parameters:**
-    - `state: TracebackState` — Tuple produced by
+    - `state: TracebackState` - Tuple produced by
       `snapshot_traceback_state()`.
 
     **Returns:** `None`.
@@ -606,8 +606,8 @@ def cli(ctx: click.Context, *, traceback: bool) -> None:
     subcommands.
 
     **Parameters:**
-    - `ctx: click.Context` — Click context initialised by Click.
-    - `traceback: bool = False` — `True` to enable verbose tracebacks; defaults
+    - `ctx: click.Context` - Click context initialised by Click.
+    - `traceback: bool = False` - `True` to enable verbose tracebacks; defaults
       to `False`.
 
     **Returns:** `None`.
@@ -799,25 +799,25 @@ def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per `sen
     and environment inputs into `btx_lib_mail.lib_mail.send`.
 
     **Parameters:**
-    - `hosts: Sequence[str]` — One or more `host[:port]` entries; defaults to
+    - `hosts: Sequence[str]` - One or more `host[:port]` entries; defaults to
       `BTX_MAIL_SMTP_HOSTS` when omitted.
-    - `recipients: Sequence[str]` — Recipient addresses; defaults to
+    - `recipients: Sequence[str]` - Recipient addresses; defaults to
       `BTX_MAIL_RECIPIENTS`.
-    - `sender: str | None` — Optional envelope sender. Falls back to
+    - `sender: str | None` - Optional envelope sender. Falls back to
       `BTX_MAIL_SENDER` or the first recipient.
-    - `subject: str` — Required subject line.
-    - `body: str` — Required plain-text body.
-    - `html_body: str | None` — Optional HTML body.
-    - `attachments: Sequence[Path]` — Zero or more filesystem paths to attach.
-    - `starttls: bool | None` — Override for STARTTLS preference. When `None`,
+    - `subject: str` - Required subject line.
+    - `body: str` - Required plain-text body.
+    - `html_body: str | None` - Optional HTML body.
+    - `attachments: Sequence[Path]` - Zero or more filesystem paths to attach.
+    - `starttls: bool | None` - Override for STARTTLS preference. When `None`,
       falls back to configuration/environment.
-    - `starttls_verify: bool | None` — Override for STARTTLS certificate
+    - `starttls_verify: bool | None` - Override for STARTTLS certificate
       verification. When `None`, falls back to `BTX_MAIL_SMTP_STARTTLS_VERIFY`
       or `conf.smtp_starttls_verify`. `--no-starttls-verify` keeps encryption
       but skips certificate validation for internal self-signed relays.
-    - `username: str | None`, `password: str | None` — Optional credentials.
+    - `username: str | None`, `password: str | None` - Optional credentials.
       Both are required to enable authentication.
-    - `timeout: float | None` — Optional socket timeout override in seconds.
+    - `timeout: float | None` - Optional socket timeout override in seconds.
 
     **Returns:** `None`.
 
@@ -878,7 +878,7 @@ def cli_validate_email(address: str) -> None:
     address. Exits successfully when the address is valid; raises when invalid.
 
     **Parameters:**
-    - `address: str` — Email address to validate.
+    - `address: str` - Email address to validate.
 
     **Returns:** `None`.
 
@@ -899,7 +899,7 @@ def cli_validate_smtp_host(host: str) -> None:
     raises when invalid.
 
     **Parameters:**
-    - `host: str` — SMTP host string to validate.
+    - `host: str` - SMTP host string to validate.
 
     **Returns:** `None`.
 
@@ -939,17 +939,17 @@ def main(
     restoration.
 
     **Parameters:**
-    - `argv: Sequence[str] | None = None` — Optional argument vector. `None`
+    - `argv: Sequence[str] | None = None` - Optional argument vector. `None`
       lets Click consume `sys.argv`.
-    - `restore_traceback: bool = True` — `True` restores the prior traceback
+    - `restore_traceback: bool = True` - `True` restores the prior traceback
       configuration after execution; set to `False` to leave modifications in
       place.
-    - `summary_limit: int = TRACEBACK_SUMMARY_LIMIT` — Character budget applied
+    - `summary_limit: int = TRACEBACK_SUMMARY_LIMIT` - Character budget applied
       when tracebacks are summarised.
-    - `verbose_limit: int = TRACEBACK_VERBOSE_LIMIT` — Character budget applied
+    - `verbose_limit: int = TRACEBACK_VERBOSE_LIMIT` - Character budget applied
       when verbose tracebacks are enabled.
 
-    **Returns:** `int` — Exit code produced by the CLI.
+    **Returns:** `int` - Exit code produced by the CLI.
 
     **Side Effects:** Temporarily mutates `lib_cli_exit_tools.config` while the
     CLI executes.

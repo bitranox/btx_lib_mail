@@ -5,7 +5,7 @@ packaging guidelines, delegating to `btx_lib_mail.cli.main` so exit semantics
 remain identical to the console script.
 
 **Contents:** `_open_cli_session`, `_command_to_run`, `_command_name`, and
-`_module_main` — the helpers that compose module execution with
+`_module_main` - the helpers that compose module execution with
 `lib_cli_exit_tools`.
 
 **System Role:** Mirrors the description in

@@ -5,10 +5,10 @@ collects configuration, normalises user input, and renders multipart messages so
 adapters such as the CLI can treat delivery as a single call.
 
 **Contents:**
-- `AttachmentPayload` — frozen attachment payload supplied to the MIME renderer.
-- `ConfMail` — Pydantic configuration surface shared across transports.
-- `DeliveryOptions` — resolved runtime options derived from configuration.
-- `send` — public orchestration entry point.
+- `AttachmentPayload` - frozen attachment payload supplied to the MIME renderer.
+- `ConfMail` - Pydantic configuration surface shared across transports.
+- `DeliveryOptions` - resolved runtime options derived from configuration.
+- `send` - public orchestration entry point.
 
 **System Role:** Matches `docs/systemdesign/module_reference.md#feature-cli-components`
 by translating intent gathered by the CLI into SMTP side effects while keeping
@@ -245,13 +245,13 @@ class AttachmentSecurityError(Exception):
     violations so callers can handle or report them appropriately.
 
     **Fields:**
-    - `path: pathlib.Path` — The offending attachment path.
-    - `reason: str` — Human-readable description of the violation, with every
+    - `path: pathlib.Path` - The offending attachment path.
+    - `reason: str` - Human-readable description of the violation, with every
       control character (CR, LF, ESC, NUL, ...) already replaced by a space, since
       the path embedded in it is filesystem-supplied and could otherwise forge a
       line in whatever renders `str(exc)`, `repr(exc)`, or a log line built from
       this field.
-    - `violation_type: AttachmentViolation` — Category of the violation
+    - `violation_type: AttachmentViolation` - Category of the violation
       (`AttachmentViolation.SYMLINK`, `.EXTENSION`, `.SIZE`, etc.). Members
       subclass `str`, so `== "symlink"` comparisons keep working.
     """
@@ -306,53 +306,53 @@ class ConfMail(SecretSafeModel):
     range checks.
 
     **Fields:**
-    - `smtphosts: list[str] = []` — Ordered hosts in `host[:port]` form. Empty
+    - `smtphosts: list[str] = []` - Ordered hosts in `host[:port]` form. Empty
       by default so callers must supply at least one host.
-    - `raise_on_missing_attachments: bool = True` — When `True`, missing files
+    - `raise_on_missing_attachments: bool = True` - When `True`, missing files
       raise `FileNotFoundError`; otherwise the module logs a warning and
       continues.
-    - `raise_on_invalid_recipient: bool = True` — When `True`, invalid addresses
+    - `raise_on_invalid_recipient: bool = True` - When `True`, invalid addresses
       raise `ValueError`; otherwise a warning is logged and delivery skips the
       address.
     - `smtp_username: str | None = None` and `smtp_password: SecretStr | None = None`
-      — Optional credentials; both must be populated to enable authentication.
+      - Optional credentials; both must be populated to enable authentication.
       `smtp_password` is a `SecretStr`, so it is masked in `repr()` and
       `model_dump()`; call `.get_secret_value()` (or `resolved_credentials()`) to
       read the plaintext. A plain string assigned to it is coerced to `SecretStr`.
       An int is accepted as its decimal text (config loaders parse digit strings
       as numbers); any other non-text value is refused, and validation errors of
       this model never carry the password (see `SecretSafeModel`).
-    - `smtp_use_starttls: bool = True` — Enables `STARTTLS` negotiation before
+    - `smtp_use_starttls: bool = True` - Enables `STARTTLS` negotiation before
       authentication when supported by the server.
-    - `smtp_starttls_verify: bool = True` — When `True`, the `STARTTLS` handshake
+    - `smtp_starttls_verify: bool = True` - When `True`, the `STARTTLS` handshake
       verifies the server certificate and hostname (the secure default). Set to
       `False` for an internal relay whose certificate is self-signed or has a
       hostname mismatch: the traffic stays encrypted but the certificate is not
       validated. Has no effect when `smtp_use_starttls` is `False`.
-    - `smtp_timeout: float = 30.0` — Socket timeout in seconds applied to SMTP
+    - `smtp_timeout: float = 30.0` - Socket timeout in seconds applied to SMTP
       connections.
-    - `attachment_allowed_extensions: frozenset[str] | None = None` — When set,
+    - `attachment_allowed_extensions: frozenset[str] | None = None` - When set,
       only these extensions are allowed (whitelist mode). When `None`, the
       blocked extensions list applies instead.
-    - `attachment_blocked_extensions: frozenset[str]` — Extensions to reject.
+    - `attachment_blocked_extensions: frozenset[str]` - Extensions to reject.
       Ignored when `attachment_allowed_extensions` is set. Defaults to
       OS-specific dangerous extensions. An empty set with no allowlist is
       refused unless `attachment_allow_empty_blocklists` is `True`.
-    - `attachment_allowed_directories: frozenset[pathlib.Path] | None = None` —
+    - `attachment_allowed_directories: frozenset[pathlib.Path] | None = None` -
       When set, attachments must reside under one of these directories.
-    - `attachment_blocked_directories: frozenset[pathlib.Path]` — Directories
+    - `attachment_blocked_directories: frozenset[pathlib.Path]` - Directories
       from which attachments cannot be read. Ignored when
       `attachment_allowed_directories` is set. Defaults to OS-specific
       sensitive directories. An empty set with no allowlist is refused unless
       `attachment_allow_empty_blocklists` is `True`.
-    - `attachment_max_size_bytes: int | None = 26_214_400` — Maximum attachment
+    - `attachment_max_size_bytes: int | None = 26_214_400` - Maximum attachment
       size in bytes (default 25 MiB). `None` disables size checking.
-    - `attachment_allow_symlinks: bool = False` — When `False`, symlinks are
+    - `attachment_allow_symlinks: bool = False` - When `False`, symlinks are
       rejected; when `True`, symlinks are resolved and validated.
-    - `attachment_raise_on_security_violation: bool = True` — When `True`,
+    - `attachment_raise_on_security_violation: bool = True` - When `True`,
       security violations raise `AttachmentSecurityError`; when `False`, they
       log a warning and skip the attachment.
-    - `attachment_allow_empty_blocklists: bool = False` — When `False`, an empty
+    - `attachment_allow_empty_blocklists: bool = False` - When `False`, an empty
       `attachment_blocked_extensions` or `attachment_blocked_directories` whose
       allowlist is not set is refused at validation (construction and
       assignment), because it blocks nothing: a configuration loader that turns
@@ -641,75 +641,75 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
     honouring delivery policies defined in `ConfMail`.
 
     **Parameters:**
-    - `mail_from: str` — Envelope sender address. Must be a syntactically valid
+    - `mail_from: str` - Envelope sender address. Must be a syntactically valid
       email.
-    - `mail_recipients: str | Sequence[str]` — Single recipient or iterable of
+    - `mail_recipients: str | Sequence[str]` - Single recipient or iterable of
       recipients. Values are trimmed, deduplicated, lower-cased, and validated.
-    - `mail_subject: str` — Subject line; UTF-8 is supported.
-    - `mail_body: str = ""` — Optional plain-text body.
-    - `mail_body_html: str = ""` — Optional HTML body.
-    - `smtphosts: Sequence[str] | None = None` — Override host list. When
+    - `mail_subject: str` - Subject line; UTF-8 is supported.
+    - `mail_body: str = ""` - Optional plain-text body.
+    - `mail_body_html: str = ""` - Optional HTML body.
+    - `smtphosts: Sequence[str] | None = None` - Override host list. When
       `None`, the helper falls back to the passed `config.smtphosts`, else the
       global `conf.smtphosts`.
-    - `attachment_file_paths: Sequence[pathlib.Path] | None = None` — Optional
+    - `attachment_file_paths: Sequence[pathlib.Path] | None = None` - Optional
       iterable of filesystem paths. Each existing file becomes an attachment.
-    - `credentials: tuple[str, str] | None = None` — Override credentials. When
+    - `credentials: tuple[str, str] | None = None` - Override credentials. When
       omitted, `resolved_credentials()` of the passed `config`, else of `conf`,
       is used.
-    - `use_starttls: bool | None = None` — Override STARTTLS preference. When
+    - `use_starttls: bool | None = None` - Override STARTTLS preference. When
       `None`, the helper uses `smtp_use_starttls` of the passed `config`, else
       `conf`.
-    - `starttls_verify: bool | None = None` — Override STARTTLS certificate
+    - `starttls_verify: bool | None = None` - Override STARTTLS certificate
       verification. When `None`, the helper uses `smtp_starttls_verify` of the
       passed `config`, else `conf`. `False` keeps the connection encrypted but
       skips certificate/hostname validation (for internal self-signed relays).
       Ignored unless STARTTLS runs.
-    - `timeout: float | None = None` — Override socket timeout in seconds. When
+    - `timeout: float | None = None` - Override socket timeout in seconds. When
       `None`, the helper uses `smtp_timeout` of the passed `config`, else `conf`.
-    - `attachment_allowed_extensions: frozenset[str] | None = None` — Override
+    - `attachment_allowed_extensions: frozenset[str] | None = None` - Override
       allowed extensions (whitelist mode). When `None`, uses the passed
       `config`'s default, else `conf`'s.
-    - `attachment_blocked_extensions: frozenset[str] | None = None` — Override
+    - `attachment_blocked_extensions: frozenset[str] | None = None` - Override
       blocked extensions. When `None`, uses the passed `config`'s default, else
       `conf`'s.
-    - `attachment_allowed_directories: frozenset[pathlib.Path] | None = None` —
+    - `attachment_allowed_directories: frozenset[pathlib.Path] | None = None` -
       Override allowed directories. When `None`, uses the passed `config`'s
       default, else `conf`'s.
-    - `attachment_blocked_directories: frozenset[pathlib.Path] | None = None` —
+    - `attachment_blocked_directories: frozenset[pathlib.Path] | None = None` -
       Override blocked directories. When `None`, uses the passed `config`'s
       default, else `conf`'s.
-    - `attachment_max_size_bytes: int | None = None` — Override max attachment
+    - `attachment_max_size_bytes: int | None = None` - Override max attachment
       size in bytes. When `None`, uses the passed `config`'s default, else
       `conf`'s.
-    - `attachment_allow_symlinks: bool | None = None` — Override symlink policy.
+    - `attachment_allow_symlinks: bool | None = None` - Override symlink policy.
       When `None`, uses the passed `config`'s default, else `conf`'s.
-    - `attachment_raise_on_security_violation: bool | None = None` — Override
+    - `attachment_raise_on_security_violation: bool | None = None` - Override
       security violation behaviour. When `None`, uses the passed `config`'s
       default, else `conf`'s.
-    - `raise_on_missing_attachments: bool | None = None` — Override
+    - `raise_on_missing_attachments: bool | None = None` - Override
       `raise_on_missing_attachments` of the passed `config`, else `conf`. When
       `None`, uses that default; `True` raises on missing, `False` logs warning
       and skips.
-    - `raise_on_invalid_recipient: bool | None = None` — Override
+    - `raise_on_invalid_recipient: bool | None = None` - Override
       `raise_on_invalid_recipient` of the passed `config`, else `conf`. When
       `None`, uses that default; `True` raises on invalid, `False` logs warning
       and skips.
-    - `config: ConfMail | None = None` — Settings used in place of the
+    - `config: ConfMail | None = None` - Settings used in place of the
       module-global `conf` for every value not passed explicitly; when given,
       `conf` is not read. Lets an application hold its own `ConfMail` (or
       subclass) without mutating the global.
 
-    **Returns:** `bool` — Always `True` when all deliveries succeed. A failure
+    **Returns:** `bool` - Always `True` when all deliveries succeed. A failure
     raises instead of returning `False`.
 
     **Raises:**
-    - `ValueError` — When no valid recipients remain after validation.
-    - `FileNotFoundError` — When required attachments are missing and
+    - `ValueError` - When no valid recipients remain after validation.
+    - `FileNotFoundError` - When required attachments are missing and
       `raise_on_missing_attachments` is `True` on the config in use (the
       passed `config`, else the global `conf`).
-    - `AttachmentSecurityError` — When an attachment violates security policies
+    - `AttachmentSecurityError` - When an attachment violates security policies
       and `attachment_raise_on_security_violation` is `True`.
-    - `RuntimeError` — When every SMTP host fails for a recipient; the error
+    - `RuntimeError` - When every SMTP host fails for a recipient; the error
       lists the affected recipients and host set.
 
     **Example:**
@@ -798,13 +798,13 @@ class DeliveryOptions:
     so low-level helpers receive one immutable object.
 
     **Fields:**
-    - `credentials: tuple[str, str] | None` — `(username, password)` pair or
+    - `credentials: tuple[str, str] | None` - `(username, password)` pair or
       `None` when anonymous delivery is requested.
-    - `use_starttls: bool` — `True` enables `STARTTLS` handshakes.
-    - `starttls_verify: bool` — `True` verifies the server certificate and
+    - `use_starttls: bool` - `True` enables `STARTTLS` handshakes.
+    - `starttls_verify: bool` - `True` verifies the server certificate and
       hostname during `STARTTLS`; `False` keeps the traffic encrypted but skips
       verification (for internal self-signed relays).
-    - `timeout: float` — Socket timeout (seconds) applied to SMTP connections.
+    - `timeout: float` - Socket timeout (seconds) applied to SMTP connections.
     """
 
     # repr=False: a transport or a debugger printing the options must not print the password.
@@ -864,17 +864,17 @@ class AttachmentSecurityOptions:
     send operation so validation helpers receive one immutable object.
 
     **Fields:**
-    - `allowed_extensions: frozenset[str] | None` — When set, only these
+    - `allowed_extensions: frozenset[str] | None` - When set, only these
       extensions are allowed (whitelist mode).
-    - `blocked_extensions: frozenset[str]` — Extensions to reject (ignored
+    - `blocked_extensions: frozenset[str]` - Extensions to reject (ignored
       when whitelist is active).
-    - `allowed_directories: frozenset[pathlib.Path] | None` — When set,
+    - `allowed_directories: frozenset[pathlib.Path] | None` - When set,
       attachments must reside under one of these directories.
-    - `blocked_directories: frozenset[pathlib.Path]` — Directories from which
+    - `blocked_directories: frozenset[pathlib.Path]` - Directories from which
       attachments cannot be read.
-    - `max_size_bytes: int | None` — Maximum attachment size in bytes.
-    - `allow_symlinks: bool` — Whether symlinks are permitted.
-    - `raise_on_violation: bool` — Whether violations raise or just warn.
+    - `max_size_bytes: int | None` - Maximum attachment size in bytes.
+    - `allow_symlinks: bool` - Whether symlinks are permitted.
+    - `raise_on_violation: bool` - Whether violations raise or just warn.
     """
 
     allowed_extensions: frozenset[str] | None
@@ -2184,7 +2184,7 @@ def validate_smtp_host(host: str) -> None:
             raise ValueError(f'missing closing bracket in "{host}"')
         remainder = host[bracket_end + 1 :]
         if remainder == "":
-            # bare [IPv6] — valid, no port
+            # bare [IPv6] - valid, no port
             return
         if not remainder.startswith(":"):
             raise ValueError(f'unexpected characters after bracket in "{host}"')

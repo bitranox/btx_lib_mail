@@ -5,9 +5,9 @@ each behaviour has a single, well-documented home. Keeping the trio together
 lets adapter layers evolve without rewriting domain stubs.
 
 **Contents:**
-- `emit_greeting` — success-path helper that emits the canonical message.
-- `raise_intentional_failure` — deterministic failure hook for exercising error paths.
-- `noop_main` — placeholder entry point for transports expecting a `main`.
+- `emit_greeting` - success-path helper that emits the canonical message.
+- `raise_intentional_failure` - deterministic failure hook for exercising error paths.
+- `noop_main` - placeholder entry point for transports expecting a `main`.
 
 **System Role:** Described in
 `docs/systemdesign/module_reference.md#feature-cli-behavior-scaffold`; this
@@ -55,7 +55,7 @@ def emit_greeting(*, stream: TextIO | None = None) -> None:
     text stream and flushes the stream when a `flush` method exists.
 
     **Parameters:**
-    - `stream: TextIO | None = None` — Optional destination. When `None`, the
+    - `stream: TextIO | None = None` - Optional destination. When `None`, the
       helper targets `sys.stdout`.
 
     **Returns:** `None`.
@@ -87,7 +87,7 @@ def raise_intentional_failure() -> None:
 
     **Returns:** This helper never returns.
 
-    **Raises:** `RuntimeError` — unconditionally, with the canonical message.
+    **Raises:** `RuntimeError` - unconditionally, with the canonical message.
 
     **Example:**
     >>> try:
