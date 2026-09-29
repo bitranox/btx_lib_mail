@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
-from typing import IO, TYPE_CHECKING, Literal, cast
+from typing import IO, TYPE_CHECKING, ClassVar, Literal, cast
 
 import pytest
 from pydantic import (
@@ -1478,3 +1478,118 @@ def test_an_attachment_security_error_raised_to_the_caller_cannot_carry_a_forged
     assert all(character.isprintable() for character in str(exc))
     assert all(character.isprintable() for character in repr(exc))
     assert all(character.isprintable() for character in exc.reason)
+
+
+def _model_listing(names: object) -> type[SecretSafeModel]:
+    """Define a SecretSafeModel subclass whose credential_fields is *names*."""
+
+    class _Listing(SecretSafeModel):
+        credential_fields = names  # pyright: ignore[reportAssignmentType] - the refused shapes are the point
+        password: str = Field(default="", alias="pw")
+        timeout: float = 30.0
+
+    return _Listing
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("names", [frozenset({"password"}), {"password"}, frozenset[str]()])
+def test_credential_fields_naming_declared_fields_is_accepted(names: object) -> None:
+    model = _model_listing(names)
+
+    assert model.model_validate({"pw": "x"}).model_dump()["password"] == "x"
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    ("names", "needle"),
+    [
+        pytest.param(frozenset({"pasword"}), "'pasword'", id="typo"),
+        pytest.param(frozenset({"pw"}), "'pw'", id="alias-instead-of-field"),
+        pytest.param(frozenset({"password", "tokn"}), "'tokn'", id="one-good-one-typo"),
+    ],
+)
+def test_credential_fields_naming_an_undeclared_field_is_refused(names: frozenset[str], needle: str) -> None:
+    with pytest.raises(TypeError, match="not a declared field") as caught:
+        _model_listing(names)
+
+    assert needle in str(caught.value)
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    "names",
+    [
+        pytest.param("password", id="plain-str"),
+        pytest.param(["password"], id="list"),
+        pytest.param(frozenset({1}), id="non-str-member"),
+        pytest.param(None, id="none"),
+    ],
+)
+def test_credential_fields_that_is_not_a_set_of_names_is_refused(names: object) -> None:
+    with pytest.raises(TypeError, match="set of field names"):
+        _model_listing(names)
+
+
+@pytest.mark.os_agnostic
+def test_credential_fields_annotated_as_a_field_is_refused() -> None:
+    with pytest.warns(UserWarning, match="shadows an attribute"), pytest.raises(TypeError, match="ClassVar"):
+
+        class _Annotated(SecretSafeModel):  # pyright: ignore[reportUnusedClass]
+            credential_fields: frozenset[str] = frozenset({"password"})  # pyright: ignore[reportIncompatibleVariableOverride]
+            password: str = ""
+
+
+class _ClassVarAnnotated(SecretSafeModel):
+    credential_fields: ClassVar[frozenset[str]] = frozenset({"password"})
+    password: str = ""
+
+
+@pytest.mark.os_agnostic
+def test_credential_fields_declared_as_an_annotated_classvar_is_accepted() -> None:
+    assert "credential_fields" not in _ClassVarAnnotated.model_fields
+    with pytest.raises(ValidationError) as caught:
+        _ClassVarAnnotated(password=["x", _MODEL_DUMMY])  # type: ignore[arg-type]
+    assert caught.value.errors()[0]["input"] == REDACTED_INPUT
+
+
+@pytest.mark.os_agnostic
+def test_a_subclass_inherits_and_extends_the_checked_credential_fields() -> None:
+    class _Child(ConfMail):
+        credential_fields = ConfMail.credential_fields | {"api_key"}
+        api_key: str = ""
+
+    class _Grandchild(_Child):
+        region: str = ""
+
+    assert _Grandchild.credential_fields == ConfMail.credential_fields | {"api_key"}
+    with pytest.raises(TypeError, match="'api_kye'"):
+
+        class _Broken(_Child):  # pyright: ignore[reportUnusedClass]
+            credential_fields = _Child.credential_fields | {"api_kye"}
+
+
+class _AfterChecked(SecretSafeModel):
+    model_config = ConfigDict(validate_assignment=True)
+    credential_fields = frozenset({"password"})
+    password: str = ""
+    low: int = 0
+    high: int = 10
+
+    @model_validator(mode="after")
+    def _ordered(self) -> _AfterChecked:
+        if self.low > self.high:
+            raise ValueError("low must not exceed high")
+        return self
+
+
+@pytest.mark.os_agnostic
+def test_an_assignment_a_model_validator_refuses_is_rolled_back() -> None:
+    model = _AfterChecked(low=1)
+    model.low = 5
+    assert model.low == 5, "positive control: a valid assignment sticks"
+
+    with pytest.raises(ValidationError, match="low must not exceed high"):
+        model.low = 50
+
+    assert (model.low, model.high) == (5, 10)
+    assert model.model_fields_set == {"low"}

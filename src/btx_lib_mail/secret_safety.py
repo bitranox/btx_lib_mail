@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Collection, Iterator, Mapping
+from collections.abc import Collection, Iterator, Mapping, Set
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from enum import Enum
@@ -398,6 +398,32 @@ def _declared_names(model: type[BaseModel]) -> frozenset[str]:
     return declared
 
 
+def _check_credential_fields(model: type[BaseModel], names: object) -> None:
+    """Refuse a ``credential_fields`` value that would silently protect nothing.
+
+    Raises:
+        TypeError: *names* is a pydantic field instead of a ClassVar, is not a
+            set of str (a plain str would be iterated as its characters), or
+            names something that is not a declared field of *model* (a typo,
+            or an alias listed instead of its field).
+    """
+    if "credential_fields" in model.model_fields:
+        raise TypeError(
+            f"{model.__name__}.credential_fields is annotated, so pydantic made it a field and it protects nothing; "
+            "assign it without an annotation or declare it ClassVar[frozenset[str]]"
+        )
+    kind = type(names).__name__
+    members: list[object] = list(cast("Set[object]", names)) if isinstance(names, Set) else []
+    if not isinstance(names, Set) or not all(isinstance(name, str) for name in members):
+        raise TypeError(f"{model.__name__}.credential_fields must be a set of field names, got {kind}")
+    unknown = sorted(str(name) for name in members if name not in model.model_fields)
+    if unknown:
+        raise TypeError(
+            f"{model.__name__}.credential_fields lists {', '.join(map(repr, unknown))}, which is not a declared field; "
+            "list field names (their aliases are hidden automatically)"
+        )
+
+
 class SecretSafeModel(BaseModel):
     """Base for models holding credentials: their validation errors are redacted.
 
@@ -434,10 +460,27 @@ class SecretSafeModel(BaseModel):
     A model that NESTS a ``SecretSafeModel`` and has a model-level validator of
     its own must itself inherit this base and list the nested field, because its
     own model-level errors quote its own input.
+
+    ``credential_fields`` is checked when the subclass is defined: it must be a
+    set of the subclass's declared field names, assigned without an annotation
+    (or declared ``ClassVar``). A typo, an alias listed instead of its field, a
+    plain str, or an annotated attribute (which pydantic turns into a field)
+    raises ``TypeError`` at class definition, because each would otherwise
+    protect nothing.
+
+    A validated assignment that fails is rolled back: pydantic applies the new
+    value before a model-level ``mode="after"`` validator runs and keeps it when
+    that validator raises, so this model restores the previous state before
+    raising the (redacted) error.
     """
 
     model_config = ConfigDict(hide_input_in_errors=True)
     credential_fields: ClassVar[frozenset[str]] = frozenset()
+
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+        super().__pydantic_init_subclass__(**kwargs)
+        _check_credential_fields(cls, cls.credential_fields)
 
     @classmethod
     def _hidden_locations(cls) -> frozenset[str]:
@@ -488,13 +531,29 @@ class SecretSafeModel(BaseModel):
     if not TYPE_CHECKING:
 
         def __setattr__(self, name: str, value: Any) -> None:
+            # pydantic writes the new value before a mode="after" model
+            # validator runs and leaves it there when that validator raises, so
+            # the state is saved here and put back on failure.
+            saved = self._assignment_state()
             try:
                 super().__setattr__(name, value)
             except ValidationError as exc:
                 original = exc
             else:
                 return
+            self._restore_assignment_state(saved)
             raise type(self)._redacted(original)
+
+        def _assignment_state(self) -> tuple[dict[str, Any], set[str], dict[str, Any] | None]:
+            extra = self.__pydantic_extra__
+            return dict(self.__dict__), set(self.__pydantic_fields_set__), None if extra is None else dict(extra)
+
+        def _restore_assignment_state(self, saved: tuple[dict[str, Any], set[str], dict[str, Any] | None]) -> None:
+            values, fields_set, extra = saved
+            self.__dict__.clear()
+            self.__dict__.update(values)
+            object.__setattr__(self, "__pydantic_fields_set__", fields_set)
+            object.__setattr__(self, "__pydantic_extra__", extra)
 
         @classmethod
         def model_validate_json(cls, *args: Any, **kwargs: Any) -> Any:

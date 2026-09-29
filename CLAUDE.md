@@ -122,6 +122,7 @@ Attachments are validated against multiple security checks:
 | `attachment_max_size_bytes`              | `int \| None`             | `26_214_400` (25 MiB) |
 | `attachment_allow_symlinks`              | `bool`                    | `False`               |
 | `attachment_raise_on_security_violation` | `bool`                    | `True`                |
+| `attachment_allow_empty_blocklists`      | `bool`                    | `False`               |
 
 ### Environment Variables
 

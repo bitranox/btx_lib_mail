@@ -44,6 +44,8 @@ btx_lib_mail` runs the same CLI.
 ## Library usage
 
 ```python
+import os
+
 from btx_lib_mail import send
 
 send(
@@ -53,7 +55,7 @@ send(
     mail_body="See CI logs.",
     mail_body_html="<p>See CI logs.</p>",  # optional HTML alternative
     smtphosts=["smtp.example.com:587", "smtp-dr.example.com:587"],  # tried in order (failover)
-    credentials=("user", "pass"),  # optional
+    credentials=("mailer", os.environ["BTX_MAIL_SMTP_PASSWORD"]),  # optional; load the secret at runtime, never a literal
     use_starttls=True,  # default True, verifies the cert by default
 )
 ```
@@ -106,8 +108,8 @@ A settings model of your own that holds a password must name every secret field 
 carries the value. Listing the name is what keeps it out of errors, whatever the field's type;
 declaring the field `SecretStr` also masks it in the model's own `repr()`. Subclassing `ConfMail`
 does not cover a field you add: EXTEND the inherited set (it already protects `smtp_password` and
-`smtphosts`), never replace it, and keep `credential_fields` a `ClassVar` (an annotation without
-`ClassVar` turns it into an ordinary field and the listing is ignored):
+`smtphosts`), never replace it, and keep `credential_fields` a `ClassVar` (annotated as below, or
+assigned with no annotation at all):
 
 ```python
 from typing import ClassVar
@@ -123,7 +125,29 @@ class ServiceSettings(ConfMail):
 ```
 
 A model that holds no SMTP settings inherits `btx_lib_mail.SecretSafeModel` directly and lists its
-own secret fields the same way.
+own secret fields the same way. `credential_fields` is checked when the class is defined: a name
+that is not a declared field (a typo such as `db_pasword`, or an alias listed instead of its field
+name), a plain str, or an annotation without `ClassVar` raises `TypeError` at import, because each
+would protect nothing.
+
+A plain pydantic model you cannot rebase onto `SecretSafeModel` gets the same treatment from
+`redact_validation_error`. Its return value is a new `ValidationError` whose `str()`, `errors()` and
+`json()` are safe to log. Raise the redacted copy OUTSIDE the `except` block: raised inside it, the
+unredacted original stays reachable as `__context__`.
+
+```python
+from pydantic import ValidationError
+
+from btx_lib_mail import redact_validation_error
+
+
+def load_api_settings(raw: dict[str, object]) -> ApiSettings:
+    try:
+        return ApiSettings.model_validate(raw)
+    except ValidationError as caught:
+        original = caught
+    raise redact_validation_error(original, credential_fields=frozenset({"api_token"}))
+```
 
 ### Large attachments (streamed, bounded memory)
 
@@ -203,13 +227,51 @@ raise `AttachmentSecurityError` by default, or log-and-skip with
 `attachment_raise_on_security_violation=False`. There are whitelist modes
 (`attachment_allowed_extensions`, `attachment_allowed_directories`). Because dangerous extensions
 and system directories are blocked by default, pass `attachment_blocked_extensions=frozenset()` (or
-an allowlist) when you deliberately send such a file.
+an allowlist) as a `send()` keyword when you deliberately send such a file.
+
+Branch on the refusal's `violation_type`, an `AttachmentViolation` member (`PATH_TRAVERSAL`,
+`SYMLINK`, `SENSITIVE_PATTERN`, `DIRECTORY`, `EXTENSION`, `SIZE`), never on the message text:
+
+```python
+from btx_lib_mail import AttachmentSecurityError, AttachmentViolation, send
+
+try:
+    send(...)
+except AttachmentSecurityError as refused:
+    if refused.violation_type is AttachmentViolation.EXTENSION:
+        print(f"{refused.path.name}: this file type may not be attached")
+    elif refused.violation_type is AttachmentViolation.DIRECTORY:
+        print(f"{refused.path.name}: files from that folder may not be attached")
+    else:
+        raise
+```
+
+An empty blocked set on a `ConfMail` (or on `conf`) is different from the `send()` keyword:
+`ConfMail` refuses an empty `attachment_blocked_extensions` or `attachment_blocked_directories`
+with a `ValidationError` unless that axis's allowlist is set or `attachment_allow_empty_blocklists=True`
+(one bool for both axes; it changes nothing while both sets are non-empty), because it would block
+nothing. A config file whose `[]` means "use the library defaults" must
+have that key DROPPED before the mapping reaches `ConfMail`, never passed through:
+
+```python
+from collections.abc import Mapping
+
+from btx_lib_mail import ConfMail
+
+_EMPTY_MEANS_DEFAULT = ("attachment_blocked_extensions", "attachment_blocked_directories")
+
+
+def build_conf(loaded: Mapping[str, object]) -> ConfMail:
+    kept = {key: value for key, value in loaded.items() if not (key in _EMPTY_MEANS_DEFAULT and value == [])}
+    return ConfMail.model_validate(kept)
+```
 
 ## Reference
 
 The API and CLI surface is discoverable from the INSTALL (always matches your version): run
 `uvx btx_lib_mail --help` for every CLI option, and `python -c "import btx_lib_mail as m; help(m)"`
-for the public API - `send`, `conf`, `ConfMail`, `validate_email_address`, `validate_smtp_host`, and
+for the public API - `send`, `conf`, `ConfMail`, `validate_email_address`, `validate_smtp_host`,
+`AttachmentSecurityError`, `AttachmentViolation`, `SecretSafeModel`, `redact_validation_error`, and
 the attachment-security constants, all re-exported from the package root.
 
 Narrative detail (every `ConfMail` field, env-var precedence, streaming, attachment security) lives

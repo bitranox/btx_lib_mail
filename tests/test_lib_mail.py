@@ -810,6 +810,127 @@ class TestDirectoryNormalisation:
         assert Path("/etc") in config.attachment_blocked_directories
 
 
+_EMPTY_BLOCKED_CASES = [
+    pytest.param("attachment_blocked_extensions", [".exe"], id="extensions"),
+    pytest.param("attachment_blocked_directories", ["/etc"], id="directories"),
+]
+
+
+class TestEmptyBlockedSetIsRefused:
+    """An empty blocked set with no allowlist blocks nothing, so ConfMail refuses it unless opted out."""
+
+    @pytest.mark.os_agnostic
+    @pytest.mark.parametrize(("field", "non_empty"), _EMPTY_BLOCKED_CASES)
+    def test_an_empty_list_from_a_config_source_is_refused(self, field: str, non_empty: list[str]) -> None:
+        assert getattr(ConfMail.model_validate({field: non_empty}), field), "positive control: a non-empty list validates"
+
+        with pytest.raises(ValidationError) as caught:
+            ConfMail.model_validate({field: []})
+
+        message = str(caught.value)
+        assert field in message
+        assert "attachment_allow_empty_blocklists" in message
+
+    @pytest.mark.os_agnostic
+    @pytest.mark.parametrize(
+        ("blocked", "allowed", "allowed_value"),
+        [
+            pytest.param("attachment_blocked_extensions", "attachment_allowed_extensions", [".pdf"], id="extensions"),
+            pytest.param("attachment_blocked_directories", "attachment_allowed_directories", ["/srv/mail"], id="directories"),
+        ],
+    )
+    def test_an_empty_blocked_set_is_accepted_when_its_own_allowlist_is_set(self, blocked: str, allowed: str, allowed_value: list[str]) -> None:
+        config = ConfMail.model_validate({blocked: [], allowed: allowed_value})
+
+        assert getattr(config, blocked) == frozenset()
+
+    @pytest.mark.os_agnostic
+    def test_the_allowlist_of_the_other_axis_does_not_excuse_an_empty_blocked_set(self) -> None:
+        with pytest.raises(ValidationError, match="attachment_blocked_extensions"):
+            ConfMail.model_validate({"attachment_blocked_extensions": [], "attachment_allowed_directories": ["/srv/mail"]})
+
+    @pytest.mark.os_agnostic
+    @pytest.mark.parametrize(("field", "non_empty"), _EMPTY_BLOCKED_CASES)
+    def test_the_opt_out_accepts_an_empty_blocked_set(self, field: str, non_empty: list[str]) -> None:
+        config = ConfMail.model_validate({field: [], "attachment_allow_empty_blocklists": True})
+
+        assert getattr(config, field) == frozenset()
+
+    @pytest.mark.os_agnostic
+    @pytest.mark.parametrize(("field", "non_empty"), _EMPTY_BLOCKED_CASES)
+    def test_assigning_an_empty_blocked_set_is_refused_and_changes_nothing(self, field: str, non_empty: list[str]) -> None:
+        config = ConfMail()
+        before = getattr(config, field)
+        assert before, "positive control: the OS default is not empty"
+
+        with pytest.raises(ValidationError):
+            setattr(config, field, frozenset())
+
+        assert getattr(config, field) == before
+        assert field not in config.model_fields_set
+
+    @pytest.mark.os_agnostic
+    def test_clearing_the_allowlist_under_an_empty_blocked_set_is_refused_and_changes_nothing(self) -> None:
+        config = ConfMail(attachment_allowed_extensions=frozenset({".pdf"}), attachment_blocked_extensions=frozenset())
+
+        with pytest.raises(ValidationError, match="attachment_blocked_extensions"):
+            config.attachment_allowed_extensions = None
+
+        assert config.attachment_allowed_extensions == frozenset({".pdf"})
+
+    @pytest.mark.os_agnostic
+    def test_withdrawing_the_opt_out_under_an_empty_blocked_set_is_refused_and_changes_nothing(self) -> None:
+        config = ConfMail(attachment_blocked_directories=frozenset(), attachment_allow_empty_blocklists=True)
+
+        with pytest.raises(ValidationError, match="attachment_blocked_directories"):
+            config.attachment_allow_empty_blocklists = False
+
+        assert config.attachment_allow_empty_blocklists is True
+
+    @pytest.mark.os_agnostic
+    def test_an_opted_out_config_lets_send_attach_a_default_blocked_extension(self, tmp_path: Path) -> None:
+        extension = sorted(ConfMail().attachment_blocked_extensions)[0]
+        attachment = tmp_path / f"payload{extension}"
+        attachment.write_bytes(b"payload")
+        # The directory allowlist keeps the platform's blocked directories (macOS
+        # /var/folders holds tmp_path) out of this test's way.
+        directories = frozenset({tmp_path})
+        guarded = ConfMail(smtphosts=["cfg.example.com"], attachment_allowed_directories=directories)
+        with pytest.raises(lib_mail.AttachmentSecurityError):
+            lib_mail.send("sender@example.com", "rcpt@example.com", "s", attachment_file_paths=[attachment], config=guarded, transport=_RecordingTransport())
+        opted_out = ConfMail(
+            smtphosts=["cfg.example.com"],
+            attachment_allowed_directories=directories,
+            attachment_blocked_extensions=frozenset(),
+            attachment_allow_empty_blocklists=True,
+        )
+        transport = _RecordingTransport()
+
+        lib_mail.send("sender@example.com", "rcpt@example.com", "s", attachment_file_paths=[attachment], config=opted_out, transport=transport)
+
+        assert len(transport.calls) == 1
+
+    @pytest.mark.os_agnostic
+    def test_an_explicit_empty_keyword_to_send_stays_allowed_under_the_default_config(self, tmp_path: Path) -> None:
+        extension = sorted(ConfMail().attachment_blocked_extensions)[0]
+        attachment = tmp_path / f"payload{extension}"
+        attachment.write_bytes(b"payload")
+        config = ConfMail(smtphosts=["cfg.example.com"], attachment_allowed_directories=frozenset({tmp_path}))
+        transport = _RecordingTransport()
+
+        lib_mail.send(
+            "sender@example.com",
+            "rcpt@example.com",
+            "s",
+            attachment_file_paths=[attachment],
+            attachment_blocked_extensions=frozenset(),
+            config=config,
+            transport=transport,
+        )
+
+        assert len(transport.calls) == 1
+
+
 class TestSizeLimitValidation:
     """Tests for attachment size limit validation."""
 

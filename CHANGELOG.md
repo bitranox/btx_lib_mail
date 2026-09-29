@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+### Security
+
+- `ConfMail` refuses an empty `attachment_blocked_extensions` or
+  `attachment_blocked_directories` when the matching allowlist
+  (`attachment_allowed_extensions` / `attachment_allowed_directories`) is not
+  set, because such a set blocks nothing. A configuration file writing `[]` to
+  mean "use the defaults" used to switch executable and system-directory
+  blocking off silently; it is now a `ValidationError` at load (and on
+  assignment to `conf`). New field `attachment_allow_empty_blocklists: bool =
+  False` opts into blocking nothing on purpose. An explicit
+  `send(attachment_blocked_*=frozenset())` keyword is not affected.
+- `SecretSafeModel` checks `credential_fields` when a subclass is defined and
+  raises `TypeError` for a name that is not a declared field (a typo, or an
+  alias listed instead of its field), for a value that is not a set of str (a
+  plain `"password"` was read as its letters), and for an annotated
+  `credential_fields` (pydantic turned it into a field, leaving the inherited
+  empty set in charge). Each of those silently protected nothing.
+
+### Fixed
+
+- A validated assignment on a `SecretSafeModel` (so on `ConfMail` and `conf`)
+  that a model-level `mode="after"` validator refuses is rolled back. pydantic
+  writes the new value before that validator runs and kept it after the error.
+
+### Changed / Breaking
+
+- `ConfMail(attachment_blocked_extensions=frozenset())` (or `_directories`)
+  without an allowlist now raises unless `attachment_allow_empty_blocklists=True`
+  is also passed.
+- A `SecretSafeModel` subclass with an invalid `credential_fields` now fails at
+  import with `TypeError`.
+
 ## [1.6.0] 2026-09-29 01:04:40
 
 ### Security

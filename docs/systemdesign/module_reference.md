@@ -87,14 +87,16 @@ rendering, attachment security, and the delivery orchestration.
   (`attachment_allowed_extensions`, `attachment_blocked_extensions`,
   `attachment_allowed_directories`, `attachment_blocked_directories`,
   `attachment_max_size_bytes`, `attachment_allow_symlinks`,
-  `attachment_raise_on_security_violation`).
+  `attachment_raise_on_security_violation`, `attachment_allow_empty_blocklists`).
 * **Validation:** coerces `smtphosts` from string/iterable and refuses a host
   carrying `@` or `/`, or any interior whitespace or control character (see
   `_refuse_credentials_in_host`; outer whitespace is trimmed first, so it does not
   count). `smtp_password` accepts `str`, `bytes` and `SecretStr` unchanged, coerces a
   whole `int` (not `bool`) to its decimal text, and refuses anything else without
   echoing it. `smtp_timeout` and `attachment_max_size_bytes` reject a non-positive
-  value, and extension/directory sets are normalised.
+  value, and extension/directory sets are normalised. A model-level validator
+  (`_refuse_an_empty_blocklist`) refuses an empty blocked extension or directory set
+  whose allowlist is not set, unless `attachment_allow_empty_blocklists` is `True`.
 * **Secret safety:** `credential_fields = frozenset({"smtp_password",
   "smtphosts"})`; a `ValidationError` raised while validating this model never
   carries the value at either location (see `secret_safety.SecretSafeModel`).
@@ -268,7 +270,12 @@ Credential-safe validation errors for pydantic models that hold secrets.
   and validation of this model nested in a list or in another model.
 * **Class variable:** `credential_fields: ClassVar[frozenset[str]] = frozenset()` -
   a subclass lists its credential field names here; every alias of those fields is
-  covered automatically.
+  covered automatically. Checked at class definition (`__pydantic_init_subclass__`,
+  `_check_credential_fields`): an undeclared name, a value that is not a set of str,
+  or an annotated `credential_fields` that became a field raises `TypeError`.
+* **Assignment rollback:** the `__setattr__` override saves the instance state and
+  restores it when the assignment raises, because pydantic keeps a new value that a
+  `mode="after"` model validator then refuses.
 * **Not covered:** malformed JSON handed to `TypeAdapter(Model).validate_json`, and
   malformed JSON handed to `model_validate_json` of a plain outer model that merely
   nests a `SecretSafeModel` field - the JSON parser fails before either model's

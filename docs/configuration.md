@@ -144,12 +144,16 @@ Key behaviours:
   neither refuses a host carrying `user:password@` or rejects a malformed password.
   Use either only for data you already trust.
 
-An empty `attachment_blocked_extensions` or `attachment_blocked_directories` set on
-`ConfMail` means "block nothing"; it is not a way to ask for the OS defaults. Passing
-`None` to `send()` for the matching parameter uses the value already on the config in use
-(the passed `config`, else the global `conf`), so it repeats an explicit empty set rather
-than restoring the OS defaults. To get the OS defaults, leave the field at its factory
-default on the config in use (do not set it to `frozenset()`).
+An empty `attachment_blocked_extensions` or `attachment_blocked_directories` set means
+"block nothing"; it is not a way to ask for the OS defaults. `ConfMail` therefore refuses
+such an empty set, at construction and on assignment, unless the matching allowlist
+(`attachment_allowed_extensions` / `attachment_allowed_directories`) is set or
+`attachment_allow_empty_blocklists=True` opts into blocking nothing. A configuration loader
+whose files write `[]` to mean "use the defaults" must drop that key before building
+`ConfMail`; to get the OS defaults, leave the field at its factory default. An explicit
+`send(attachment_blocked_extensions=frozenset())` (or `_directories`) blocks nothing for
+that one call and is not checked, while passing `None` uses the value on the config in use
+(the passed `config`, else the global `conf`).
 
 ## Environment variables and precedence
 

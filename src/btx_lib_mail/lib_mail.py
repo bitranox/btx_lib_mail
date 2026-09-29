@@ -37,7 +37,7 @@ from email.utils import formatdate
 from enum import Enum
 from typing import IO, Any, Final, Protocol, cast
 
-from pydantic import ConfigDict, Field, SecretStr, field_validator
+from pydantic import ConfigDict, Field, SecretStr, field_validator, model_validator
 
 from .secret_safety import SecretSafeModel
 
@@ -336,12 +336,15 @@ class ConfMail(SecretSafeModel):
       blocked extensions list applies instead.
     - `attachment_blocked_extensions: frozenset[str]` — Extensions to reject.
       Ignored when `attachment_allowed_extensions` is set. Defaults to
-      OS-specific dangerous extensions.
+      OS-specific dangerous extensions. An empty set with no allowlist is
+      refused unless `attachment_allow_empty_blocklists` is `True`.
     - `attachment_allowed_directories: frozenset[pathlib.Path] | None = None` —
       When set, attachments must reside under one of these directories.
     - `attachment_blocked_directories: frozenset[pathlib.Path]` — Directories
-      from which attachments cannot be read. Defaults to OS-specific sensitive
-      directories.
+      from which attachments cannot be read. Ignored when
+      `attachment_allowed_directories` is set. Defaults to OS-specific
+      sensitive directories. An empty set with no allowlist is refused unless
+      `attachment_allow_empty_blocklists` is `True`.
     - `attachment_max_size_bytes: int | None = 26_214_400` — Maximum attachment
       size in bytes (default 25 MiB). `None` disables size checking.
     - `attachment_allow_symlinks: bool = False` — When `False`, symlinks are
@@ -349,6 +352,13 @@ class ConfMail(SecretSafeModel):
     - `attachment_raise_on_security_violation: bool = True` — When `True`,
       security violations raise `AttachmentSecurityError`; when `False`, they
       log a warning and skip the attachment.
+    - `attachment_allow_empty_blocklists: bool = False` — When `False`, an empty
+      `attachment_blocked_extensions` or `attachment_blocked_directories` whose
+      allowlist is not set is refused at validation (construction and
+      assignment), because it blocks nothing: a configuration loader that turns
+      an empty list meaning "defaults" into an empty set would otherwise switch
+      the protection off silently. Set `True` to block nothing on purpose. An
+      explicit `send(attachment_blocked_*=frozenset())` keyword is never checked.
 
     **Interactions:** The CLI resolves its defaults through this model, and
     `send` reads resolved values when per-call overrides are absent.
@@ -371,6 +381,7 @@ class ConfMail(SecretSafeModel):
     attachment_max_size_bytes: int | None = 26_214_400  # 25 MiB
     attachment_allow_symlinks: bool = False
     attachment_raise_on_security_violation: bool = True
+    attachment_allow_empty_blocklists: bool = False
 
     model_config = ConfigDict(validate_assignment=True, arbitrary_types_allowed=True)
 
@@ -549,6 +560,30 @@ class ConfMail(SecretSafeModel):
         if value is not None and value <= 0:
             raise ValueError(f"attachment_max_size_bytes must be positive, got {value}")
         return value
+
+    @model_validator(mode="after")
+    def _refuse_an_empty_blocklist(self) -> ConfMail:
+        """Refuse a blocked set that blocks nothing unless that is opted into.
+
+        Why
+            ``[]`` from a config file often means "use the defaults" to the
+            loader that wrote it, while here it means "block nothing"; a silent
+            switch-off of executable and system-directory blocking is the
+            failure this prevents.
+        """
+        if self.attachment_allow_empty_blocklists:
+            return self
+        axes = (
+            ("attachment_blocked_extensions", self.attachment_blocked_extensions, "attachment_allowed_extensions", self.attachment_allowed_extensions),
+            ("attachment_blocked_directories", self.attachment_blocked_directories, "attachment_allowed_directories", self.attachment_allowed_directories),
+        )
+        for blocked_name, blocked, allowed_name, allowed in axes:
+            if not blocked and allowed is None:
+                raise ValueError(
+                    f"{blocked_name} is empty and {allowed_name} is not set, so nothing would be blocked; "
+                    f"omit {blocked_name} for the OS defaults, or set attachment_allow_empty_blocklists=True to block nothing on purpose"
+                )
+        return self
 
     def resolved_credentials(self) -> tuple[str, str] | None:
         """### resolved_credentials() -> tuple[str, str] | None {#lib-mail-confmail-resolved-credentials}

@@ -18,6 +18,9 @@ of sensitive files, dangerous executables, or oversized payloads.
 5. **Extension Filtering**  -  Dangerous extensions (`.sh`, `.exe`, `.bat`, `.py`,
    etc.) are blocked by default. Use `attachment_allowed_extensions` for
    whitelist mode or `attachment_blocked_extensions` to customize the blacklist.
+   `ConfMail` refuses an empty blocked extension or directory set when its
+   allowlist is not set, because it would block nothing; set
+   `attachment_allow_empty_blocklists=True` to do that on purpose.
 6. **Size Limit**  -  Files larger than 25 MiB (default) are rejected. Override
    via `attachment_max_size_bytes`.
 

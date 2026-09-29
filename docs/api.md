@@ -29,15 +29,16 @@ not supply per-call overrides. Update it directly or replace it wholesale with
 
 **Attachment Security Settings:**
 
-| Field                                    | Type                      | Default               | Description                                                                                                                     |
-|------------------------------------------|---------------------------|-----------------------|---------------------------------------------------------------------------------------------------------------------------------|
-| `attachment_allowed_extensions`          | `frozenset[str] \| None`  | `None`                | When set, only these extensions are allowed (whitelist mode). `None` uses blacklist mode.                                       |
-| `attachment_blocked_extensions`          | `frozenset[str]`          | OS-specific dangers   | Extensions to reject. Ignored when `attachment_allowed_extensions` is set. Defaults to dangerous extensions for the current OS. |
-| `attachment_allowed_directories`         | `frozenset[Path] \| None` | `None`                | When set, attachments must reside under one of these directories (whitelist mode).                                              |
-| `attachment_blocked_directories`         | `frozenset[Path]`         | OS-specific sensitive | Directories from which attachments cannot be read. Defaults to sensitive system directories.                                    |
-| `attachment_max_size_bytes`              | `int \| None`             | `26_214_400` (25 MiB) | Maximum attachment size in bytes. `None` disables size checking.                                                                |
-| `attachment_allow_symlinks`              | `bool`                    | `False`               | When `False`, symlinks are rejected; when `True`, symlinks are resolved and validated.                                          |
-| `attachment_raise_on_security_violation` | `bool`                    | `True`                | When `True`, security violations raise `AttachmentSecurityError`; when `False`, they log a warning and skip the attachment.     |
+| Field                                    | Type                      | Default               | Description                                                                                                                                                   |
+|------------------------------------------|---------------------------|-----------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `attachment_allowed_extensions`          | `frozenset[str] \| None`  | `None`                | When set, only these extensions are allowed (whitelist mode). `None` uses blacklist mode.                                                                     |
+| `attachment_blocked_extensions`          | `frozenset[str]`          | OS-specific dangers   | Extensions to reject. Ignored when `attachment_allowed_extensions` is set. Defaults to dangerous extensions for the current OS.                               |
+| `attachment_allowed_directories`         | `frozenset[Path] \| None` | `None`                | When set, attachments must reside under one of these directories (whitelist mode).                                                                            |
+| `attachment_blocked_directories`         | `frozenset[Path]`         | OS-specific sensitive | Directories from which attachments cannot be read. Defaults to sensitive system directories.                                                                  |
+| `attachment_max_size_bytes`              | `int \| None`             | `26_214_400` (25 MiB) | Maximum attachment size in bytes. `None` disables size checking.                                                                                              |
+| `attachment_allow_symlinks`              | `bool`                    | `False`               | When `False`, symlinks are rejected; when `True`, symlinks are resolved and validated.                                                                        |
+| `attachment_raise_on_security_violation` | `bool`                    | `True`                | When `True`, security violations raise `AttachmentSecurityError`; when `False`, they log a warning and skip the attachment.                                   |
+| `attachment_allow_empty_blocklists`      | `bool`                    | `False`               | When `False`, an empty blocked extension or directory set whose allowlist is not set is refused, because it blocks nothing. `True` blocks nothing on purpose. |
 
 Common helpers:
 
@@ -102,12 +103,16 @@ raises when every host fails for at least one recipient.
 | `attachment_allow_symlinks`              | `bool \| None`            | `False`                          | Override symlink policy. `None` uses the config in use's default.               |
 | `attachment_raise_on_security_violation` | `bool \| None`            | `True`                           | Override security violation behaviour. `None` uses the config in use's default. |
 
-An empty `attachment_blocked_extensions` or `attachment_blocked_directories` set on
-`ConfMail` means "block nothing": it is not a way to ask for the OS defaults. Passing
-`None` to `send()` for the matching parameter uses the value already on the config in use
-(the passed `config`, else the global `conf`), so it repeats an explicit empty set rather
-than restoring the OS defaults. To get the OS defaults, leave the field at its factory
-default on the config in use (do not set it to `frozenset()`).
+An empty `attachment_blocked_extensions` or `attachment_blocked_directories` set means
+"block nothing"; it is not a way to ask for the OS defaults. `ConfMail` therefore refuses
+such an empty set, at construction and on assignment, unless the matching allowlist
+(`attachment_allowed_extensions` / `attachment_allowed_directories`) is set or
+`attachment_allow_empty_blocklists=True` opts into blocking nothing. A configuration loader
+whose files write `[]` to mean "use the defaults" must drop that key before building
+`ConfMail`; to get the OS defaults, leave the field at its factory default. An explicit
+`send(attachment_blocked_extensions=frozenset())` (or `_directories`) blocks nothing for
+that one call and is not checked, while passing `None` uses the value on the config in use
+(the passed `config`, else the global `conf`).
 
 #### Default Blocked Extensions
 
@@ -191,7 +196,13 @@ credential out of a `pydantic.ValidationError`:
   A subclass lists its credential field names in the class variable
   `credential_fields: ClassVar[frozenset[str]]`; every alias of those fields (via
   `Field(alias=...)` or `validation_alias=...`) is covered automatically, with no need
-  to list the alias separately. `ConfMail` is one such subclass
+  to list the alias separately. `credential_fields` is checked when the subclass is
+  defined: a name that is not a declared field (a typo, or an alias listed instead of
+  its field), a value that is not a set of str (a plain `"password"` would be read as
+  its letters), or an annotated `credential_fields` that pydantic turns into a field
+  raises `TypeError` at class definition. A validated assignment that a model-level
+  validator refuses is rolled back, so the instance keeps its previous values.
+  `ConfMail` is one such subclass
   (`credential_fields = frozenset({"smtp_password", "smtphosts"})`; `smtphosts` is
   included because a host string carrying `user:password@` is refused there, and that
   refusal must not echo the value).
