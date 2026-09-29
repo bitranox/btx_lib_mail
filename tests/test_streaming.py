@@ -13,7 +13,9 @@ from email import message_from_bytes
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
+from click.testing import CliRunner
 
+from btx_lib_mail import cli as cli_mod
 from btx_lib_mail import lib_mail
 
 if TYPE_CHECKING:
@@ -709,3 +711,127 @@ def test_a_second_334_is_refused_not_looped() -> None:
         lib_mail._login_plain_utf8(cast("smtplib.SMTP", server), "user", _UTF8_DUMMY)
     assert caught.value.smtp_code == 334
     assert len(server.sent) == 2
+
+
+# ---------------------------------------------------------------------------
+# The EHLO name the client announces (smtplib's local_hostname)
+# ---------------------------------------------------------------------------
+
+
+class _EhloRecordingHandler(_CollectingHandler):
+    """Collecting handler that also records the name each client announced in EHLO."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ehlo_names: list[str] = []
+
+    async def handle_EHLO(self, server: Any, session: Any, envelope: Any, hostname: str, responses: list[str]) -> list[str]:
+        session.host_name = hostname
+        self.ehlo_names.append(hostname)
+        return responses
+
+
+@pytest.fixture
+def ehlo_server() -> Iterator[tuple[Controller, _EhloRecordingHandler]]:
+    handler = _EhloRecordingHandler()
+    controller = _run_server(handler)
+    try:
+        yield controller, handler
+    finally:
+        controller.stop()
+
+
+@pytest.fixture
+def fresh_local_name_cache() -> Iterator[None]:
+    """Start and end with no cached default EHLO name, so a planted one never leaks."""
+    lib_mail._default_local_hostname.cache_clear()
+    yield
+    lib_mail._default_local_hostname.cache_clear()
+
+
+def _send_two(controller: Controller, **kwargs: Any) -> None:
+    lib_mail.send(
+        mail_from="sender@example.com",
+        mail_recipients=["one@example.com", "two@example.com"],
+        mail_subject="EHLO",
+        mail_body="body",
+        smtphosts=[f"127.0.0.1:{controller.port}"],
+        use_starttls=False,
+        **kwargs,
+    )
+
+
+@pytest.mark.os_agnostic
+def test_a_configured_ehlo_name_is_announced_without_a_lookup(
+    ehlo_server: tuple[Controller, _EhloRecordingHandler], monkeypatch: pytest.MonkeyPatch, fresh_local_name_cache: None
+) -> None:
+    controller, handler = ehlo_server
+
+    def refuse(name: str = "") -> str:
+        raise AssertionError(f"the client called socket.getfqdn({name!r}) although a name was configured")
+
+    monkeypatch.setattr(socket, "getfqdn", refuse)
+
+    _send_two(controller, config=lib_mail.ConfMail(smtp_local_hostname="relay.example.test"))
+
+    assert handler.ehlo_names == ["relay.example.test", "relay.example.test"]
+
+
+@pytest.mark.os_agnostic
+def test_the_default_ehlo_name_is_resolved_once_per_process(
+    ehlo_server: tuple[Controller, _EhloRecordingHandler], monkeypatch: pytest.MonkeyPatch, fresh_local_name_cache: None
+) -> None:
+    controller, handler = ehlo_server
+    lookups: list[str] = []
+
+    def counting_getfqdn(name: str = "") -> str:
+        lookups.append(name)
+        return "client.example.test"
+
+    monkeypatch.setattr(socket, "getfqdn", counting_getfqdn)
+
+    _send_two(controller)
+    _send_two(controller)
+
+    assert handler.ehlo_names == ["client.example.test"] * 4
+    assert len(lookups) == 1, f"one lookup per process, got {len(lookups)} for four connections"
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("from_env", [False, True], ids=["option", "env"])
+def test_the_cli_announces_the_local_hostname(
+    ehlo_server: tuple[Controller, _EhloRecordingHandler],
+    fresh_local_name_cache: None,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    from_env: bool,
+) -> None:
+    # The CLI also reads BTX_MAIL_* from the environment and a local .env; a
+    # developer's credentials there would make it log in to this AUTH-less server.
+    monkeypatch.setattr(cli_mod, "_DOTENV_PATH", tmp_path / "absent.env")
+    for key in ("BTX_MAIL_SMTP_USERNAME", "BTX_MAIL_SMTP_PASSWORD", "BTX_MAIL_SMTP_LOCAL_HOSTNAME", "BTX_MAIL_SENDER"):
+        monkeypatch.delenv(key, raising=False)
+    name_args = ["--local-hostname", "cli.example.test"]
+    if from_env:
+        monkeypatch.setenv("BTX_MAIL_SMTP_LOCAL_HOSTNAME", "cli.example.test")
+        name_args = []
+    controller, handler = ehlo_server
+    result = CliRunner().invoke(
+        cli_mod.cli,
+        [
+            "send",
+            "--host",
+            f"127.0.0.1:{controller.port}",
+            "--recipient",
+            "rcpt@example.com",
+            "--subject",
+            "s",
+            "--body",
+            "b",
+            "--no-starttls",
+            *name_args,
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert handler.ehlo_names == ["cli.example.test"]

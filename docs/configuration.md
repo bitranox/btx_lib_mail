@@ -79,6 +79,11 @@ Key behaviours:
 - The socket timeout defaults to `conf.smtp_timeout` (30 seconds). Override the
   value via the `timeout=` argument, the `--timeout` CLI flag, or the
   `BTX_MAIL_SMTP_TIMEOUT` environment variable / `.env` entry.
+- The client announces itself in `EHLO` with `smtp_local_hostname` when set
+  (or `local_hostname=`, `--local-hostname`, `BTX_MAIL_SMTP_LOCAL_HOSTNAME`).
+  Unset, it uses this host's fully qualified name, looked up by reverse DNS
+  once per process and reused for every connection; set a name where that
+  lookup is slow or returns something a relay rejects.
 
 ## Credentials
 
@@ -179,6 +184,7 @@ Environment variables understood by the CLI:
 | `BTX_MAIL_SMTP_USERNAME`        | Username used when STARTTLS/authentication is required.                         | `smtp-user`                               |
 | `BTX_MAIL_SMTP_PASSWORD`        | Password paired with the SMTP username.                                         | `DUMMY-PLANTED-password`                  |
 | `BTX_MAIL_SMTP_TIMEOUT`         | Socket timeout in seconds (defaults to `30`).                                   | `12.5`                                    |
+| `BTX_MAIL_SMTP_LOCAL_HOSTNAME`  | Name announced in EHLO (defaults to this host's name, looked up once).          | `relay-client.example.com`                |
 
 **Attachment Security Settings:**
 

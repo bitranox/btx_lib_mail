@@ -727,6 +727,13 @@ def cli_hello() -> None:
     default=None,
     help="Socket timeout in seconds (overrides environment).",
 )
+@option(
+    "--local-hostname",
+    "local_hostname",
+    default=None,
+    help="Name announced in EHLO (default: this host's name, looked up once). Set it where reverse DNS is slow.",
+    metavar="NAME",
+)
 # Attachment security options
 @option(
     "--attachment-allowed-ext",
@@ -785,6 +792,7 @@ def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per `sen
     username: str | None,
     password: str | None,
     timeout: float | None,
+    local_hostname: str | None,
     attachment_allowed_ext: str | None,
     attachment_blocked_ext: str | None,
     attachment_allowed_dirs: Sequence[str],
@@ -818,6 +826,8 @@ def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per `sen
     - `username: str | None`, `password: str | None` - Optional credentials.
       Both are required to enable authentication.
     - `timeout: float | None` - Optional socket timeout override in seconds.
+    - `local_hostname: str | None` - Name announced in EHLO. Falls back to
+      `BTX_MAIL_SMTP_LOCAL_HOSTNAME`, then `conf.smtp_local_hostname`.
 
     **Returns:** `None`.
 
@@ -835,6 +845,7 @@ def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per `sen
     starttls_verify_value = _resolve_bool(cli_flag=starttls_verify, env_key="BTX_MAIL_SMTP_STARTTLS_VERIFY", default=conf.smtp_starttls_verify)
     credentials = _resolve_credentials(username_value, password_value)
     timeout_value = _resolve_float(timeout, "BTX_MAIL_SMTP_TIMEOUT", default=conf.smtp_timeout)
+    local_hostname_value = local_hostname or _configured_value("BTX_MAIL_SMTP_LOCAL_HOSTNAME") or conf.smtp_local_hostname
 
     # Resolve attachment security options
     resolved_allowed_ext = _resolve_extensions(attachment_allowed_ext, "BTX_MAIL_ATTACHMENT_ALLOWED_EXT")
@@ -857,6 +868,7 @@ def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per `sen
         use_starttls=use_starttls,
         starttls_verify=starttls_verify_value,
         timeout=timeout_value,
+        local_hostname=local_hostname_value,
         attachment_allowed_extensions=resolved_allowed_ext,
         attachment_blocked_extensions=resolved_blocked_ext,
         attachment_allowed_directories=resolved_allowed_dirs,

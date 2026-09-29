@@ -83,7 +83,8 @@ rendering, attachment security, and the delivery orchestration.
   `raise_on_invalid_recipient` (`bool`), `smtp_username` (`str | None`),
   `smtp_password` (`SecretStr | None`), `smtp_use_starttls` (`bool`, default
   `True`), `smtp_starttls_verify` (`bool`, default `True`), `smtp_timeout`
-  (`float`, default `30.0`), and the attachment security fields
+  (`float`, default `30.0`), `smtp_local_hostname` (`str | None`, default
+  `None`), and the attachment security fields
   (`attachment_allowed_extensions`, `attachment_blocked_extensions`,
   `attachment_allowed_directories`, `attachment_blocked_directories`,
   `attachment_max_size_bytes`, `attachment_allow_symlinks`,
@@ -93,7 +94,9 @@ rendering, attachment security, and the delivery orchestration.
   `_refuse_credentials_in_host`; outer whitespace is trimmed first, so it does not
   count). `smtp_password` accepts `str`, `bytes` and `SecretStr` unchanged, coerces a
   whole `int` (not `bool`) to its decimal text, and refuses anything else without
-  echoing it. `smtp_timeout` and `attachment_max_size_bytes` reject a non-positive
+  echoing it. `smtp_local_hostname` must be non-empty printable ASCII without
+  spaces (`_check_local_hostname`, which never echoes the value). `smtp_timeout`
+  and `attachment_max_size_bytes` reject a non-positive
   value, and extension/directory sets are normalised. A model-level validator
   (`_refuse_an_empty_blocklist`) refuses an empty blocked extension or directory set
   whose allowlist is not set, unless `attachment_allow_empty_blocklists` is `True`.
@@ -114,9 +117,13 @@ rendering, attachment security, and the delivery orchestration.
 
 * **Purpose:** Freeze the resolved delivery knobs for one attempt.
 * **Fields:** `credentials` (`tuple[str, str] | None`), `use_starttls` (`bool`),
-  `starttls_verify` (`bool`), `timeout` (`float`).
-* **Notes:** Resolved by `_resolve_delivery_options` from per-call overrides
-  falling back to `conf`. `starttls_verify=False` keeps STARTTLS encryption but
+  `starttls_verify` (`bool`), `timeout` (`float`), `local_hostname` (`str | None`,
+  default `None`).
+* **Notes:** Resolved by `_resolve_delivery_options` from the `send` keywords
+  (bundled as `_DeliveryOverrides`) falling back to the config in use. A `None`
+  `local_hostname` makes `SmtplibTransport` use `_default_local_hostname()`,
+  smtplib's own rule (FQDN, else an address literal) evaluated once per process
+  and cached, instead of letting smtplib run a reverse DNS lookup per connection. `starttls_verify=False` keeps STARTTLS encryption but
   skips certificate/hostname validation (for internal self-signed relays); it has
   no effect when `use_starttls` is `False`.
 * **Location:** src/btx_lib_mail/lib_mail.py
@@ -326,7 +333,7 @@ consistent across the console script and `python -m`.
   `--recipient`, `--sender`, `--subject`, `--body`, `--html-body`,
   `--attachment`, `--starttls/--no-starttls`,
   `--starttls-verify/--no-starttls-verify`, `--username`, `--password`,
-  `--timeout`, and the `--attachment-*` security options, falling back to the
+  `--timeout`, `--local-hostname`, and the `--attachment-*` security options, falling back to the
   `BTX_MAIL_*` environment variables (or a local `.env`). Precedence: CLI options,
   then environment variables, then `.env` entries, then `btx_lib_mail.lib_mail.conf`.
   Delegates to `send` and echoes a summary line.

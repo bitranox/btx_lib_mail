@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Added
+
+- `ConfMail.smtp_local_hostname`, `send(local_hostname=)`, the CLI's
+  `--local-hostname` and `BTX_MAIL_SMTP_LOCAL_HOSTNAME` set the name announced
+  in `EHLO`. It must be non-empty printable ASCII without spaces; anything else
+  is refused before a connection opens. `DeliveryOptions` gains
+  `local_hostname: str | None = None`.
+
+### Changed
+
+- Without a configured name, the default `EHLO` name (smtplib's rule: the
+  host's FQDN, else an address literal) is now looked up once per process and
+  reused. smtplib ran that reverse DNS lookup for every connection, and
+  delivery opens one per recipient, so a host with slow reverse DNS paid it
+  per recipient (about 35 s each on macOS CI runners).
+
 ### Tests
 
 - The in-process aiosmtpd test servers set their own server name, so they no

@@ -26,6 +26,7 @@ not supply per-call overrides. Update it directly or replace it wholesale with
 | `smtp_use_starttls`            | `bool`              | `True`  | Enables `STARTTLS` negotiation before authentication. Set to `False` for servers that do not support STARTTLS.                                                                                                                                            |
 | `smtp_starttls_verify`         | `bool`              | `True`  | Verifies the server certificate and hostname during `STARTTLS`. Set to `False` for internal self-signed relays (encrypted, unverified).                                                                                                                   |
 | `smtp_timeout`                 | `float`             | `30.0`  | Socket timeout in seconds applied to SMTP connections.                                                                                                                                                                                                    |
+| `smtp_local_hostname`          | `str \| None`       | `None`  | Name announced in `EHLO`. When `None`, this host's name is looked up once per process and reused (an address literal such as `[192.0.2.7]` when it has no dot). Set it where reverse DNS is slow. Must be non-empty printable ASCII without spaces.       |
 
 **Attachment Security Settings:**
 
@@ -76,20 +77,21 @@ raises when every host fails for at least one recipient.
 
 **Core Parameters:**
 
-| Parameter               | Type                             | Default | Notes                                                                                                                                  |
-|-------------------------|----------------------------------|---------|----------------------------------------------------------------------------------------------------------------------------------------|
-| `mail_from`             | `str`                            | -       | Envelope sender address (`local@domain`).                                                                                              |
-| `mail_recipients`       | `str \| Sequence[str]`           | -       | Deduplicated, validated recipient addresses.                                                                                           |
-| `mail_subject`          | `str`                            | -       | UTF-8 subject line.                                                                                                                    |
-| `mail_body`             | `str`                            | `""`    | Optional plain-text body.                                                                                                              |
-| `mail_body_html`        | `str`                            | `""`    | Optional HTML body (UTF-8).                                                                                                            |
-| `smtphosts`             | `Sequence[str] \| None`          | `None`  | Host override. Falls back to `smtphosts` of the config in use (the passed `config`, else the global `conf`).                           |
-| `attachment_file_paths` | `Sequence[pathlib.Path] \| None` | `None`  | Iterable of attachment paths. Missing files raise unless `raise_on_missing_attachments` is `False` on the config in use.               |
-| `credentials`           | `tuple[str, str] \| None`        | `None`  | `(username, password)` override. Defaults to `resolved_credentials()` of the config in use.                                            |
-| `use_starttls`          | `bool \| None`                   | `None`  | When `None`, the helper uses `smtp_use_starttls` of the config in use.                                                                 |
-| `starttls_verify`       | `bool \| None`                   | `None`  | When `None`, the helper uses `smtp_starttls_verify` of the config in use. `False` skips certificate verification.                      |
-| `timeout`               | `float \| None`                  | `None`  | When `None`, the helper uses `smtp_timeout` of the config in use.                                                                      |
-| `config`                | `ConfMail \| None`               | `None`  | Settings used in place of the global `conf` for every value not passed explicitly. When `config` is passed, `conf` is not read at all. |
+| Parameter               | Type                             | Default | Notes                                                                                                                                                                                        |
+|-------------------------|----------------------------------|---------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `mail_from`             | `str`                            | -       | Envelope sender address (`local@domain`).                                                                                                                                                    |
+| `mail_recipients`       | `str \| Sequence[str]`           | -       | Deduplicated, validated recipient addresses.                                                                                                                                                 |
+| `mail_subject`          | `str`                            | -       | UTF-8 subject line.                                                                                                                                                                          |
+| `mail_body`             | `str`                            | `""`    | Optional plain-text body.                                                                                                                                                                    |
+| `mail_body_html`        | `str`                            | `""`    | Optional HTML body (UTF-8).                                                                                                                                                                  |
+| `smtphosts`             | `Sequence[str] \| None`          | `None`  | Host override. Falls back to `smtphosts` of the config in use (the passed `config`, else the global `conf`).                                                                                 |
+| `attachment_file_paths` | `Sequence[pathlib.Path] \| None` | `None`  | Iterable of attachment paths. Missing files raise unless `raise_on_missing_attachments` is `False` on the config in use.                                                                     |
+| `credentials`           | `tuple[str, str] \| None`        | `None`  | `(username, password)` override. Defaults to `resolved_credentials()` of the config in use.                                                                                                  |
+| `use_starttls`          | `bool \| None`                   | `None`  | When `None`, the helper uses `smtp_use_starttls` of the config in use.                                                                                                                       |
+| `starttls_verify`       | `bool \| None`                   | `None`  | When `None`, the helper uses `smtp_starttls_verify` of the config in use. `False` skips certificate verification.                                                                            |
+| `timeout`               | `float \| None`                  | `None`  | When `None`, the helper uses `smtp_timeout` of the config in use.                                                                                                                            |
+| `local_hostname`        | `str \| None`                    | `None`  | Name announced in `EHLO`. When `None`, the helper uses `smtp_local_hostname` of the config in use, else this host's name (looked up once per process). An unusable name raises `ValueError`. |
+| `config`                | `ConfMail \| None`               | `None`  | Settings used in place of the global `conf` for every value not passed explicitly. When `config` is passed, `conf` is not read at all.                                                       |
 
 **Attachment Security Parameters (keyword-only):**
 

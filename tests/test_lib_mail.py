@@ -4,6 +4,7 @@ from __future__ import annotations
 # host parser, context builder), which is the tests' job, not an API leak.
 # pyright: reportPrivateUsage=false
 import os
+import socket
 import ssl
 from email import message_from_bytes
 from email.message import EmailMessage
@@ -1655,3 +1656,87 @@ def test_a_passed_config_supplies_the_attachment_policy(tmp_path: Path) -> None:
 
     with pytest.raises(lib_mail.AttachmentSecurityError):
         lib_mail.send("sender@example.com", "rcpt@example.com", "s", attachment_file_paths=[attachment], config=config, transport=_RecordingTransport())
+
+
+# ---------------------------------------------------------------------------
+# The EHLO name: smtp_local_hostname / send(local_hostname=)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.os_agnostic
+def test_the_ehlo_name_is_unset_by_default() -> None:
+    assert ConfMail().smtp_local_hostname is None
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("name", ["relay.example.test", "[192.0.2.7]", "[IPv6:2001:db8::1]", "host-1"])
+def test_a_plausible_ehlo_name_is_accepted(name: str) -> None:
+    assert ConfMail(smtp_local_hostname=name).smtp_local_hostname == name
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    "name",
+    ["", "   ", "two words", "evil\r\nRCPT TO:<x@example.com>", "tab\there", "bell\x07", "bücher.example"],
+    ids=["empty", "blank", "space", "crlf", "tab", "control", "non-ascii"],
+)
+def test_an_ehlo_name_that_cannot_go_on_the_wire_is_refused(name: str) -> None:
+    with pytest.raises(ValidationError, match="smtp_local_hostname"):
+        ConfMail(smtp_local_hostname=name)
+
+
+@pytest.mark.os_agnostic
+def test_the_config_supplies_the_ehlo_name_and_a_keyword_beats_it() -> None:
+    config = ConfMail(smtphosts=["cfg.example.com"], smtp_local_hostname="cfg.example.test")
+    transport = _RecordingTransport()
+
+    lib_mail.send("sender@example.com", "rcpt@example.com", "s", config=config, transport=transport)
+    lib_mail.send("sender@example.com", "rcpt@example.com", "s", local_hostname="kw.example.test", config=config, transport=transport)
+
+    assert [delivery.local_hostname for _host, delivery in transport.calls] == ["cfg.example.test", "kw.example.test"]
+
+
+@pytest.mark.os_agnostic
+def test_an_unusable_ehlo_keyword_is_refused_before_delivery() -> None:
+    transport = _RecordingTransport()
+
+    with pytest.raises(ValueError, match="local_hostname"):
+        lib_mail.send("sender@example.com", "rcpt@example.com", "s", smtphosts=["h.example.com"], local_hostname="a b", transport=transport)
+
+    assert transport.calls == []
+
+
+def _bare_host_fqdn(name: str = "") -> str:
+    """A getfqdn() stand-in for a host whose name has no domain part."""
+    return "bare-host"
+
+
+def _documentation_address(name: str) -> str:
+    """A gethostbyname() stand-in answering with an RFC 5737 documentation address."""
+    return "192.0.2.9"
+
+
+@pytest.mark.os_agnostic
+def test_without_a_dotted_fqdn_the_default_is_the_host_address_literal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mirrors smtplib: RFC 5321 wants a domain in EHLO, else an address literal."""
+    monkeypatch.setattr(socket, "getfqdn", _bare_host_fqdn)
+    monkeypatch.setattr(socket, "gethostbyname", _documentation_address)
+    lib_mail._default_local_hostname.cache_clear()
+    try:
+        assert lib_mail._default_local_hostname() == "[192.0.2.9]"
+    finally:
+        lib_mail._default_local_hostname.cache_clear()
+
+
+@pytest.mark.os_agnostic
+def test_an_unresolvable_host_name_falls_back_to_loopback(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unresolvable(name: str) -> str:
+        raise socket.gaierror("no such host")
+
+    monkeypatch.setattr(socket, "getfqdn", _bare_host_fqdn)
+    monkeypatch.setattr(socket, "gethostbyname", unresolvable)
+    lib_mail._default_local_hostname.cache_clear()
+    try:
+        assert lib_mail._default_local_hostname() == "[127.0.0.1]"
+    finally:
+        lib_mail._default_local_hostname.cache_clear()

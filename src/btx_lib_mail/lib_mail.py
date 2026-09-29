@@ -18,12 +18,14 @@ configuration flow and delivery flow separated.
 from __future__ import annotations
 
 import base64
+import functools
 import io
 import logging
 import mimetypes
 import pathlib
 import re
 import smtplib
+import socket
 import ssl
 import sys
 import tempfile
@@ -331,6 +333,12 @@ class ConfMail(SecretSafeModel):
       validated. Has no effect when `smtp_use_starttls` is `False`.
     - `smtp_timeout: float = 30.0` - Socket timeout in seconds applied to SMTP
       connections.
+    - `smtp_local_hostname: str | None = None` - The name announced in
+      `EHLO`/`HELO`. When `None`, the host's fully qualified name is looked up
+      once per process and reused (a domain literal such as `[192.0.2.7]` when
+      it has no dot). Set it where reverse DNS is slow, since that lookup
+      otherwise delays the first connection. Must be non-empty printable ASCII
+      without spaces.
     - `attachment_allowed_extensions: frozenset[str] | None = None` - When set,
       only these extensions are allowed (whitelist mode). When `None`, the
       blocked extensions list applies instead.
@@ -372,6 +380,7 @@ class ConfMail(SecretSafeModel):
     smtp_use_starttls: bool = True
     smtp_starttls_verify: bool = True
     smtp_timeout: float = 30.0
+    smtp_local_hostname: str | None = None
 
     # Attachment security settings
     attachment_allowed_extensions: frozenset[str] | None = None
@@ -461,6 +470,14 @@ class ConfMail(SecretSafeModel):
 
         if value <= 0:
             raise ValueError(f"smtp_timeout must be positive, got {value}")
+        return value
+
+    @field_validator("smtp_local_hostname", mode="after")
+    @classmethod
+    def _validate_local_hostname(cls, value: str | None) -> str | None:
+        """Refuse an EHLO name that cannot be sent as one SMTP command argument."""
+        if value is not None:
+            _check_local_hostname(value, label="smtp_local_hostname")
         return value
 
     @field_validator("attachment_allowed_extensions", "attachment_blocked_extensions", mode="before")
@@ -618,6 +635,7 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
     use_starttls: bool | None = None,
     starttls_verify: bool | None = None,
     timeout: float | None = None,
+    local_hostname: str | None = None,
     # Attachment security parameters
     attachment_allowed_extensions: frozenset[str] | None = None,
     attachment_blocked_extensions: frozenset[str] | None = None,
@@ -666,6 +684,10 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
       Ignored unless STARTTLS runs.
     - `timeout: float | None = None` - Override socket timeout in seconds. When
       `None`, the helper uses `smtp_timeout` of the passed `config`, else `conf`.
+    - `local_hostname: str | None = None` - Override the name announced in
+      `EHLO`. When `None`, the helper uses `smtp_local_hostname` of the passed
+      `config`, else `conf`; when that is unset too, the host's own name,
+      looked up once per process.
     - `attachment_allowed_extensions: frozenset[str] | None = None` - Override
       allowed extensions (whitelist mode). When `None`, uses the passed
       `config`'s default, else `conf`'s.
@@ -703,7 +725,8 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
     raises instead of returning `False`.
 
     **Raises:**
-    - `ValueError` - When no valid recipients remain after validation.
+    - `ValueError` - When no valid recipients remain after validation, or
+      `local_hostname` is not usable as an EHLO name.
     - `FileNotFoundError` - When required attachments are missing and
       `raise_on_missing_attachments` is `True` on the config in use (the
       passed `config`, else the global `conf`).
@@ -760,10 +783,13 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
 
     delivery = _resolve_delivery_options(
         settings=settings,
-        explicit_credentials=credentials,
-        explicit_starttls=use_starttls,
-        explicit_starttls_verify=starttls_verify,
-        explicit_timeout=timeout,
+        overrides=_DeliveryOverrides(
+            credentials=credentials,
+            use_starttls=use_starttls,
+            starttls_verify=starttls_verify,
+            timeout=timeout,
+            local_hostname=local_hostname,
+        ),
     )
 
     active_transport = transport if transport is not None else _DEFAULT_TRANSPORT
@@ -805,6 +831,8 @@ class DeliveryOptions:
       hostname during `STARTTLS`; `False` keeps the traffic encrypted but skips
       verification (for internal self-signed relays).
     - `timeout: float` - Socket timeout (seconds) applied to SMTP connections.
+    - `local_hostname: str | None` - Name announced in `EHLO`; `None` lets the
+      transport use the host's own name, looked up once per process.
     """
 
     # repr=False: a transport or a debugger printing the options must not print the password.
@@ -812,16 +840,22 @@ class DeliveryOptions:
     use_starttls: bool
     starttls_verify: bool
     timeout: float
+    # Defaulted so a DeliveryOptions built without it keeps the pre-knob behaviour.
+    local_hostname: str | None = None
 
 
-def _resolve_delivery_options(
-    *,
-    settings: ConfMail,
-    explicit_credentials: tuple[str, str] | None,
-    explicit_starttls: bool | None,
-    explicit_starttls_verify: bool | None,
-    explicit_timeout: float | None,
-) -> DeliveryOptions:
+@dataclass(frozen=True)
+class _DeliveryOverrides:
+    """The delivery keywords `send` received; `None` means "take it from the settings"."""
+
+    credentials: tuple[str, str] | None = field(repr=False)
+    use_starttls: bool | None
+    starttls_verify: bool | None
+    timeout: float | None
+    local_hostname: str | None
+
+
+def _resolve_delivery_options(*, settings: ConfMail, overrides: _DeliveryOverrides) -> DeliveryOptions:
     """Resolve per-call overrides against configuration defaults.
 
     Why
@@ -831,8 +865,8 @@ def _resolve_delivery_options(
     ------
     settings:
         The `ConfMail` whose values fill in anything not passed explicitly.
-    explicit_credentials / explicit_starttls / explicit_timeout:
-        Optional overrides supplied by :func:`send`.
+    overrides:
+        The delivery keywords supplied by :func:`send`.
 
     What
         Returns an immutable snapshot applied to each SMTP attempt.
@@ -847,13 +881,56 @@ def _resolve_delivery_options(
     None; pure function.
     """
 
-    credentials = explicit_credentials or settings.resolved_credentials()
-    use_starttls = bool(explicit_starttls if explicit_starttls is not None else settings.smtp_use_starttls)
-    starttls_verify = bool(explicit_starttls_verify if explicit_starttls_verify is not None else settings.smtp_starttls_verify)
-    timeout = float(explicit_timeout if explicit_timeout is not None else settings.smtp_timeout)
+    credentials = overrides.credentials or settings.resolved_credentials()
+    use_starttls = bool(overrides.use_starttls if overrides.use_starttls is not None else settings.smtp_use_starttls)
+    starttls_verify = bool(overrides.starttls_verify if overrides.starttls_verify is not None else settings.smtp_starttls_verify)
+    timeout = float(overrides.timeout if overrides.timeout is not None else settings.smtp_timeout)
     if timeout <= 0:
         raise ValueError(f"smtp_timeout must be positive, got {timeout}")
-    return DeliveryOptions(credentials=credentials, use_starttls=use_starttls, starttls_verify=starttls_verify, timeout=timeout)
+    if overrides.local_hostname is not None:
+        _check_local_hostname(overrides.local_hostname, label="local_hostname")
+    local_hostname = overrides.local_hostname if overrides.local_hostname is not None else settings.smtp_local_hostname
+    return DeliveryOptions(
+        credentials=credentials,
+        use_starttls=use_starttls,
+        starttls_verify=starttls_verify,
+        timeout=timeout,
+        local_hostname=local_hostname,
+    )
+
+
+# EHLO takes one argument: printable ASCII, no space (RFC 5321 section 4.1.1.1).
+_EHLO_NAME_FIRST_CHAR: Final[int] = 0x21
+_EHLO_NAME_LAST_CHAR: Final[int] = 0x7E
+
+
+def _check_local_hostname(value: str, *, label: str) -> None:
+    """Raise ``ValueError`` unless *value* can be sent as the EHLO argument.
+
+    The value is not echoed: a refused name may carry control characters.
+    """
+    if not value or not all(_EHLO_NAME_FIRST_CHAR <= ord(char) <= _EHLO_NAME_LAST_CHAR for char in value):
+        raise ValueError(f"{label} must be non-empty printable ASCII without spaces")
+
+
+@functools.cache
+def _default_local_hostname() -> str:
+    """Return the EHLO name smtplib would compute, looked up once per process.
+
+    Why
+        smtplib calls ``socket.getfqdn()`` (a reverse DNS lookup) for every
+        connection it opens without ``local_hostname``, and delivery opens one
+        connection per recipient; on a host with slow reverse DNS each one
+        waits for it. The rule is smtplib's own: the FQDN when it has a dot,
+        else an address literal (RFC 5321 section 4.1.3).
+    """
+    fqdn = socket.getfqdn()
+    if "." in fqdn:
+        return fqdn
+    try:
+        return f"[{socket.gethostbyname(socket.gethostname())}]"
+    except socket.gaierror:
+        return "[127.0.0.1]"
 
 
 @dataclass(frozen=True)
@@ -1210,7 +1287,8 @@ class SmtplibTransport:
         delivery: DeliveryOptions,
     ) -> None:
         hostname, port = _parse_smtp_host(host)
-        with smtplib.SMTP(hostname, port=port or 0, timeout=delivery.timeout) as smtp_connection:
+        local_hostname = delivery.local_hostname or _default_local_hostname()
+        with smtplib.SMTP(hostname, port=port or 0, local_hostname=local_hostname, timeout=delivery.timeout) as smtp_connection:
             smtp_connection.ehlo_or_helo_if_needed()
             if delivery.use_starttls:
                 smtp_connection.starttls(context=_build_starttls_context(verify=delivery.starttls_verify))

@@ -48,20 +48,21 @@ The CLI wraps the same behaviour through rich-click. Highlights:
 
 **Core Options:**
 
-| Option                                   | Description                                                                                            |
-|------------------------------------------|--------------------------------------------------------------------------------------------------------|
-| `--host HOST`                            | SMTP host (repeat or comma-separated). Env: `BTX_MAIL_SMTP_HOSTS`.                                     |
-| `--recipient EMAIL`                      | Recipient address (repeat or comma-separated). Env: `BTX_MAIL_RECIPIENTS`.                             |
-| `--sender EMAIL`                         | Envelope sender. Env: `BTX_MAIL_SENDER`.                                                               |
-| `--subject TEXT`                         | Mail subject line (required).                                                                          |
-| `--body TEXT`                            | Plain-text email body (required).                                                                      |
-| `--html-body TEXT`                       | Optional HTML body content.                                                                            |
-| `--attachment PATH`                      | Attachment file path (repeat for multiple).                                                            |
-| `--starttls/--no-starttls`               | Force STARTTLS negotiation. Env: `BTX_MAIL_SMTP_USE_STARTTLS`.                                         |
-| `--starttls-verify/--no-starttls-verify` | Verify the server certificate during STARTTLS (default: verify). Env: `BTX_MAIL_SMTP_STARTTLS_VERIFY`. |
-| `--username TEXT`                        | SMTP username. Env: `BTX_MAIL_SMTP_USERNAME`.                                                          |
-| `--password TEXT`                        | SMTP password. Env: `BTX_MAIL_SMTP_PASSWORD`.                                                          |
-| `--timeout FLOAT`                        | Socket timeout in seconds. Env: `BTX_MAIL_SMTP_TIMEOUT`.                                               |
+| Option                                   | Description                                                                                              |
+|------------------------------------------|----------------------------------------------------------------------------------------------------------|
+| `--host HOST`                            | SMTP host (repeat or comma-separated). Env: `BTX_MAIL_SMTP_HOSTS`.                                       |
+| `--recipient EMAIL`                      | Recipient address (repeat or comma-separated). Env: `BTX_MAIL_RECIPIENTS`.                               |
+| `--sender EMAIL`                         | Envelope sender. Env: `BTX_MAIL_SENDER`.                                                                 |
+| `--subject TEXT`                         | Mail subject line (required).                                                                            |
+| `--body TEXT`                            | Plain-text email body (required).                                                                        |
+| `--html-body TEXT`                       | Optional HTML body content.                                                                              |
+| `--attachment PATH`                      | Attachment file path (repeat for multiple).                                                              |
+| `--starttls/--no-starttls`               | Force STARTTLS negotiation. Env: `BTX_MAIL_SMTP_USE_STARTTLS`.                                           |
+| `--starttls-verify/--no-starttls-verify` | Verify the server certificate during STARTTLS (default: verify). Env: `BTX_MAIL_SMTP_STARTTLS_VERIFY`.   |
+| `--username TEXT`                        | SMTP username. Env: `BTX_MAIL_SMTP_USERNAME`.                                                            |
+| `--password TEXT`                        | SMTP password. Env: `BTX_MAIL_SMTP_PASSWORD`.                                                            |
+| `--timeout FLOAT`                        | Socket timeout in seconds. Env: `BTX_MAIL_SMTP_TIMEOUT`.                                                 |
+| `--local-hostname NAME`                  | Name announced in EHLO (default: this host's name, looked up once). Env: `BTX_MAIL_SMTP_LOCAL_HOSTNAME`. |
 
 **Attachment Security Options:**
 
