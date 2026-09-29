@@ -1,4 +1,4 @@
-# Handover - btx_lib_mail, 2026-09-29 14:45
+# STALE - read 2026-09-29, work continued
 
 ## In flight
 
