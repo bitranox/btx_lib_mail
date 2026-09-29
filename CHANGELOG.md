@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.8.0] 2026-09-29 14:14:27
+
 ### Added
 
 - `ConfMail.smtp_local_hostname`, `send(local_hostname=)`, the CLI's
@@ -33,6 +35,13 @@
 - The python-send-mail skill covers the EHLO name, one connection per recipient, and
   the `smtp_` prefix of `ConfMail` fields (an unknown `ConfMail` key is ignored, not
   refused).
+
+### Build
+
+- The `[tool.pip-audit]` ignore list is empty. None of its 13 ids fired: with no
+  ignores, pip-audit reports nothing on the resolved dev tree for Python 3.10-3.14 or on
+  any project venv (each id named a package absent from the tree or one already past its
+  fix).
 
 ### Tests
 
