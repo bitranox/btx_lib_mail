@@ -9,7 +9,6 @@ import contextlib
 # pyright: reportPrivateUsage=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false
 import smtplib
 import socket
-import time
 from email import message_from_bytes
 from typing import TYPE_CHECKING, Any, cast
 
@@ -110,43 +109,59 @@ class _BdatController(Controller):
     """Controller that serves the BDAT-capable SMTP subclass."""
 
     def factory(self) -> Any:
-        return _BdatSMTP(self.handler)
+        return _BdatSMTP(self.handler, **self.SMTP_kwargs)
 
 
-# A working server reports ready in well under a second; this ceiling only bounds
-# how long a doomed start (seen on some macOS CI runners) waits before we retry on
-# a fresh port. Kept small so a runner that cannot start the server skips quickly
-# rather than burning minutes.
+# A working server reports ready in well under a second.
 _SERVER_READY_TIMEOUT = 8.0
-_SERVER_START_ATTEMPTS = 3
+_SERVER_BIND_ATTEMPTS = 3
+# The name the test server announces. Without one, aiosmtpd's SMTP falls back to
+# socket.getfqdn(), a reverse DNS lookup run inside the server thread on the first
+# connection; on macOS CI runners it takes about 30 s, so every start timed out.
+_SERVER_NAME = "localhost"
 
 
 def _run_server(handler: Any, *, controller_cls: type[Controller] = Controller, **controller_kwargs: Any) -> Controller:
-    # On macOS CI, Controller.start() intermittently times out on readiness even
-    # with a generous ready_timeout - a just-freed ephemeral port lingering in
-    # TIME_WAIT makes the readiness probe hang. Retry on a fresh port instead of
-    # failing the test for an environment flake.
-    last_error: Exception | None = None
-    for _attempt in range(_SERVER_START_ATTEMPTS):
+    # _free_port() releases the port before the server binds it, so another process
+    # can take it in between: only that bind failure is retried, on a fresh port.
+    # Any other start failure is a real defect and fails the test.
+    for attempt in range(1, _SERVER_BIND_ATTEMPTS + 1):
         controller = controller_cls(
             handler,
             hostname="127.0.0.1",
             port=_free_port(),
             ready_timeout=_SERVER_READY_TIMEOUT,
+            server_hostname=_SERVER_NAME,
             **controller_kwargs,
         )
         try:
             controller.start()
-            return controller
-        except (TimeoutError, OSError) as error:  # readiness timeout or bind race
-            last_error = error
+        except TimeoutError:
+            # A subclass of OSError, but a server that bound and then did not
+            # answer is not the bind race, so it is never retried.
+            raise
+        except OSError:
             with contextlib.suppress(Exception):
                 controller.stop()
-            time.sleep(0.5)
-    # Every retry hit an environment flake (seen only on macOS CI runners). The
-    # wire behaviour under test is OS-independent and is covered on Linux and
-    # Windows, so skip rather than fail the run on an unstartable local server.
-    pytest.skip(f"aiosmtpd Controller could not start on this runner: {last_error}")
+            if attempt == _SERVER_BIND_ATTEMPTS:
+                raise
+            continue
+        return controller
+    raise AssertionError("unreachable: the last bind attempt either returns or raises")
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("controller_cls", [Controller, _BdatController], ids=["data", "bdat"])
+def test_the_test_server_never_resolves_the_host_name(monkeypatch: pytest.MonkeyPatch, controller_cls: type[Controller]) -> None:
+    """A test server that falls back to socket.getfqdn() stalls on slow reverse DNS (macOS runners)."""
+
+    def refuse(name: str = "") -> str:
+        raise AssertionError(f"the test SMTP server called socket.getfqdn({name!r})")
+
+    monkeypatch.setattr(socket, "getfqdn", refuse)
+
+    controller = _run_server(_CollectingHandler(), controller_cls=controller_cls)
+    controller.stop()
 
 
 @pytest.fixture

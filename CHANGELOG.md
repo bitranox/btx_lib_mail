@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Tests
+
+- The in-process aiosmtpd test servers set their own server name, so they no
+  longer call `socket.getfqdn()`. That reverse DNS lookup took about 30 s on
+  macOS CI runners, so every wire test there timed out at start and was
+  skipped; the retry-then-skip wrapper that hid this is gone, and a start
+  failure now fails the test (only the port bind race is retried).
+
 ## [1.7.0] 2026-09-29 11:30:27
 
 ### Security
