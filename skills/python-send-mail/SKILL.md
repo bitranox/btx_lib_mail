@@ -19,6 +19,7 @@ description: Use when sending email from Python or the shell, especially with la
 | Send from a shell / an agent with nothing installed   | `uvx btx-lib-mail send ...`                         | installing a mailer, writing a throwaway script |
 | STARTTLS + auth, multi-host failover                  | `send(..., use_starttls=True, credentials=...)`     | rewriting the connect/login/failover loop       |
 | Refuse dangerous or sensitive attachments             | built-in attachment security (on by default)        | ad-hoc path checks                              |
+| Slow first byte, or relay rejects the EHLO greeting   | `smtp_local_hostname` / `send(local_hostname=...)`  | patching `socket.getfqdn`, renaming the host    |
 
 ## Install / run
 
@@ -94,6 +95,13 @@ send(
     config=tenant_config,
 )
 ```
+
+`ConfMail` field names are NOT the `send()` keyword names: the connection fields carry an `smtp_`
+prefix (`use_starttls` -> `smtp_use_starttls`, `starttls_verify` -> `smtp_starttls_verify`,
+`timeout` -> `smtp_timeout`, `local_hostname` -> `smtp_local_hostname`, `credentials` ->
+`smtp_username` plus `smtp_password`). An unknown key is silently IGNORED, not refused, so
+`ConfMail(use_starttls=False)` leaves STARTTLS on. Check a field name against
+`ConfMail.model_fields` rather than guessing it.
 
 A non-ASCII username or password (an umlaut, a non-Latin script) authenticates over RFC 4616 AUTH
 PLAIN automatically; stdlib `smtplib.SMTP.login` encodes every AUTH exchange as ASCII and would
@@ -211,6 +219,32 @@ precedence.
 - STARTTLS and authentication happen before either path. Certificate verification is on by default;
   opt out for an internal self-signed relay with `starttls_verify=False` (or `--no-starttls-verify`),
   which keeps the channel encrypted but skips validation.
+- Every recipient gets its own message over its own connection, even from one `send()` call with a
+  list; there is no Cc/Bcc and no connection reuse. Per-connection cost therefore multiplies by the
+  number of recipients.
+
+### The EHLO name (slow first byte, relay rejects the greeting)
+
+The client announces itself in `EHLO` with the name from `send(local_hostname=...)`, else
+`ConfMail.smtp_local_hostname` (on `conf` or on your `config=`); on the CLI, `--local-hostname`, else
+`BTX_MAIL_SMTP_LOCAL_HOSTNAME`. Available from btx_lib_mail 1.8.0. Unset, it is this host's fully
+qualified name found by reverse DNS (an address literal such as `[192.0.2.7]` when the name has no
+dot), looked up once per process and reused (before 1.8.0 it was looked up again for every
+connection, so every recipient of every send paid it). Set it when a send stalls before the first byte reaches
+the relay while the relay itself answers instantly (slow reverse DNS), or when the relay refuses the
+greeting (`501 ... HELO/EHLO argument invalid`), typically from a container whose hostname has no
+domain part:
+
+```python
+from btx_lib_mail import ConfMail, send
+
+config = ConfMail(smtphosts=["smtp.example.com:587"], smtp_local_hostname="alerts.example.com")
+send(mail_from="alerts@example.com", mail_recipients=["a@example.com", "b@example.com"], mail_subject="disk full", config=config)
+```
+
+The name must be non-empty printable ASCII without spaces; anything else is refused before a
+connection opens (`ValidationError` on `ConfMail`, `ValueError` from `send()`). Changing the
+container's hostname is not needed.
 
 ## Attachment security
 

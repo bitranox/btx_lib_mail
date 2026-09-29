@@ -30,6 +30,9 @@
   `BTX_MAIL_SMTP_LOCAL_HOSTNAME`.
 - The module reference describes the import-linter layers contract and `typed_click`
   as they are.
+- The python-send-mail skill covers the EHLO name, one connection per recipient, and
+  the `smtp_` prefix of `ConfMail` fields (an unknown `ConfMail` key is ignored, not
+  refused).
 
 ### Tests
 
