@@ -209,25 +209,10 @@ layers = [
 ]
 
 [tool.pip-audit]
-# Known vulnerabilities to ignore (unfixable or accepted risk)
-# GHSA-4xh5-x5gv-qwph: py library ReDoS (no fix available, low risk)
-# PYSEC-2022-42969: same as above (alias)
-# PYSEC-2022-43012, PYSEC-2025-49, CVE-2024-6345: setuptools CI environment issues
-ignore-vulns = [
-    "GHSA-4xh5-x5gv-qwph",
-    "PYSEC-2022-42969",
-    "PYSEC-2022-43012",
-    "PYSEC-2025-49",
-    "CVE-2024-6345",
-    "CVE-2025-69277",
-    "CVE-2026-21441",
-    "CVE-2026-22702",
-    "CVE-2026-1703",
-    "CVE-2026-26007",
-    "CVE-2026-25990",
-    "CVE-2026-4539",    # pygments 2.19.2 — ReDoS in AdlLexer, env-only, no fix available
-    "CVE-2026-25645",
-]
+# Ignore a vulnerability here only after checking that it fires on this project's
+# resolved tree (uv pip compile --extra dev) or its .venv, has no fixed release
+# to raise a floor to, and is not reachable; name the package and the reason.
+ignore-vulns = []
 
 [tool.bashate]
 # bashate style settings for .sh files (E003 excluded: indent handled by shfmt)
