@@ -470,8 +470,10 @@ class SecretSafeModel(BaseModel):
 
     A validated assignment that fails is rolled back: pydantic applies the new
     value before a model-level ``mode="after"`` validator runs and keeps it when
-    that validator raises, so this model restores the previous state before
-    raising the (redacted) error.
+    that validator raises (whatever it raises), so this model restores the
+    previous field values, fields-set and extra values before re-raising. The
+    restore is shallow: a validator that mutates a field value in place before
+    raising is not undone.
     """
 
     model_config = ConfigDict(hide_input_in_errors=True)
@@ -532,13 +534,17 @@ class SecretSafeModel(BaseModel):
 
         def __setattr__(self, name: str, value: Any) -> None:
             # pydantic writes the new value before a mode="after" model
-            # validator runs and leaves it there when that validator raises, so
-            # the state is saved here and put back on failure.
+            # validator runs and leaves it there when that validator raises
+            # (whatever it raises), so the state is saved here and put back on
+            # any failure.
             saved = self._assignment_state()
             try:
                 super().__setattr__(name, value)
             except ValidationError as exc:
                 original = exc
+            except BaseException:
+                self._restore_assignment_state(saved)
+                raise
             else:
                 return
             self._restore_assignment_state(saved)
@@ -549,9 +555,10 @@ class SecretSafeModel(BaseModel):
             return dict(self.__dict__), set(self.__pydantic_fields_set__), None if extra is None else dict(extra)
 
         def _restore_assignment_state(self, saved: tuple[dict[str, Any], set[str], dict[str, Any] | None]) -> None:
+            # One swap per attribute, so a reader on another thread never sees
+            # a half-restored __dict__ (the global conf is shared).
             values, fields_set, extra = saved
-            self.__dict__.clear()
-            self.__dict__.update(values)
+            object.__setattr__(self, "__dict__", values)
             object.__setattr__(self, "__pydantic_fields_set__", fields_set)
             object.__setattr__(self, "__pydantic_extra__", extra)
 

@@ -896,8 +896,9 @@ class TestEmptyBlockedSetIsRefused:
         # /var/folders holds tmp_path) out of this test's way.
         directories = frozenset({tmp_path})
         guarded = ConfMail(smtphosts=["cfg.example.com"], attachment_allowed_directories=directories)
-        with pytest.raises(lib_mail.AttachmentSecurityError):
+        with pytest.raises(lib_mail.AttachmentSecurityError) as refused:
             lib_mail.send("sender@example.com", "rcpt@example.com", "s", attachment_file_paths=[attachment], config=guarded, transport=_RecordingTransport())
+        assert refused.value.violation_type is lib_mail.AttachmentViolation.EXTENSION, "positive control: the default config blocks this extension"
         opted_out = ConfMail(
             smtphosts=["cfg.example.com"],
             attachment_allowed_directories=directories,

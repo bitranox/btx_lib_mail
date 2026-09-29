@@ -1593,3 +1593,58 @@ def test_an_assignment_a_model_validator_refuses_is_rolled_back() -> None:
 
     assert (model.low, model.high) == (5, 10)
     assert model.model_fields_set == {"low"}
+
+
+class _AfterRaisesTypeError(SecretSafeModel):
+    model_config = ConfigDict(validate_assignment=True, extra="allow")
+    low: int = 0
+    high: int = 10
+
+    @model_validator(mode="after")
+    def _ordered(self) -> _AfterRaisesTypeError:
+        if self.low > self.high:
+            raise TypeError("low must not exceed high")
+        return self
+
+
+@pytest.mark.os_agnostic
+def test_an_assignment_refused_with_a_non_validation_exception_is_rolled_back() -> None:
+    model = _AfterRaisesTypeError()
+
+    with pytest.raises(TypeError, match="low must not exceed high"):
+        model.low = 50
+
+    assert (model.low, model.high) == (0, 10)
+    assert model.model_fields_set == set()
+
+
+@pytest.mark.os_agnostic
+def test_a_rolled_back_assignment_restores_a_field_that_was_never_set() -> None:
+    model = _AfterChecked()
+
+    with pytest.raises(ValidationError):
+        model.low = 50
+
+    assert model.low == 0
+    assert model.model_fields_set == set()
+
+
+class _ExtraChecked(SecretSafeModel):
+    model_config = ConfigDict(validate_assignment=True, extra="allow")
+
+    @model_validator(mode="after")
+    def _no_bad_flag(self) -> _ExtraChecked:
+        if (self.model_extra or {}).get("flag") == "bad":
+            raise ValueError("flag must not be bad")
+        return self
+
+
+@pytest.mark.os_agnostic
+def test_a_refused_extra_value_is_rolled_back_and_earlier_extras_are_kept() -> None:
+    model = _ExtraChecked()
+    model.note = "kept"  # pyright: ignore[reportAttributeAccessIssue] - extra="allow"
+
+    with pytest.raises(ValidationError, match="flag must not be bad"):
+        model.flag = "bad"  # pyright: ignore[reportAttributeAccessIssue] - extra="allow"
+
+    assert model.model_extra == {"note": "kept"}

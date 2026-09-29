@@ -273,9 +273,10 @@ Credential-safe validation errors for pydantic models that hold secrets.
   covered automatically. Checked at class definition (`__pydantic_init_subclass__`,
   `_check_credential_fields`): an undeclared name, a value that is not a set of str,
   or an annotated `credential_fields` that became a field raises `TypeError`.
-* **Assignment rollback:** the `__setattr__` override saves the instance state and
-  restores it when the assignment raises, because pydantic keeps a new value that a
-  `mode="after"` model validator then refuses.
+* **Assignment rollback:** the `__setattr__` override saves the instance state
+  (`__dict__`, fields-set, extra) and restores it when the assignment raises anything,
+  because pydantic keeps a new value that a `mode="after"` model validator then refuses.
+  The restore is shallow: a value mutated in place before the raise stays mutated.
 * **Not covered:** malformed JSON handed to `TypeAdapter(Model).validate_json`, and
   malformed JSON handed to `model_validate_json` of a plain outer model that merely
   nests a `SecretSafeModel` field - the JSON parser fails before either model's

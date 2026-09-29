@@ -25,6 +25,8 @@
 - A validated assignment on a `SecretSafeModel` (so on `ConfMail` and `conf`)
   that a model-level `mode="after"` validator refuses is rolled back. pydantic
   writes the new value before that validator runs and kept it after the error.
+  The rollback covers any exception the validator raises; it is shallow, so a
+  value the validator mutated in place before raising stays mutated.
 
 ### Changed / Breaking
 
@@ -32,7 +34,8 @@
   without an allowlist now raises unless `attachment_allow_empty_blocklists=True`
   is also passed.
 - A `SecretSafeModel` subclass with an invalid `credential_fields` now fails at
-  import with `TypeError`.
+  import with `TypeError`. That includes a base class listing a field that only
+  its subclasses declare: list it in the subclass that declares the field.
 
 ## [1.6.0] 2026-09-29 01:04:40
 
