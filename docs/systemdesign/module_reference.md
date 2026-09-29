@@ -8,7 +8,8 @@ stands; for narrative usage and configuration guidance see the
 `btx_lib_mail` is a small SMTP delivery library with a rich-click CLI. The
 package is a CLI-first utility whose modules live in the adapter/transport layer,
 with `behaviors.py` acting as a thin placeholder domain. `import-linter`
-enforces that the CLI depends on the behaviour helpers only.
+enforces one layers contract: `cli` above `lib_mail` above `secret_safety` above
+`behaviors`, so a module imports only from layers below it.
 
 ## Architecture at a glance
 
@@ -352,10 +353,11 @@ consistent across the console script and `python -m`.
 
 ### btx_lib_mail.typed_click
 
-Strictly-typed wrappers (`option`, `version_option`, `argument`) over the
-rich-click decorators whose re-exported click `ParamType` is untyped. This module
-is the single boundary that carries the `# pyright: ignore[reportUnknownMemberType]`
-for that third-party gap, keeping the rest of the CLI layer strict-clean.
+Strictly-typed wrappers (`option`, `version_option`, `argument`) over rich-click's
+decorators, whose return type is partially unknown to pyright. A typed `Protocol`
+(`_RichClickDecorators`) plus a runtime no-op `cast` forwards to rich-click's real
+decorators, so `RichOption`/`RichArgument` still render help and no rule is suppressed
+anywhere in the CLI layer.
 
 * **Location:** src/btx_lib_mail/typed_click.py
 

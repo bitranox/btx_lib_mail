@@ -52,8 +52,9 @@ settings = {
     "smtp_use_starttls": True,
     "smtp_timeout": 20.0,
 }
-conf_update = ConfMail.model_validate(settings)
-conf.model_update(conf_update.model_dump())
+conf_update = ConfMail.model_validate(settings)  # validates the whole mapping at once
+for field_name in conf_update.model_fields_set:  # copy only the keys the mapping set
+    setattr(conf, field_name, getattr(conf_update, field_name))
 ```
 
 Key behaviours:
@@ -76,6 +77,11 @@ Key behaviours:
 - Messages are always rendered as UTF-8; attachments retain their binary
   payload via base64 encoding. Failed hosts are logged at WARNING level and the
   helper proceeds to the next configured server before raising.
+- A missing attachment file raises `FileNotFoundError` and an invalid recipient address
+  raises `ValueError` by default (`raise_on_missing_attachments=True`,
+  `raise_on_invalid_recipient=True`). Set either to `False` on the config, or pass it to
+  `send()`, to log a warning and skip the file or address instead. Neither has a CLI flag
+  or environment variable.
 - The socket timeout defaults to `conf.smtp_timeout` (30 seconds). Override the
   value via the `timeout=` argument, the `--timeout` CLI flag, or the
   `BTX_MAIL_SMTP_TIMEOUT` environment variable / `.env` entry.

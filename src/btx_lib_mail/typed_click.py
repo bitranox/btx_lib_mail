@@ -1,6 +1,6 @@
 """Strictly-typed wrappers for rich_click's partially-typed decorators.
 
-rich_click ships ``py.typed``, but its ``option````, ``argument`` and ``version_option``
+rich_click ships ``py.typed``, but its ``option``, ``argument`` and ``version_option``
 decorators are typed with a partially-unknown return, so the strict type checker
 reports ``reportUnknownMemberType`` at every call site. click's own decorators
 are fully typed, but they default the parameter class to ``click.Option`` rather

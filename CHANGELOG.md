@@ -18,6 +18,19 @@
   delivery opens one per recipient, so a host with slow reverse DNS paid it
   per recipient (about 35 s each on macOS CI runners).
 
+### Documentation
+
+- `docs/configuration.md` and `docs/api.md` taught `ConfMail.model_update()`, which does
+  not exist; they now update `conf` field by field (assignment is validated).
+- `docs/api.md` lists the `send(transport=)` keyword, and the attachment-security keyword
+  table shows their real default `None` (the config's value applies) instead of the
+  effective defaults, which read as if passing `None` disabled a check.
+- `docs/configuration.md` documents `raise_on_missing_attachments` and
+  `raise_on_invalid_recipient`; `.env.example` lists `BTX_MAIL_SMTP_STARTTLS_VERIFY` and
+  `BTX_MAIL_SMTP_LOCAL_HOSTNAME`.
+- The module reference describes the import-linter layers contract and `typed_click`
+  as they are.
+
 ### Tests
 
 - The in-process aiosmtpd test servers set their own server name, so they no

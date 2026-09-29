@@ -24,6 +24,7 @@ src/btx_lib_mail/
   cli.py               # rich-click CLI adapter (send, validate-email, validate-smtp-host, etc.)
   lib_mail.py          # core SMTP delivery logic, validators, configuration, security
   secret_safety.py     # SecretSafeModel, redact_validation_error: credential-safe pydantic errors
+  typed_click.py       # typed Protocol facade over rich-click's partially-typed decorators
 
 tests/
   conftest.py          # shared fixtures (cli_runner, traceback isolation)
@@ -32,13 +33,17 @@ tests/
   test_lib_mail.py     # core mail logic + validator + security tests
   test_metadata.py     # metadata constant tests
   test_module_entry.py # python -m entry tests
-  test_scripts.py      # automation script tests
+  test_secret_safety.py # SecretSafeModel / redact_validation_error tests
+  test_streaming.py    # wire tests (real aiosmtpd): DATA/BDAT, dot-stuffing, STARTTLS+AUTH, EHLO name, memory bound
 ```
 
 ## Key Architecture
 
 - **Config**: `ConfMail` (Pydantic model) holds SMTP and security settings; global `conf` instance
-- **Delivery**: `send()` -> `_prepare_*` helpers -> `_compose_to_spool` (once) -> `_deliver_to_any_host` -> injected `Transport` (`SmtplibTransport` streams DATA/BDAT)
+- **Delivery**: `send()` -> `_prepare_*` helpers -> per recipient `_deliver_to_any_host` -> `_compose_to_spool` (once per
+  recipient, reused across hosts) -> injected `Transport` (`SmtplibTransport` streams DATA/BDAT, one connection per recipient)
+- **EHLO name**: `ConfMail.smtp_local_hostname` / `send(local_hostname=)` / `--local-hostname` /
+  `BTX_MAIL_SMTP_LOCAL_HOSTNAME`; unset, `_default_local_hostname()` computes smtplib's default once per process
 - **Validation**: `validate_email_address()` and `validate_smtp_host()` are public;
   `validate_smtp_host()` refuses a host carrying `@` or `/`, or an interior whitespace or
   control character, without echoing the value
@@ -63,7 +68,8 @@ tests/
 - `ruff` for linting/formatting (line-length 160)
 - `pyright` strict mode
 - `bandit` security scanning
-- `import-linter` enforces layer contracts (CLI depends on behaviors only)
+- `import-linter` enforces one layers contract: `cli` above `lib_mail` above `secret_safety` above `behaviors`
+  (a module may import only from layers below it)
 
 ## Public API
 
@@ -72,6 +78,8 @@ from btx_lib_mail import (
     # Core
     ConfMail, conf, send, logger,
     validate_email_address, validate_smtp_host,
+    # Scaffold helpers (behaviors.py)
+    CANONICAL_GREETING, emit_greeting, noop_main, print_info, raise_intentional_failure,
     # Delivery seam
     DeliveryOptions, Transport,
     # Security

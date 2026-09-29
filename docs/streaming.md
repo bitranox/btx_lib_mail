@@ -56,6 +56,13 @@ The message is composed once per recipient and the same spool is reused across e
 in `smtphosts`. A failed host is logged and the next is tried without re-rendering the
 message.
 
+Each recipient gets its own SMTP connection, so any fixed per-connection cost is paid once
+per recipient. The client's `EHLO` name is one such cost when it is not configured: it is
+then this host's fully qualified name, found by reverse DNS. The library looks it up once
+per process and reuses it; set `smtp_local_hostname` (or `send(local_hostname=...)`,
+`--local-hostname`, `BTX_MAIL_SMTP_LOCAL_HOSTNAME`) to skip the lookup entirely or to
+announce a name the relay accepts.
+
 ## Custom transports
 
 Delivery goes through a `Transport` protocol. `send()` uses `SmtplibTransport` by default,

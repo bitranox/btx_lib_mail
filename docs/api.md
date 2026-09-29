@@ -45,8 +45,9 @@ Common helpers:
 
 - `ConfMail.model_validate(data: dict[str, Any]) -> ConfMail`  -  validate crude
   configuration (dicts, strings, iterables) into a typed instance.
-- `ConfMail.model_update(new_values: dict[str, Any]) -> ConfMail`  -  update an
-  existing instance in place.
+- Assignment to a field (`conf.smtp_timeout = 10.0`) is validated like construction
+  (`validate_assignment=True`); there is no bulk-update method, so update the global
+  `conf` field by field, or pass your own instance with `send(config=...)`.
 - `ConfMail.resolved_credentials() -> tuple[str, str] | None`  -  return the
   `(username, password)` pair when both credential fields are populated.
 
@@ -92,18 +93,19 @@ raises when every host fails for at least one recipient.
 | `timeout`               | `float \| None`                  | `None`  | When `None`, the helper uses `smtp_timeout` of the config in use.                                                                                                                            |
 | `local_hostname`        | `str \| None`                    | `None`  | Name announced in `EHLO`. When `None`, the helper uses `smtp_local_hostname` of the config in use, else this host's name (looked up once per process). An unusable name raises `ValueError`. |
 | `config`                | `ConfMail \| None`               | `None`  | Settings used in place of the global `conf` for every value not passed explicitly. When `config` is passed, `conf` is not read at all.                                                       |
+| `transport`             | `Transport \| None`              | `None`  | Delivery adapter; `None` uses `SmtplibTransport`. Inject a test double or an alternative transport here (see [streaming](streaming.md#custom-transports)).                                   |
 
 **Attachment Security Parameters (keyword-only):**
 
-| Parameter                                | Type                      | Default                          | Notes                                                                           |
-|------------------------------------------|---------------------------|----------------------------------|---------------------------------------------------------------------------------|
-| `attachment_allowed_extensions`          | `frozenset[str] \| None`  | `None` (blacklist mode)          | Override allowed extensions (whitelist mode). `None` uses blocked list.         |
-| `attachment_blocked_extensions`          | `frozenset[str] \| None`  | OS-specific dangerous extensions | Override blocked extensions. `None` uses the config in use's default.           |
-| `attachment_allowed_directories`         | `frozenset[Path] \| None` | `None` (blacklist mode)          | Override allowed directories (whitelist mode). `None` uses blocked list.        |
-| `attachment_blocked_directories`         | `frozenset[Path] \| None` | OS-specific sensitive dirs       | Override blocked directories. `None` uses the config in use's default.          |
-| `attachment_max_size_bytes`              | `int \| None`             | `26_214_400` (25 MiB)            | Override max attachment size. `None` uses the config in use's default.          |
-| `attachment_allow_symlinks`              | `bool \| None`            | `False`                          | Override symlink policy. `None` uses the config in use's default.               |
-| `attachment_raise_on_security_violation` | `bool \| None`            | `True`                           | Override security violation behaviour. `None` uses the config in use's default. |
+| Parameter                                | Type                      | Default                 | Notes                                                                                                                                                                                          |
+|------------------------------------------|---------------------------|-------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `attachment_allowed_extensions`          | `frozenset[str] \| None`  | `None` (blacklist mode) | Override allowed extensions (whitelist mode). `None` uses blocked list.                                                                                                                        |
+| `attachment_blocked_extensions`          | `frozenset[str] \| None`  | `None`                  | Override blocked extensions. `None` uses the config in use's value (OS-specific dangerous extensions by default).                                                                              |
+| `attachment_allowed_directories`         | `frozenset[Path] \| None` | `None` (blacklist mode) | Override allowed directories (whitelist mode). `None` uses blocked list.                                                                                                                       |
+| `attachment_blocked_directories`         | `frozenset[Path] \| None` | `None`                  | Override blocked directories. `None` uses the config in use's value (OS-specific sensitive directories by default).                                                                            |
+| `attachment_max_size_bytes`              | `int \| None`             | `None`                  | Override max attachment size. `None` uses the config in use's value (25 MiB by default), so `None` here never disables the check; set `attachment_max_size_bytes=None` on the config for that. |
+| `attachment_allow_symlinks`              | `bool \| None`            | `None`                  | Override symlink policy. `None` uses the config in use's value (`False` by default).                                                                                                           |
+| `attachment_raise_on_security_violation` | `bool \| None`            | `None`                  | Override security violation behaviour. `None` uses the config in use's value (`True` by default).                                                                                              |
 
 An empty `attachment_blocked_extensions` or `attachment_blocked_directories` set means
 "block nothing"; it is not a way to ask for the OS defaults. `ConfMail` therefore refuses
