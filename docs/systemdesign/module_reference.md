@@ -90,10 +90,11 @@ rendering, attachment security, and the delivery orchestration.
   `attachment_allowed_directories`, `attachment_blocked_directories`,
   `attachment_max_size_bytes`, `attachment_allow_symlinks`,
   `attachment_raise_on_security_violation`, `attachment_allow_empty_blocklists`).
-* **Validation:** coerces `smtphosts` from string/iterable and refuses a host
-  carrying `@` or `/`, or any interior whitespace or control character (see
-  `_refuse_credentials_in_host`; outer whitespace is trimmed first, so it does not
-  count). `smtp_password` accepts `str`, `bytes` and `SecretStr` unchanged, coerces a
+* **Validation:** coerces `smtphosts` from string/iterable, drops a blank entry,
+  and runs `validate_smtp_host` on every other one (`_checked_hosts`): a host
+  carrying `@` or `/`, or any interior whitespace or control character, is refused
+  without echoing it (see `_refuse_credentials_in_host`; outer whitespace is trimmed
+  first, so it does not count), and so is a malformed port, bracket or host name. `smtp_password` accepts `str`, `bytes` and `SecretStr` unchanged, coerces a
   whole `int` (not `bool`) to its decimal text, and refuses anything else without
   echoing it. `smtp_local_hostname` must be non-empty printable ASCII without
   spaces (`_check_local_hostname`, which never echoes the value). `smtp_timeout`
@@ -224,7 +225,11 @@ rendering, attachment security, and the delivery orchestration.
 * `validate_email_address(address)` raises `ValueError` when the address does not
   match `EMAIL_PATTERN`.
 * `validate_smtp_host(host)` raises `ValueError` for a malformed host, accepting
-  `hostname`, `hostname:port`, `[IPv6]`, and `[IPv6]:port`.
+  `hostname`, `hostname:port`, `[IPv6]`, and `[IPv6]:port`. It refuses a comma (two
+  hosts in one string), then hands the bracketed form to `_validate_bracketed_host`
+  and every other form to `_validate_named_host`, which refuses more than one colon
+  (an IPv6 address without brackets, whose last group would read as the port) and an
+  empty host name; both check the port with `_validate_port` (1-65535).
 * `_refuse_credentials_in_host(host)` returns `host` unchanged, or raises
   `ValueError` (without echoing the value) when it carries `@` or `/`: a host string
   such as `user:password@relay` would put the password into every log line and
@@ -233,7 +238,8 @@ rendering, attachment security, and the delivery orchestration.
   terminal control sequence); callers run it after `_normalise_host`, which trims
   OUTER whitespace, so an ordinary `" smtp.example.com "` still validates.
   `validate_smtp_host` calls it first, and `ConfMail`'s `smtphosts` coercion
-  (`_collect_host_inputs`) calls it directly.
+  (`_collect_host_inputs` -> `_checked_hosts`) reaches it through
+  `validate_smtp_host`.
 * `validate_email_address` and `validate_smtp_host` are public; `_parse_smtp_host`
   reuses `validate_smtp_host` before splitting hostname and port.
 * `_prepare_recipients` validates each address with `validate_email_address`; in

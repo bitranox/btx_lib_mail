@@ -65,7 +65,13 @@ Key behaviours:
   keyword names (`use_starttls`, `timeout`, `credentials`) are not field names,
   so passing them to `ConfMail` fails instead of being dropped.
 - `smtphosts` may be a string (single host), list, or tuple; items can include
-  an explicit `host:port` override. Hosts are normalised, deduplicated, and
+  an explicit `host:port` override. Each entry is checked with
+  `validate_smtp_host` when the model is built or assigned, so a port outside
+  1-65535 or not a number, an unclosed IPv6 bracket, an IPv6 address without
+  brackets (`fe80::1`), a port with no host name (`:25`) or two hosts in one
+  entry (`a.example.com,b.example.com`) raises a `ValidationError` at load time
+  instead of failing the first delivery. A blank entry (an empty environment
+  value, a trailing comma) is dropped. Hosts are normalised, deduplicated, and
   tried in order.
 - STARTTLS is enabled by default (`smtp_use_starttls=True`). The helper performs
   the handshake with the system SSL context before authenticating; set the flag

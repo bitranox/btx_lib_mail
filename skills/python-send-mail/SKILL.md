@@ -125,6 +125,17 @@ def build_conf(section: Mapping[str, object]) -> ConfMail:
 A `credentials` pair is not a `ConfMail` key either: split it into `smtp_username` and
 `smtp_password` before validating.
 
+From btx_lib_mail 3.0.0 `ConfMail` checks every `smtphosts` entry with `validate_smtp_host` when it
+is built, validated or assigned, so a malformed host raises `pydantic.ValidationError` (`loc`
+`("smtphosts",)`, the host never repeated) at load time instead of at the first `send()`: a port
+outside 1-65535 or not a number (`smtp.example.com:58o7`), an unclosed IPv6 bracket, an IPv6
+address without brackets (`fe80::1`; write `[fe80::1]:25`), a port with no host name (`:25`), and
+two hosts in one entry (`smtphosts="a.example.com:25,b.example.com:25"` is refused; write
+`ConfMail(smtphosts=["a.example.com:25", "b.example.com:25"])`). A blank entry, such as
+an environment variable that is set but empty, is dropped, so `""` means no hosts. Before 3.0.0
+`ConfMail` accepted all of these and the mistake surfaced only at delivery. Only the CLI splits a
+comma-separated `--host` or `BTX_MAIL_SMTP_HOSTS`; a Python caller splits such a string itself.
+
 A non-ASCII username or password (an umlaut, a non-Latin script) authenticates over RFC 4616 AUTH
 PLAIN automatically; stdlib `smtplib.SMTP.login` encodes every AUTH exchange as ASCII and would
 otherwise raise `UnicodeEncodeError`. A server offering only LOGIN (no PLAIN) cannot take a

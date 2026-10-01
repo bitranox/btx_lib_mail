@@ -755,6 +755,95 @@ def test_validate_smtp_host_rejects_ipv6_port_out_of_range() -> None:
         lib_mail.validate_smtp_host("[::1]:0")
 
 
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("host", ["a.example.com:25,b.example.com:25", "a.example.com,b.example.com"])
+def test_validate_smtp_host_rejects_several_hosts_in_one_string(host: str) -> None:
+    with pytest.raises(ValueError, match="one host per entry"):
+        lib_mail.validate_smtp_host(host)
+
+
+@pytest.mark.os_agnostic
+def test_validate_smtp_host_rejects_a_port_without_a_host_name() -> None:
+    with pytest.raises(ValueError, match="missing host name"):
+        lib_mail.validate_smtp_host(":25")
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("host", ["fe80::1", "2001:db8::1:587"])
+def test_validate_smtp_host_rejects_an_unbracketed_ipv6_address(host: str) -> None:
+    with pytest.raises(ValueError, match=r"IPv6 address must be in brackets"):
+        lib_mail.validate_smtp_host(host)
+
+
+@pytest.mark.os_agnostic
+def test_validate_smtp_host_rejects_empty_brackets() -> None:
+    with pytest.raises(ValueError, match="missing host name"):
+        lib_mail.validate_smtp_host("[]:25")
+
+
+# ---------------------------------------------------------------------------
+# ConfMail.smtphosts runs validate_smtp_host
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    ("host", "reason"),
+    [
+        ("smtp.example.com:99999", "port must be 1-65535"),
+        ("smtp.example.com:abc", "invalid smtp port"),
+        ("[::1", "missing closing bracket"),
+        ("a.example.com:25,b.example.com:25", "one host per entry"),
+    ],
+)
+def test_conf_mail_refuses_a_malformed_host_at_construction(host: str, reason: str) -> None:
+    with pytest.raises(ValidationError) as caught:
+        ConfMail(smtphosts=[host])
+    (error,) = caught.value.errors()
+    assert error["loc"] == ("smtphosts",)
+    assert reason in error["msg"]
+
+
+@pytest.mark.os_agnostic
+def test_conf_mail_refuses_a_malformed_host_on_assignment() -> None:
+    config = ConfMail()
+    with pytest.raises(ValidationError, match="port must be 1-65535"):
+        config.smtphosts = ["smtp.example.com:0"]
+    assert config.smtphosts == []
+
+
+@pytest.mark.os_agnostic
+def test_conf_mail_refusal_of_a_malformed_host_does_not_echo_it() -> None:
+    # Without an '@', "user:<secret>" passes the userinfo check and is refused by
+    # the port parser, whose message quotes the host; ConfMail must not repeat it.
+    with pytest.raises(ValidationError) as caught:
+        ConfMail(smtphosts=["user:pw-not-a-port-7731"])
+    assert "invalid smtp port" in str(caught.value), "positive control: refused by the port check"
+    assert "pw-not-a-port-7731" not in str(caught.value)
+    assert "pw-not-a-port-7731" not in caught.value.json()
+
+
+@pytest.mark.os_agnostic
+def test_conf_mail_refusal_of_an_out_of_range_port_does_not_echo_the_digits() -> None:
+    # The scrub hides the host as a whole; a message that re-quotes a PART of it
+    # (the parsed port) would still carry an all-digit secret written after a colon.
+    with pytest.raises(ValidationError) as caught:
+        ConfMail(smtphosts=["mailer:98765432"])
+    assert "port must be 1-65535" in str(caught.value), "positive control: refused by the range check"
+    assert "98765432" not in str(caught.value)
+    assert "98765432" not in caught.value.json()
+
+
+@pytest.mark.os_agnostic
+def test_conf_mail_reads_a_blank_host_string_as_no_hosts() -> None:
+    assert ConfMail.model_validate({"smtphosts": "  "}).smtphosts == []
+
+
+@pytest.mark.os_agnostic
+def test_conf_mail_drops_a_blank_entry_from_a_host_list() -> None:
+    assert ConfMail(smtphosts=["smtp.example.com", " "]).smtphosts == ["smtp.example.com"]
+
+
 # ---------------------------------------------------------------------------
 # IPv6 delivery integration (via _parse_smtp_host -> FakeTransport)
 # ---------------------------------------------------------------------------

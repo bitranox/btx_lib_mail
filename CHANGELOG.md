@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- `ConfMail` checks every `smtphosts` entry with `validate_smtp_host` at construction,
+  `model_validate` and assignment, so a malformed host raises `ValidationError` (`loc`
+  `("smtphosts",)`) when the configuration is built; before, `ConfMail` refused only userinfo, a
+  path and control characters, and a bad port or an unclosed IPv6 bracket first failed at
+  `send()`. The refusal does not repeat the host: `smtphosts` is a credential field.
+- A blank `smtphosts` entry (an empty string, whitespace only) is dropped, so an empty
+  environment value means "no hosts"; before, it was kept as `""` and skipped later by `send()`.
+- `validate_smtp_host` also refuses a comma (`a.example.com,b.example.com`: two hosts in one
+  string, which it read as host `a.example.com:25,b.example.com` on port 25), a port with no host
+  name (`:25`, `[]:25`) and an IPv6 address without brackets (`fe80::1`, which it read as host
+  `fe80:` on port 1). The CLI still accepts `--host a.example.com,b.example.com` and a
+  comma-separated `BTX_MAIL_SMTP_HOSTS`: it splits on commas before validating.
+
+### Fixed
+
+- The out-of-range port message no longer ends in `, got <port>`. `ConfMail` scrubs the host from
+  its errors as a whole string, and the re-quoted port escaped that scrub, so an all-digit secret
+  written after a colon (`mailer:98765432`) reached the message.
+
+### Documentation
+
+- `docs/api.md`, `docs/configuration.md`, `docs/cli.md`, the module reference and the
+  `python-send-mail` skill describe the host checks.
+
 ## [2.0.0] 2026-10-01 13:18:45
 
 ### Changed (breaking)

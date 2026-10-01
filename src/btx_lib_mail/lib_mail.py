@@ -2150,15 +2150,31 @@ def _collect_host_inputs(value: Any) -> list[str]:
     if value is None:
         return []
     if isinstance(value, str):
-        return [_refuse_credentials_in_host(_normalise_host(value))]
+        return _checked_hosts([value])
     if isinstance(value, Iterable):  # type: ignore[reportUnnecessaryIsInstance]
-        hosts: list[str] = []
-        for item in cast("Iterable[Any]", value):
-            if not isinstance(item, str):
-                raise ValueError("smtphosts entries must be strings")
-            hosts.append(_refuse_credentials_in_host(_normalise_host(item)))
-        return hosts
+        items = list(cast("Iterable[Any]", value))
+        if not all(isinstance(item, str) for item in items):
+            raise ValueError("smtphosts entries must be strings")
+        return _checked_hosts(cast("list[str]", items))
     raise ValueError("smtphosts must be a string, list of strings, or tuple of strings")
+
+
+def _checked_hosts(raw_hosts: list[str]) -> list[str]:
+    """Normalise each host, drop the blank ones, and validate the rest.
+
+    Why
+        A blank entry is what an empty environment value or a trailing comma
+        in a list produces; :func:`send` already skips it, so the model reads
+        it as absent rather than as a malformed host. Every other entry is
+        checked with :func:`validate_smtp_host`, so a typo in a port or an
+        IPv6 bracket is refused when the configuration is built instead of at
+        the first delivery.
+    """
+    hosts = [_normalise_host(raw) for raw in raw_hosts]
+    present = [host for host in hosts if host]
+    for host in present:
+        validate_smtp_host(host)
+    return present
 
 
 def validate_email_address(address: str) -> None:
@@ -2230,8 +2246,11 @@ def validate_smtp_host(host: str) -> None:
     - ``[IPv6]:port``  (e.g. ``[::1]:25``)
     - ``[IPv6]``       (e.g. ``[::1]``)
 
-    Never accepted: userinfo (user:password@host) or a URL (smtp://...); the
-    error does not echo the value.
+    Never accepted: userinfo (user:password@host) or a URL (smtp://...), for
+    which the error does not echo the value; several hosts in one string
+    (``a.example.com,b.example.com``); a port with no host name (``:25``);
+    and an IPv6 address without brackets (``fe80::1``), whose last group
+    would otherwise be read as the port.
 
     Why
         Validates SMTP host syntax early so errors surface before delivery.
@@ -2253,10 +2272,14 @@ def validate_smtp_host(host: str) -> None:
     --------
     >>> validate_smtp_host("smtp.example.com:587")
     >>> validate_smtp_host("[::1]:25")
-    >>> validate_smtp_host("bad:host:format")
+    >>> validate_smtp_host("smtp.example.com:abc")
     Traceback (most recent call last):
         ...
-    ValueError: invalid smtp port in "bad:host:format"
+    ValueError: invalid smtp port in "smtp.example.com:abc"
+    >>> validate_smtp_host("a.example.com,b.example.com")
+    Traceback (most recent call last):
+        ...
+    ValueError: SMTP host must be one host per entry; pass several hosts as a list, got "a.example.com,b.example.com"
     """
 
     if not host:
@@ -2264,25 +2287,39 @@ def validate_smtp_host(host: str) -> None:
 
     _refuse_credentials_in_host(host)
 
+    if "," in host:
+        raise ValueError(f'SMTP host must be one host per entry; pass several hosts as a list, got "{host}"')
     if host.startswith("["):
-        # IPv6 bracketed address: [addr] or [addr]:port
-        bracket_end = host.find("]")
-        if bracket_end == -1:
-            raise ValueError(f'missing closing bracket in "{host}"')
-        remainder = host[bracket_end + 1 :]
-        if remainder == "":
-            # bare [IPv6] - valid, no port
-            return
-        if not remainder.startswith(":"):
-            raise ValueError(f'unexpected characters after bracket in "{host}"')
-        port_str = remainder[1:]
-        _validate_port(port_str, host)
-        return
+        _validate_bracketed_host(host)
+    else:
+        _validate_named_host(host)
 
-    if ":" not in host:
+
+def _validate_bracketed_host(host: str) -> None:
+    """Validate ``[IPv6]`` or ``[IPv6]:port``."""
+    bracket_end = host.find("]")
+    if bracket_end == -1:
+        raise ValueError(f'missing closing bracket in "{host}"')
+    if bracket_end == 1:
+        raise ValueError(f'missing host name in "{host}"')
+    remainder = host[bracket_end + 1 :]
+    if remainder == "":
         return
-    _, port_str = host.rsplit(":", 1)
-    _validate_port(port_str, host)
+    if not remainder.startswith(":"):
+        raise ValueError(f'unexpected characters after bracket in "{host}"')
+    _validate_port(remainder[1:], host)
+
+
+def _validate_named_host(host: str) -> None:
+    """Validate ``hostname`` or ``hostname:port`` (a name or an IPv4 address)."""
+    if host.count(":") > 1:
+        # "fe80::1" would otherwise split into host "fe80:" and port 1.
+        raise ValueError(f'IPv6 address must be in brackets, as [addr] or [addr]:port, in "{host}"')
+    name, separator, port_str = host.partition(":")
+    if not name:
+        raise ValueError(f'missing host name in "{host}"')
+    if separator:
+        _validate_port(port_str, host)
 
 
 def _validate_port(port_str: str, original: str) -> None:
@@ -2311,7 +2348,9 @@ def _validate_port(port_str: str, original: str) -> None:
     except ValueError as exc:
         raise ValueError(f'invalid smtp port in "{original}"') from exc
     if not (min_port <= port <= max_port):
-        raise ValueError(f'port must be {min_port}-{max_port} in "{original}", got {port}')
+        # The message names the host and nothing derived from it: a model that scrubs
+        # the host as a credential can only remove the whole string, not a re-quoted port.
+        raise ValueError(f'port must be {min_port}-{max_port} in "{original}"')
 
 
 def _parse_smtp_host(address: str) -> tuple[str, int | None]:
