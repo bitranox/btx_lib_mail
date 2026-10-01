@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [3.0.1] 2026-10-02 00:26:45
+
 ### Fixed
 
 - A host 2.x already refused is refused with its 2.x message again. 3.0.0 ran its new checks
