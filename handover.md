@@ -1,4 +1,4 @@
-# Handover - btx_lib_mail, 2026-10-01 16:45 (2.0.0 shipped; rank 20 next)
+# STALE - read 2026-10-01, work continued
 
 Read `OPEN-WORK.md` first. It holds exactly one open item, rank 20.
 
