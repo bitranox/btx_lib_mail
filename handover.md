@@ -1,84 +1,99 @@
-# STALE - read 2026-09-29, work continued
+# Handover - btx_lib_mail rank 20 (CLI template onto ConfMail), 2026-10-01 12:45
 
 ## In flight
 
-Nothing part-done. btx_lib_mail 1.8.0 is released (tag v1.8.0; CI, CodeQL and Release green;
-PyPI serves wheel and sdist; a no-cache `uvx` install shows `--local-hostname`). The
-bitranox-skills mirror of the skill is pushed as 7.30.5 with its ci and publish workflows green.
-`make clean-all` ran after the release, so there is no `.venv*`; the next `make` rebuilds them.
+Rank 20 is designed and planned; NO implementation code is written yet. The work happens in the
+CLI template, not in this repo:
+
+- Template clone: `../../apps/bitranox_template_py_cli`, master
+  = origin/master at `9dae7b8`, clean, CI green (CI and CodeQL, all 15 cells).
+- Design (approved by the owner, both sections): `.private/plans/2026-10-01-confmail-move-design.md`
+  in the template clone.
+- Implementation plan (7 tasks, self-reviewed): `.private/plans/2026-10-01-confmail-move-template-plan.md`
+  in the template clone. The owner chose to run it in a SEPARATE fresh session (this one).
+- Owner decisions 1-7 with reasons: `EXECUTION-USER-REVIEW.md` in the template clone (gitignored).
+- `.private/` in the template clone is untracked on purpose: excluded per clone via
+  `.git/info/exclude` (same as btx_lib_mail), because the owner keeps plan docs out of public
+  history.
 
 ## Committed, or not
 
-- This file and OPEN-WORK.md (rank 27 closed) are committed locally on master but NOT pushed: a
-  push starts a full CI run, so they ride along with the next real change.
-- Everything else is pushed (btx_lib_mail master at the 1.8.0 release commit; bitranox-skills at
-  17c53f8f).
-- The bitranox-skills clone still holds ANOTHER session's staged PLAN-JEV-SKILL.md and
-  TODO-JEV.md. They are not ours; commit there only with a pathspec.
+- btx_lib_mail: `7568daa`, `e0730c8` (OPEN-WORK edits) plus this handover are committed locally,
+  NOT pushed (a push starts full CI; they ride with the next real change).
+- Template: everything pushed (`eb38a84` wiring fixes merged, `676b5b8` colour fix, `9dae7b8`
+  width + 3.10 fix). The `wiring-fixes` worktree and its branch are removed.
+- Untracked by design: the template's `.private/plans/*` and `EXECUTION-USER-REVIEW.md`.
 
 ## Decided, and why
 
-- Rank 35 = option (c) (user): an EHLO-name knob (ConfMail.smtp_local_hostname,
-  send(local_hostname=), --local-hostname, BTX_MAIL_SMTP_LOCAL_HOSTNAME) AND the default looked up
-  once per process (`_default_local_hostname`, functools.cache, smtplib's own rule). The lookup runs
-  lazily in SmtplibTransport, never in send(), so an injected Transport never touches DNS.
-- EHLO name validation is "non-empty, every char 0x21-0x7E" (RFC 5321 argument), not a hostname
-  grammar: relays accept names a strict grammar would refuse.
-- Rank 90: ignore-vulns emptied entirely. CI's pip-audit audits `uv pip compile --extra dev`, not
-  the runner image (the old premise was stale); 0 findings on 3.10-3.14 and on every venv.
-- The skill says "Available from btx_lib_mail 1.8.0". The mirror was held until PyPI served 1.8.0
-  so it never taught a keyword the published package rejects.
-- Fix mode for the release was ask-big (user).
+- Owner decisions 1-7 (template `EXECUTION-USER-REVIEW.md`): file/env keys keep their names;
+  unknown `[email]` keys refused (exit 78); expose `starttls_verify` + `local_hostname`, not
+  `allow_empty_blocklists`; drop `_sanitize_exception_message`; WHOLE template delta per app (owner
+  overrode my email-slice recommendation); one batch approval for the 19 app pushes, releases
+  separate; Python uses ConfMail's names (`smtphosts`, `smtp_use_starttls`, `smtp_timeout`), no
+  aliases.
+- lib_layered_config stays the only config reader; `load_email_config_from_dict` only translates
+  the merged `[email]` section (the owner asked; the design now says so explicitly).
+- Derived from decision 2 while planning: a comma-separated string for an attachment list is
+  refused (was silently ignored); empty `allowed_*` AND `blocked_*` lists are dropped (ConfMail
+  reads `[]` allowed as "allow nothing").
+- The template's tests got an autouse fixture (`deterministic_cli_output`) pinning rich-click's
+  colour and width globals: CI colours output (GITHUB_ACTIONS) and Windows renders 79 columns.
+  It is template-owned, so the whole-delta rollout carries it to every app.
 
 ## Decided against, and why
 
-- ConfMail unknown keys (rank 85) NOT changed to extra="forbid" in 1.8.0: it breaks callers that
-  pass extra keys (an app model, a loader passing a whole table), so it needs an owner decision.
-  The skill now warns about it.
-- The skill does not mention the CLI falling back to conf.smtp_local_hostname: a CLI process only
-  ever sees the default conf, where it is None.
+- No per-test env change for colour: rich-click reads FORCE_COLOR/PY_COLORS/GITHUB_ACTIONS and the
+  width once at import into module globals; only resetting the globals works.
+- No alias layer for the old Python names (decision 7).
+- The rollout plan is NOT written yet on purpose: its steps depend on the finished template.
 
 ## Still open, untouched
 
-See OPEN-WORK.md: ranks 20 (USER, CLI template on ConfMail), 30, 80, 85.
+See OPEN-WORK.md: ranks 20 (USER, in progress as above), 30, 40, 85.
 
 ## Lessons for the next nap
 
-- When an aiosmtpd Controller "started, but not responding" timeout hits only macOS CI, pass server_hostname: without it SMTP.__init__ calls socket.getfqdn() in the server thread (about 30 s reverse DNS on macOS runners); fact reference-aiosmtpd-controller-start-flakes-on-macos-ci-retry-fresh-port-then-skip is WRONG (TIME_WAIT, "first few start fine", retry-then-skip) and must be rewritten.
-- When smtplib.SMTP is built without local_hostname, it calls socket.getfqdn() per connection; on a host with slow reverse DNS every connection pays it (btx_lib_mail 1.8.0 caches it per process and offers smtp_local_hostname).
-- When a CI skip count is identical across every cell of an OS, read it as a deterministic defect, not a flake; count PASSED/SKIPPED per job before accepting a "runner flake" label.
-- When pydantic validate_assignment meets a mode="after" model validator that raises, the new value stays on the instance (pydantic 2.13.5); roll back or use field validators.
-- When annotating credential_fields on a SecretSafeModel subclass without ClassVar, pydantic makes it a field and the inherited empty set wins; 1.7.0 refuses it with TypeError.
-- When a pydantic model keeps the default extra="ignore", a caller passing a sibling API's keyword name (ConfMail(use_starttls=False)) gets no error and the setting is silently dropped; a GREEN skill probe surfaced it.
-- When a backlog line's premise describes how CI works ("CI scans the runner image"), read the current workflow file before acting on it: the template had already changed and the premise was stale.
-- When a doc audit subagent reports a file "complete", check its enumeration yourself: one audit missed a nonexistent ConfMail.model_update in docs/api.md that the other found.
-- tooling: repo-gate blocks EVERY commit in a tool repo while its skill differs from the marketplace twin (it compares working trees), so an unreleased skill edit cannot be committed alone; sync the mirror working tree first, or commit the rest with the skill temporarily restored from HEAD.
-- tooling: `patch` leaves SKILL.md.orig beside a hunk applied with an offset, and repo-gate then reports "only in the marketplace" drift; delete the .orig.
-- tooling: a subagent of type feature-dev:code-reviewer had no Bash, so it could not run the probes its prompt required; use a type with Bash for adversarial reviews that must execute code.
+- When CI fails on every cell, read EVERY failing cell's log before fixing: I read one Ubuntu
+  log, pushed, and two more defects (Windows width, Python 3.10) surfaced on the next run.
+- When a test asserts plain text on rich-click output, know rich-click freezes colour and width
+  into module globals at import (FORCE_TERMINAL, WIDTH, MAX_WIDTH); a per-test env change does
+  nothing, reset the globals.
+- When a pydantic test spells an annotation via `isinstance(x, type)`, know `list[str]` passes
+  that check on Python 3.10 only; check `typing.get_args` first.
+- When an in-memory/test adapter re-parses config itself, every CLI test skips the production
+  translation; make the testing composition call the real pure function.
+- When ConfMail receives `[]` for `attachment_allowed_extensions`, it means "allow nothing", not
+  "no allowlist"; a template that writes `[]` for "defaults" must drop it.
+- The previous handover's 11 lessons (aiosmtpd macOS, getfqdn, pydantic validate_assignment
+  rollback, repo-gate mirror drift, and others) may not have been napped: they are at
+  `git show 973fe6c:handover.md`.
 
 ## Exact next action
 
-Rank 20 (USER) is top: write the plan for moving the bitranox CLI template onto
-ConfMail/SecretSafeModel with btx_lib_mail>=1.8.0, starting with precondition 2 in its OPEN-WORK
-line (the shipped-default-config regression test for the empty blocked-list trap). Rank 85 bears on
-it directly: a template loader that maps its TOML keys onto ConfMail wrongly is silently ignored
-today, so ask the owner about rank 85 (refuse unknown keys vs warn) before or while planning.
+Rank 20 is the top USER item. In the template clone, execute the plan with
+bitranox:process-plan-executor (or subagent-driven-development), starting at Task 0:
+
+```bash
+cd ../../apps/bitranox_template_py_cli && git worktree add .claude/worktrees/confmail -b feat/confmail-email-config master
+```
+
+Read the design and the plan first; Task 7 needs the owner's explicit yes before the public push.
 
 ## Files that matter
 
-- src/btx_lib_mail/lib_mail.py (ConfMail, _DeliveryOverrides, _check_local_hostname,
-  _default_local_hostname, SmtplibTransport)
-- src/btx_lib_mail/cli.py (--local-hostname)
-- tests/test_streaming.py (EHLO wire tests), tests/test_lib_mail.py (EHLO config tests)
-- skills/python-send-mail/SKILL.md and its mirror
-  plugins/bitranox/skills/coding-python-send-mail/SKILL.md in bitranox-skills
-- EXECUTION-USER-REVIEW.md (gitignored decision log)
+- Template: `src/bitranox_template_py_cli/adapters/email/config.py` (rewritten by Task 2),
+  `adapters/email/transport.py`, `adapters/cli/commands/email/_common.py`,
+  `adapters/memory/email.py`, `composition/__init__.py`, `adapters/config/defaultconfig.d/50-mail.toml`,
+  `tests/conftest.py` (`deterministic_cli_output`), `tests/test_mail.py`,
+  `tests/test_email_password_secrecy.py`, `tests/test_cli_email_config_errors.py`.
+- btx_lib_mail: `src/btx_lib_mail/lib_mail.py` (`ConfMail`, `send(config=)`), read-only for rank 20.
 
 ## How to verify
 
-- env -u VIRTUAL_ENV make test
-- python3 ../../KI/bitranox-skills/plugins/bitranox/hooks/repo-gate.py --mirror-of .
-- curl -s https://pypi.org/pypi/btx-lib-mail/json | python3 -c "import json,sys;print(json.load(sys.stdin)['info']['version'])"
+- Template baseline: `cd ../../apps/bitranox_template_py_cli && env -u VIRTUAL_ENV make test` (expect `{"result":"pass"}`).
+- CI state: `gh run list --repo bitranox/bitranox_template_py_cli --commit 9dae7b8c514aeaefb71936ed9d456af2ac7de92e --json name,conclusion`.
+- Plan files exist: `ls ../../apps/bitranox_template_py_cli/.private/plans/`.
 
 > Read this, then replace the first line with `# STALE - read <date>, work continued`. Do not
 > delete it - if this session ends badly it is the only record of where things stood.
