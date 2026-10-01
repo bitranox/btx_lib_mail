@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [3.0.0] 2026-10-01 18:44:25
+
 ### Changed (breaking)
 
 - `ConfMail` checks every `smtphosts` entry with `validate_smtp_host` at construction,
