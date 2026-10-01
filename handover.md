@@ -1,4 +1,4 @@
-# Handover - btx_lib_mail, 2026-10-01 18:30 (rank 20 template part landed; rollout plan next)
+# STALE - read 2026-10-01 18:31, work continued
 
 Read `OPEN-WORK.md` first: rank 20 (USER) and rank 30 (FOUND) are open.
 
