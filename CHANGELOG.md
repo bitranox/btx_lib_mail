@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A host 2.x already refused is refused with its 2.x message again. 3.0.0 ran its new checks
+  before the port check, so `smtp.test.com:587:extra` was refused as an unbracketed IPv6
+  address instead of `invalid smtp port`, and a consumer test pinning the 2.x message went red.
+  The port and bracket checks now run first; the comma, extra-colon and empty-name checks run
+  only on hosts they let through. The one 2.x text that stays changed is the range message
+  without its `, got <port>` suffix (3.0.0, a credential leak).
+- A host name with a second colon (`smtp.example.com:587:25`) is refused as `more than one ":"`,
+  rather than as an IPv6 address it is not.
+
 ## [3.0.0] 2026-10-01 18:44:25
 
 ### Changed (breaking)

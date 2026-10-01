@@ -755,6 +755,48 @@ def test_validate_smtp_host_rejects_ipv6_port_out_of_range() -> None:
         lib_mail.validate_smtp_host("[::1]:0")
 
 
+# Every host 2.x refused, with the exact message 2.0.0 gave (recorded from the published 2.0.0).
+# The 3.x checks may only refuse hosts 2.x ACCEPTED; a host 2.x refused keeps its message, so a
+# consumer test written against 2.x stays green. The one deliberate difference: the range message
+# lost its ", got <port>" suffix, which leaked digits past ConfMail's scrub.
+_REFUSED_BY_2X = [
+    ("smtp.test.com:587:extra", 'invalid smtp port in "smtp.test.com:587:extra"'),
+    ("bad:host:format", 'invalid smtp port in "bad:host:format"'),
+    ("host:abc", 'invalid smtp port in "host:abc"'),
+    ("host:0", 'port must be 1-65535 in "host:0"'),
+    ("host:99999", 'port must be 1-65535 in "host:99999"'),
+    ("host:", 'invalid smtp port in "host:"'),
+    ("[::1", 'missing closing bracket in "[::1"'),
+    ("[::1]garbage", 'unexpected characters after bracket in "[::1]garbage"'),
+    ("[::1]:abc", 'invalid smtp port in "[::1]:abc"'),
+    ("[::1]:0", 'port must be 1-65535 in "[::1]:0"'),
+    ("[::1]:", 'invalid smtp port in "[::1]:"'),
+    ("", "empty SMTP host"),
+    (":abc", 'invalid smtp port in ":abc"'),
+    (":", 'invalid smtp port in ":"'),
+    ("a.example.com:abc,b", 'invalid smtp port in "a.example.com:abc,b"'),
+    ("a,b:abc", 'invalid smtp port in "a,b:abc"'),
+    ("[::1]:25,x", 'invalid smtp port in "[::1]:25,x"'),
+    ("[::1],[::2]", 'unexpected characters after bracket in "[::1],[::2]"'),
+    ("a:25,", 'invalid smtp port in "a:25,"'),
+]
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(("host", "message_2x"), _REFUSED_BY_2X)
+def test_validate_smtp_host_keeps_the_2x_message_for_a_host_2x_refused(host: str, message_2x: str) -> None:
+    with pytest.raises(ValueError) as caught:
+        lib_mail.validate_smtp_host(host)
+    assert str(caught.value) == message_2x
+
+
+@pytest.mark.os_agnostic
+def test_validate_smtp_host_names_the_extra_colon_for_a_host_name() -> None:
+    # Not an IPv6 address at all, so the message must not read as if it were one.
+    with pytest.raises(ValueError, match='more than one ":"'):
+        lib_mail.validate_smtp_host("smtp.example.com:587:25")
+
+
 @pytest.mark.os_agnostic
 @pytest.mark.parametrize("host", ["a.example.com:25,b.example.com:25", "a.example.com,b.example.com"])
 def test_validate_smtp_host_rejects_several_hosts_in_one_string(host: str) -> None:

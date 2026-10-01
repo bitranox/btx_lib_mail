@@ -225,11 +225,14 @@ rendering, attachment security, and the delivery orchestration.
 * `validate_email_address(address)` raises `ValueError` when the address does not
   match `EMAIL_PATTERN`.
 * `validate_smtp_host(host)` raises `ValueError` for a malformed host, accepting
-  `hostname`, `hostname:port`, `[IPv6]`, and `[IPv6]:port`. It refuses a comma (two
-  hosts in one string), then hands the bracketed form to `_validate_bracketed_host`
-  and every other form to `_validate_named_host`, which refuses more than one colon
-  (an IPv6 address without brackets, whose last group would read as the port) and an
-  empty host name; both check the port with `_validate_port` (1-65535).
+  `hostname`, `hostname:port`, `[IPv6]`, and `[IPv6]:port`. It runs two passes in a
+  fixed order. `_validate_port_and_brackets` checks the brackets and the port
+  (`_validate_port`, 1-65535, split off at the last colon); `_validate_host_shape` then
+  refuses, among the hosts the first pass let through, a comma (two hosts in one
+  string), a colon left in the host name (an IPv6 address without brackets, whose last
+  group would read as the port) and an empty host name. The order keeps every message
+  the first pass gives unchanged from 2.x, so a host 2.x refused is refused with the
+  same text; the second pass only refuses hosts 2.x accepted.
 * `_refuse_credentials_in_host(host)` returns `host` unchanged, or raises
   `ValueError` (without echoing the value) when it carries `@` or `/`: a host string
   such as `user:password@relay` would put the password into every log line and

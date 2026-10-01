@@ -2287,21 +2287,22 @@ def validate_smtp_host(host: str) -> None:
 
     _refuse_credentials_in_host(host)
 
-    if "," in host:
-        raise ValueError(f'SMTP host must be one host per entry; pass several hosts as a list, got "{host}"')
-    if host.startswith("["):
-        _validate_bracketed_host(host)
-    else:
-        _validate_named_host(host)
+    # The port and bracket checks run first and the shape checks only on what they let
+    # through, so a host the 2.x checks refused keeps its 2.x message and a caller (or a
+    # consumer's test) matching that message is unaffected.
+    _validate_port_and_brackets(host)
+    _validate_host_shape(host)
 
 
-def _validate_bracketed_host(host: str) -> None:
-    """Validate ``[IPv6]`` or ``[IPv6]:port``."""
+def _validate_port_and_brackets(host: str) -> None:
+    """Validate the bracket syntax and the port, splitting a port off at the last colon."""
+    if not host.startswith("["):
+        if ":" in host:
+            _validate_port(host.rsplit(":", 1)[1], host)
+        return
     bracket_end = host.find("]")
     if bracket_end == -1:
         raise ValueError(f'missing closing bracket in "{host}"')
-    if bracket_end == 1:
-        raise ValueError(f'missing host name in "{host}"')
     remainder = host[bracket_end + 1 :]
     if remainder == "":
         return
@@ -2310,16 +2311,24 @@ def _validate_bracketed_host(host: str) -> None:
     _validate_port(remainder[1:], host)
 
 
-def _validate_named_host(host: str) -> None:
-    """Validate ``hostname`` or ``hostname:port`` (a name or an IPv4 address)."""
-    if host.count(":") > 1:
-        # "fe80::1" would otherwise split into host "fe80:" and port 1.
-        raise ValueError(f'IPv6 address must be in brackets, as [addr] or [addr]:port, in "{host}"')
-    name, separator, port_str = host.partition(":")
+def _validate_host_shape(host: str) -> None:
+    """Refuse a host whose port is valid but whose shape is not one host name.
+
+    Runs after :func:`_validate_port_and_brackets`, so every input reaching it has a
+    well-formed port; what is left is two hosts in one string, a host name containing a
+    colon (an IPv6 address without brackets, whose last group would read as the port),
+    and an empty host name.
+    """
+    if "," in host:
+        raise ValueError(f'SMTP host must be one host per entry; pass several hosts as a list, got "{host}"')
+    if host.startswith("["):
+        name = host[1 : host.find("]")]
+    else:
+        name = host.rsplit(":", 1)[0] if ":" in host else host
+        if ":" in name:
+            raise ValueError(f'more than one ":" in "{host}"; an IPv6 address must be in brackets, as [addr] or [addr]:port')
     if not name:
         raise ValueError(f'missing host name in "{host}"')
-    if separator:
-        _validate_port(port_str, host)
 
 
 def _validate_port(port_str: str, original: str) -> None:
