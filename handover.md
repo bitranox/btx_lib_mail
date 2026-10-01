@@ -1,107 +1,101 @@
-# STALE - read 2026-10-01, work continued
+# Handover - btx_lib_mail, 2026-10-01 18:30 (rank 20 template part landed; rollout plan next)
 
-Read `OPEN-WORK.md` first. It holds exactly one open item, rank 20.
+Read `OPEN-WORK.md` first: rank 20 (USER) and rank 30 (FOUND) are open.
 
 ## In flight
 
-Nothing is part-done. Rank 20 (CLI template onto ConfMail, then the 19-app rollout) is designed
-and planned, with no implementation code yet:
-
-- Template clone: `../../apps/bitranox_template_py_cli`, master = origin/master at `9dae7b8`,
-  clean.
-- Design: `.private/plans/2026-10-01-confmail-move-design.md` in the template clone.
-- Plan: `.private/plans/2026-10-01-confmail-move-template-plan.md` in the template clone.
-  It has 8 tasks, numbered 0-7.
-- Both plan files are untracked by design (`.git/info/exclude`).
-- Owner decisions 1-7: in the template's `EXECUTION-USER-REVIEW.md` (gitignored).
-- New since the plan was written: the template raises its floors to `btx_lib_mail>=2.0.0` and
-  `lib_layered_config>=6.1.0`, both on PyPI since 2026-10-01. 2.0.0 refuses unknown `ConfMail`
-  keys, which matches decision 2 (unknown `[email]` keys refused). Fold the floor raise into the
-  plan's dependency step. The plan itself does not mention it yet.
+Nothing is part-done. Rank 20's template half is finished and pushed: bitranox_template_py_cli
+`master` = `e5bee77`, CI and CodeQL green on all 15 cells (3.10-3.14 x Linux/macOS/Windows). The
+worktree and branch `feat/confmail-email-config` are removed. The rollout to the derived apps has
+not started; no rollout plan exists yet.
 
 ## Committed, or not
 
-- btx_lib_mail: released and pushed through `a47f8b1` (tag `v2.0.0`).
-- btx_lib_mail: two local commits are NOT pushed, `7cf1eaa` and `2231233` (backlog only), plus
-  this handover's commit. They ride with the next real change; a push alone starts full CI.
-- bitranox-skills: `6a755d60` (coding-python-send-mail synced to 2.0.0, plugin 7.30.7) pushed,
-  CI green.
-- Local toolbox (not a repo): new `~/.claude/skills/toolbox/tools/backlogcheck.py` plus its tests
-  and an index row.
+- btx_lib_mail: 7 local commits NOT pushed (backlog/handover only, `origin/master..4d3a998`) plus this
+  handover's commit. They ride with the next real change (a push alone starts full CI). Before any
+  push, scan the whole unpushed range for private names.
+- Template clone (`../../apps/bitranox_template_py_cli`): clean, master = origin/master.
+  Untracked by design: `.private/plans/` (design, plan with amendments A1-A17 and the review
+  record, `tools/rename_email_fields.py` + its test). Gitignored: `EXECUTION-USER-REVIEW.md`
+  (owner decisions 1-7, this session's autonomous decisions).
 
 ## Decided, and why
 
-- Rank 85: `ConfMail` refuses unknown keys (`extra="forbid"`), shipped as 2.0.0 (major, honest
-  semver). All 24 construction sites in the tree pass real field names only, so none broke.
-- Rank 30: it was stale, because lib_layered_config 6.0.0 already keeps leading zeros. Rank 40
-  (display Console) shipped in lib_layered_config 6.1.0. The owner said open lib items go to the
-  lib_layered_config session. It now tracks the residual as its rank 71: a secret spelled
-  `null`/`none` silently becomes no password.
-- Status-hygiene misses reached recurrence 3. Escalated to the owner-approved jig `backlogcheck`
-  instead of a fourth rewording.
+- Every deviation from the template plan, and the opus review's findings with verdicts, are in the
+  plan file's Amendments and Review sections; autonomous calls are in the template's
+  `EXECUTION-USER-REVIEW.md`. Do not re-derive them from the diff.
+- From Python, `EmailConfig` follows ConfMail only for the attachment settings (empty allowed list
+  = allow nothing, empty blocked set needs the opt-in, size 0 refused); blank credentials/sender,
+  a lone recipient string and an all-digit user name keep the old reading in the model itself.
+  Reason: design says inherit ConfMail; the old lenient text readings were kept because dropping
+  them made a blank user name attempt a login.
+- `ConfMail` does not validate host syntax, so the template's `EmailConfig` runs
+  `validate_smtp_host`; the library fix is rank 30.
 
 ## Decided against, and why
 
-- No release-time alias or warning mode for unknown keys. The owner chose refuse + 2.0.0 over
-  warn-once and over a 1.9.0 minor.
-- The private repo name was redacted from two unpushed btx_lib_mail commits before the push. The
-  repo is public, and only the unpushed range could still be rewritten.
+- Review finding M2 (show which host index failed): declined, btx_lib_mail scrubs hosts as a
+  credential field on purpose.
+- Did not push btx_lib_mail's backlog-only commits on their own (full CI for no code).
 
 ## Still open, untouched
 
-- See OPEN-WORK.md rank 20.
+- Rank 30 (FOUND): ConfMail accepts malformed hosts - see OPEN-WORK.md.
+- Not done this session: the SessionStart nudges (dream due, 4 self-improve near-miss
+  candidates, 4 pending upstream contributions).
 
 ## Lessons for the next nap
 
-- When a peer pushes to a shared repo under your unpushed commit and the main checkout holds
-  someone else's staged files, cherry-pick onto origin in a temp worktree and push from there.
-  Then realign the main branch with a compare-and-swap `git update-ref` plus `git checkout HEAD -- <only the differing files>`.
-- When uv says "there is no version of X==N" seconds after a publish even with `--no-cache`, while
-  the PyPI simple index lists the files, retry a minute later before suspecting the release (CDN
-  lag; it resolved on the next try).
-- When a skill documents a library behaviour change, version-qualify it ("from 2.0.0 ...; before
-  2.0.0 ..."), so the mirror is correct whether or not the release is out yet.
-- When a test asserts plain text on rich-click output, know that rich-click freezes colour and
-  width into module globals at import (FORCE_TERMINAL, WIDTH, MAX_WIDTH). Reset the globals; a
-  per-test env change does nothing.
-- When a pydantic test checks an annotation via `isinstance(x, type)`, know that `list[str]`
-  passes on Python 3.10 only. Check `typing.get_args` first.
-- When an in-memory/test adapter re-parses config itself, every CLI test skips the production
-  translation. Make the testing composition call the real pure function.
-- When ConfMail receives `[]` for `attachment_allowed_extensions`, it means "allow nothing", not
-  "no allowlist". A template that writes `[]` for "defaults" must drop it.
-- When CI fails on every cell, read every failing cell's log before fixing, not one.
-- tooling: `bmk testintegration` exits 2 (pytest exit 5) in a repo with no integration-marked
-  tests (queued in contrib_queue).
-- The lessons of an older handover may not have been napped either: `git show 973fe6c:handover.md`.
+- When an error renderer maps a location through a field-to-file-key rename, map only locations
+  that are fields: an unknown key's location is already what the user wrote, and mapping it named
+  a different, valid key (`smtp_timeout` -> `email.timeout: unknown key`).
+- When a library drops `ctx` from errors on credential fields (btx_lib_mail SecretSafeModel),
+  pydantic's `Value error, ` prefix stays on `msg`; strip it from `msg` as well as reading `ctx`.
+- When subclassing a library model to inherit its validation, diff the Python-caller semantics
+  field by field (blank, lone string, int, 0, empty list) against the old model, not only the
+  config-file path: the file path was covered by tests and the Python path silently changed.
+- When a security test refuses for the right outcome, assert WHICH check refused (violation type
+  and reason): an empty allowlist passed through refused the same file for the wrong reason and
+  let a mutation arm survive.
+- When a test creates files under pytest's tmp_path while the code blocks `/var`, expect macOS CI
+  to fail (tmp_path is under /private/var there); reproduce on Linux with `--basetemp` under /var.
+- When a CHANGELOG or plan describes a library's error text, read the raise site first: the plan's
+  "a rejected login shows the server's 535 reply" was false.
+- When running pyright by hand in a worktree, pass `--pythonpath .venv/bin/python`, or every
+  import is unresolved (1304 phantom errors).
+- When backgrounding a gate (ci_wait, make test), run it alone with nothing after it, so the
+  task's exit code is the gate's.
+- The previous handover's lessons were not napped this session either: `git show fe5e8d1:handover.md`.
 
 ## Exact next action
 
-Rank 20 is the only item. In the template clone, execute the plan with
-bitranox:process-plan-executor (or subagent-driven-development), starting at Task 0:
+Rank 20 is the top item. In a fresh session, write the rollout plan with
+bitranox:process-plan-writing-plans from Section 2 of
+`../../apps/bitranox_template_py_cli/.private/plans/2026-10-01-confmail-move-design.md`.
+Start by re-enumerating the targets (never reuse the stored list):
 
 ```bash
-cd ../../apps/bitranox_template_py_cli && git worktree add .claude/worktrees/confmail -b feat/confmail-email-config master
+find <softdev root> -name config.py -path '*adapters/email/*' -not -path '*/.venv*' -not -path '*/.claude/worktrees/*'
 ```
 
-Read the design and the plan first. Add the floor raises (btx_lib_mail>=2.0.0,
-lib_layered_config>=6.1.0) to the plan's dependency step. Task 7 (the public push) needs the
-owner's explicit yes.
+The template delta to carry is `44fa65e..e5bee77` on top of whatever template base each app
+started from (design: infer the base per app; owner decision 5: whole template delta per app;
+decision 6: one approval table before any push).
 
 ## Files that matter
 
-- Template: `src/bitranox_template_py_cli/adapters/email/config.py`, `adapters/email/transport.py`,
-  `adapters/cli/commands/email/_common.py`, `adapters/memory/email.py`, `composition/__init__.py`,
-  `adapters/config/defaultconfig.d/50-mail.toml`, `tests/conftest.py`, `tests/test_mail.py`,
-  `pyproject.toml`.
-- btx_lib_mail: `src/btx_lib_mail/lib_mail.py` (`ConfMail`, `send(config=)`), read-only for rank 20.
+- `../../apps/bitranox_template_py_cli/.private/plans/2026-10-01-confmail-move-design.md` (Section 2)
+- `../../apps/bitranox_template_py_cli/.private/plans/2026-10-01-confmail-move-template-plan.md`
+- `../../apps/bitranox_template_py_cli/.private/plans/tools/rename_email_fields.py`
+- `../../apps/bitranox_template_py_cli/src/bitranox_template_py_cli/adapters/email/config.py`
+- `OPEN-WORK.md`
 
 ## How to verify
 
-- Released: `curl -s https://pypi.org/pypi/btx_lib_mail/json | python3 -c "import json,sys;print(json.load(sys.stdin)['info']['version'])"` prints 2.0.0.
-- Template baseline: `cd ../../apps/bitranox_template_py_cli && env -u VIRTUAL_ENV make test`
-  (expect `{"result":"pass"}`).
-- Backlog still current: `uv run ~/.claude/skills/toolbox/tools/backlogcheck.py --file OPEN-WORK.md`.
+- Template CI: `gh run list --repo bitranox/bitranox_template_py_cli --commit e5bee77d46ff5a92dc2d534ffca9546b788467cc --json workflowName,conclusion`
+  (CI and CodeQL `success`).
+- Template gate: `cd ../../apps/bitranox_template_py_cli && env -u VIRTUAL_ENV make test`.
+- Backlog current: `uv run ~/.claude/skills/toolbox/tools/backlogcheck.py --file OPEN-WORK.md`.
 
 > Read this, then replace the first line with `# STALE - read <date>, work continued`. Do not
 > delete it - if this session ends badly it is the only record of where things stood.
