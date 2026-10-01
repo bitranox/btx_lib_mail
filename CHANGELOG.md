@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.0.0] 2026-10-01 13:18:45
+
 ### Changed (breaking)
 
 - `ConfMail` refuses a key that is not one of its fields (`extra="forbid"`). Construction and
@@ -11,6 +13,16 @@
   timeout in force; it now fails. A caller or loader that passes keys `ConfMail` does not have
   must map them onto the field names (`smtp_use_starttls`, `smtp_timeout`, ...) or leave them
   out; a subclass that must accept extra keys sets `model_config = ConfigDict(extra="ignore")`.
+
+### Documentation
+
+- The README, `docs/api.md`, `docs/configuration.md`, the module reference and the
+  `python-send-mail` skill state the refusal; the skill shows a loader that maps config keys onto
+  field names instead of passing the rest through.
+
+### Development
+
+- The `cryptography` dev floor is raised to 50.0.2.
 
 ## [1.8.0] 2026-09-29 14:14:27
 
