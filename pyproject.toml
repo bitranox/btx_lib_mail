@@ -41,7 +41,7 @@ Issues = "https://github.com/bitranox/btx_lib_mail/issues"
 dev = [
   "pytest>=9.1.1",
   "pytest-cov>=7.1.0",
-  "ruff>=0.16.9",
+  "ruff>=0.16.10",
   "pyright[nodejs]>=1.1.414",
   "bandit>=1.9.4",
   # 1.5.1 was yanked upstream (unintended breaking changes); the floor below skips past it.
