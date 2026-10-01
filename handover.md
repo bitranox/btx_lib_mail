@@ -1,4 +1,4 @@
-# Handover - btx_lib_mail rank 20 (CLI template onto ConfMail), 2026-10-01 12:45
+# STALE - read 2026-10-01, work continued
 
 ## In flight
 
