@@ -101,6 +101,9 @@ rendering, attachment security, and the delivery orchestration.
   value, and extension/directory sets are normalised. A model-level validator
   (`_refuse_an_empty_blocklist`) refuses an empty blocked extension or directory set
   whose allowlist is not set, unless `attachment_allow_empty_blocklists` is `True`.
+  A key that is not a field is refused (`extra="forbid"`, an `extra_forbidden`
+  error naming the key without its value), so a `send()` keyword name such as
+  `use_starttls` cannot be dropped silently.
 * **Secret safety:** `credential_fields = frozenset({"smtp_password",
   "smtphosts"})`; a `ValidationError` raised while validating this model never
   carries the value at either location (see `secret_safety.SecretSafeModel`).

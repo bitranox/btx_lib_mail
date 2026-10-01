@@ -59,6 +59,11 @@ for field_name in conf_update.model_fields_set:  # copy only the keys the mappin
 
 Key behaviours:
 
+- A key that is not a `ConfMail` field is refused with a `ValidationError` naming
+  the key (never its value). Map your source's names onto the field names before
+  validating, and leave out keys that belong to something else: the `send()`
+  keyword names (`use_starttls`, `timeout`, `credentials`) are not field names,
+  so passing them to `ConfMail` fails instead of being dropped.
 - `smtphosts` may be a string (single host), list, or tuple; items can include
   an explicit `host:port` override. Hosts are normalised, deduplicated, and
   tried in order.

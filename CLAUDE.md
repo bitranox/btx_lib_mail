@@ -39,7 +39,8 @@ tests/
 
 ## Key Architecture
 
-- **Config**: `ConfMail` (Pydantic model) holds SMTP and security settings; global `conf` instance
+- **Config**: `ConfMail` (Pydantic model) holds SMTP and security settings; global `conf` instance;
+  an unknown key is refused (`extra="forbid"`), never dropped
 - **Delivery**: `send()` -> `_prepare_*` helpers -> per recipient `_deliver_to_any_host` -> `_compose_to_spool` (once per
   recipient, reused across hosts) -> injected `Transport` (`SmtplibTransport` streams DATA/BDAT, one connection per recipient)
 - **EHLO name**: `ConfMail.smtp_local_hostname` / `send(local_hostname=)` / `--local-hostname` /

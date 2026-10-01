@@ -125,6 +125,9 @@ send(
 )
 ```
 
+`ConfMail` refuses a name it does not have, and its field names are not the `send()` keyword
+names: `ConfMail(use_starttls=False)` raises `ValidationError`; the field is `smtp_use_starttls`.
+
 ## Use it from an AI agent (zero install)
 
 btx_lib_mail is built to be driven by LLMs and agents, not only by people. An agent can send mail

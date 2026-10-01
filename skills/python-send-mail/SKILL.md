@@ -99,9 +99,31 @@ send(
 `ConfMail` field names are NOT the `send()` keyword names: the connection fields carry an `smtp_`
 prefix (`use_starttls` -> `smtp_use_starttls`, `starttls_verify` -> `smtp_starttls_verify`,
 `timeout` -> `smtp_timeout`, `local_hostname` -> `smtp_local_hostname`, `credentials` ->
-`smtp_username` plus `smtp_password`). An unknown key is silently IGNORED, not refused, so
-`ConfMail(use_starttls=False)` leaves STARTTLS on. Check a field name against
-`ConfMail.model_fields` rather than guessing it.
+`smtp_username` plus `smtp_password`; `smtp_timeout` defaults to `30.0` seconds). From btx_lib_mail
+2.0.0 a key that is not a `ConfMail` field is REFUSED: construction and `model_validate` raise
+one `pydantic.ValidationError` listing every unknown key (each entry's `type` is `extra_forbidden`
+and its `loc` the key, never the value; branch on those, not on the message text), so
+`ConfMail(use_starttls=False)` fails instead of leaving STARTTLS on. Before 2.0.0 the same key was
+silently ignored. `sorted(ConfMail.model_fields)` lists every valid name. A loader maps each of its
+keys onto a field name and drops only the keys it KNOWS are not SMTP settings; never pass "the rest"
+through, and never filter down to `model_fields`, which would bring the silent drop back:
+
+```python
+from collections.abc import Mapping
+
+from btx_lib_mail import ConfMail
+
+_RENAMED = {"use_starttls": "smtp_use_starttls", "timeout": "smtp_timeout", "starttls_verify": "smtp_starttls_verify"}
+_NOT_SMTP_SETTINGS = ("sender", "recipients")  # yours, not ConfMail's
+
+
+def build_conf(section: Mapping[str, object]) -> ConfMail:
+    mapped = {_RENAMED.get(key, key): value for key, value in section.items() if key not in _NOT_SMTP_SETTINGS}
+    return ConfMail.model_validate(mapped)  # a key still unknown raises ValidationError
+```
+
+A `credentials` pair is not a `ConfMail` key either: split it into `smtp_username` and
+`smtp_password` before validating.
 
 A non-ASCII username or password (an umlaut, a non-Latin script) authenticates over RFC 4616 AUTH
 PLAIN automatically; stdlib `smtplib.SMTP.login` encodes every AUTH exchange as ASCII and would
@@ -285,7 +307,8 @@ An empty blocked set on a `ConfMail` (or on `conf`) is different from the `send(
 with a `ValidationError` unless that axis's allowlist is set or `attachment_allow_empty_blocklists=True`
 (one bool for both axes; it changes nothing while both sets are non-empty), because it would block
 nothing. A config file whose `[]` means "use the library defaults" must
-have that key DROPPED before the mapping reaches `ConfMail`, never passed through:
+have that key DROPPED before the mapping reaches `ConfMail`, never passed through (the mapping here
+is already keyed by `ConfMail` field names):
 
 ```python
 from collections.abc import Mapping

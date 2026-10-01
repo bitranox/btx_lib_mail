@@ -123,6 +123,26 @@ def test_when_conf_receives_an_illegal_host_type_it_objects() -> None:
         ConfMail.model_validate({"smtphosts": 123})
 
 
+@pytest.mark.os_agnostic
+def test_when_conf_receives_send_style_names_it_refuses_them() -> None:
+    # send() calls these use_starttls/timeout; on ConfMail they are
+    # smtp_use_starttls/smtp_timeout. Ignoring them would leave STARTTLS on.
+    with pytest.raises(ValidationError) as caught:
+        ConfMail(**cast("dict[str, Any]", {"use_starttls": False, "timeout": 5}))
+
+    refused = {(error["loc"], error["type"]) for error in caught.value.errors()}
+    assert refused == {(("use_starttls",), "extra_forbidden"), (("timeout",), "extra_forbidden")}
+
+
+@pytest.mark.os_agnostic
+def test_when_a_misspelled_password_name_is_refused_the_value_stays_hidden() -> None:
+    with pytest.raises(ValidationError) as caught:
+        ConfMail.model_validate({"smtp_pasword": "s3cr3t-pw"})
+
+    assert "smtp_pasword" in str(caught.value)
+    assert "s3cr3t-pw" not in str(caught.value)
+
+
 class _RecordedDelivery:
     """One captured ``Transport.deliver`` call, exposing the resolved delivery
     options the orchestration layer forwarded (STARTTLS/credentials) and the raw

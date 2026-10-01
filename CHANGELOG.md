@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- `ConfMail` refuses a key that is not one of its fields (`extra="forbid"`). Construction and
+  `model_validate` raise `ValidationError` with an `extra_forbidden` error naming the key, never
+  its value; before, the key was dropped without a word. The `send()` keyword names are not field
+  names, so `ConfMail(use_starttls=False, timeout=5)` used to leave STARTTLS on and the 30 s
+  timeout in force; it now fails. A caller or loader that passes keys `ConfMail` does not have
+  must map them onto the field names (`smtp_use_starttls`, `smtp_timeout`, ...) or leave them
+  out; a subclass that must accept extra keys sets `model_config = ConfigDict(extra="ignore")`.
+
 ## [1.8.0] 2026-09-29 14:14:27
 
 ### Added

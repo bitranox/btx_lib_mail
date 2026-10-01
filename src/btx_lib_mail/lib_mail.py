@@ -368,6 +368,12 @@ class ConfMail(SecretSafeModel):
       the protection off silently. Set `True` to block nothing on purpose. An
       explicit `send(attachment_blocked_*=frozenset())` keyword is never checked.
 
+    **Unknown names:** A name that is not one of the fields above is refused
+    with a `ValidationError` (`extra_forbidden`, naming the key, never its
+    value), at construction and in `model_validate`. The `send()` keyword
+    names are not field names: `ConfMail(use_starttls=False)` is refused, the
+    field is `smtp_use_starttls`.
+
     **Interactions:** The CLI resolves its defaults through this model, and
     `send` reads resolved values when per-call overrides are absent.
     """
@@ -392,7 +398,10 @@ class ConfMail(SecretSafeModel):
     attachment_raise_on_security_violation: bool = True
     attachment_allow_empty_blocklists: bool = False
 
-    model_config = ConfigDict(validate_assignment=True, arbitrary_types_allowed=True)
+    # extra="forbid": a name ConfMail does not have is refused rather than
+    # dropped, so send()'s use_starttls/timeout passed here cannot silently
+    # leave STARTTLS on and the default timeout in force.
+    model_config = ConfigDict(validate_assignment=True, arbitrary_types_allowed=True, extra="forbid")
 
     # smtphosts is listed because a host that carries user:password@ is refused
     # there, and that refusal must not echo the value.

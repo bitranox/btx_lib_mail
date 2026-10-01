@@ -64,7 +64,7 @@ dev = [
   # BDAT/CHUNKING via a small subclass); test-only, never imported by the library.
   "aiosmtpd>=1.4.6",
   # Generates a throwaway self-signed cert for the STARTTLS+AUTH e2e test; test-only.
-  "cryptography>=50.0.1"
+  "cryptography>=50.0.2"
 ]
 
 [project.scripts]

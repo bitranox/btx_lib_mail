@@ -45,6 +45,12 @@ Common helpers:
 
 - `ConfMail.model_validate(data: dict[str, Any]) -> ConfMail`  -  validate crude
   configuration (dicts, strings, iterables) into a typed instance.
+- A key that is not a `ConfMail` field is refused (`extra="forbid"`): construction and
+  `model_validate` raise `ValidationError` with an `extra_forbidden` error naming the key,
+  never its value. The `send()` keyword names are not field names, so
+  `ConfMail(use_starttls=False, timeout=5)` is refused; the fields are `smtp_use_starttls`
+  and `smtp_timeout`. A subclass inherits the refusal; one that must accept extra keys sets
+  `model_config = ConfigDict(extra="ignore")` itself.
 - Assignment to a field (`conf.smtp_timeout = 10.0`) is validated like construction
   (`validate_assignment=True`); there is no bulk-update method, so update the global
   `conf` field by field, or pass your own instance with `send(config=...)`.
