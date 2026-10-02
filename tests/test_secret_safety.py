@@ -40,7 +40,7 @@ from pydantic import (
 from pydantic_core import PydanticCustomError
 
 import btx_lib_mail
-from btx_lib_mail import REDACTED_INPUT, ConfMail, SecretSafeModel, lib_mail, redact_validation_error, secret_safety
+from btx_lib_mail import REDACTED_INPUT, ConfMail, SecretSafeModel, _validation, lib_mail, redact_validation_error, secret_safety
 from btx_lib_mail.secret_safety import _MAX_VISITS
 
 if TYPE_CHECKING:
@@ -1245,7 +1245,7 @@ def test_a_host_with_whitespace_or_control_characters_is_refused_at_send(host: s
 def test_plain_hosts_with_only_outer_whitespace_still_validate() -> None:
     # positive control: _normalise_host trims outer whitespace before the refusal
     # check runs, so an ordinary env-file value with surrounding blanks still works.
-    assert lib_mail._prepare_hosts(("  smtp.example.com  ",)) == ("smtp.example.com",)
+    assert _validation.prepare_hosts(("  smtp.example.com  ",)) == ("smtp.example.com",)
 
 
 @pytest.mark.os_agnostic

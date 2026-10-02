@@ -14,7 +14,7 @@ from typing import IO, TYPE_CHECKING, Any
 
 import pytest
 
-from btx_lib_mail import AttachmentSecurityError, AttachmentViolation, ConfigurationError, ConfMail, InvalidInputError, lib_mail, send
+from btx_lib_mail import AttachmentSecurityError, AttachmentViolation, ConfigurationError, ConfMail, InvalidInputError, _attachments, _compose, lib_mail, send
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -100,7 +100,7 @@ def _prepare(path: Path, *, max_size: int | None) -> tuple[lib_mail.AttachmentPa
         allow_symlinks=False,
         raise_on_violation=True,
     )
-    return lib_mail._prepare_attachments((path,), security, raise_on_missing=True)
+    return _attachments.prepare_attachments((path,), security, raise_on_missing=True)
 
 
 @pytest.mark.os_agnostic
@@ -113,9 +113,9 @@ def test_a_file_grown_past_the_limit_after_the_check_is_refused_while_it_is_read
             grow.write(b"y" * 200_000)
 
         with pytest.raises(AttachmentSecurityError) as caught:
-            lib_mail._compose_body(lib_mail._MessageContent(plain_body="b", html_body="", attachments=attachments))
+            _compose._compose_body(_compose.MessageContent(plain_body="b", html_body="", attachments=attachments))
     finally:
-        lib_mail._close_attachments(attachments)
+        _attachments.close_attachments(attachments)
 
     assert caught.value.violation_type is AttachmentViolation.SIZE
     assert "grew past the limit of 10 bytes" in str(caught.value)
@@ -136,15 +136,15 @@ def test_in_warn_mode_a_grown_file_is_left_out_and_the_rest_is_sent(tmp_path: Pa
         allow_symlinks=False,
         raise_on_violation=False,
     )
-    attachments = lib_mail._prepare_attachments((grown, steady), security, raise_on_missing=True)
+    attachments = _attachments.prepare_attachments((grown, steady), security, raise_on_missing=True)
     try:
         with grown.open("ab") as grow:
             grow.write(b"y" * 200_000)
-        body = lib_mail._compose_body_once(lib_mail._MessageContent(plain_body="b", html_body="", attachments=attachments), raise_on_violation=False)
+        body = _compose.compose_body_once(_compose.MessageContent(plain_body="b", html_body="", attachments=attachments), raise_on_violation=False)
         raw = body.read()
         body.close()
     finally:
-        lib_mail._close_attachments(attachments)
+        _attachments.close_attachments(attachments)
 
     assert b"steady.txt" in raw
     assert b"grown.txt" not in raw
@@ -160,14 +160,14 @@ def test_a_symlink_at_the_checked_path_is_refused_as_changed(tmp_path: Path) -> 
     link.symlink_to(target)
 
     with pytest.raises(AttachmentSecurityError) as caught:
-        lib_mail._open_attachment(link, None)
+        _attachments._open_attachment(link, None)
 
     assert caught.value.violation_type is AttachmentViolation.CHANGED
 
 
 @pytest.mark.os_agnostic
 def test_a_directory_at_the_checked_path_is_reported_as_missing(tmp_path: Path) -> None:
-    assert lib_mail._open_attachment(tmp_path, None) is None
+    assert _attachments._open_attachment(tmp_path, None) is None
 
 
 def _unclosed_file_warnings(action: Callable[[], object]) -> list[str]:
@@ -227,10 +227,10 @@ def test_the_body_spool_is_closed_when_composition_fails(tmp_path: Path) -> None
         grow.write(b"y" * 200_000)
 
     def compose() -> object:
-        return lib_mail._compose_body(lib_mail._MessageContent(plain_body="b", html_body="", attachments=attachments))
+        return _compose._compose_body(_compose.MessageContent(plain_body="b", html_body="", attachments=attachments))
 
     leaked = _unclosed_file_warnings(compose)
-    lib_mail._close_attachments(attachments)
+    _attachments.close_attachments(attachments)
     assert leaked == []
 
 

@@ -16,7 +16,7 @@ from typing import IO, TYPE_CHECKING, Any, ClassVar, cast
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from btx_lib_mail import ConfMail, lib_mail
+from btx_lib_mail import ConfMail, _transport, _validation, lib_mail
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -197,7 +197,7 @@ class FakeTransport:
         message: IO[bytes],
         delivery: Any,
     ) -> None:
-        hostname, port = lib_mail._parse_smtp_host(host)
+        hostname, port = _validation.parse_smtp_host(host)
         FakeTransport.init_calls.append((hostname, port or 0, delivery.timeout))
         # A host in fail_on_init never establishes a connection, so it records no
         # send attempt (matches a real connect failure feeding host failover).
@@ -229,7 +229,7 @@ class FakeTransport:
 
 def _install_fake_transport(monkeypatch: pytest.MonkeyPatch) -> type[FakeTransport]:
     FakeTransport.reset()
-    monkeypatch.setattr(lib_mail, "_DEFAULT_TRANSPORT", FakeTransport())
+    monkeypatch.setattr(lib_mail, "DEFAULT_TRANSPORT", FakeTransport())
     return FakeTransport
 
 
@@ -436,14 +436,14 @@ def test_starttls_verify_falls_back_to_conf(monkeypatch: pytest.MonkeyPatch) -> 
 
 @pytest.mark.os_agnostic
 def test_build_starttls_context_verifies_by_default() -> None:
-    context = lib_mail._build_starttls_context(verify=True)
+    context = _transport._build_starttls_context(verify=True)
     assert context.check_hostname is True
     assert context.verify_mode == ssl.CERT_REQUIRED
 
 
 @pytest.mark.os_agnostic
 def test_build_starttls_context_can_disable_verification() -> None:
-    context = lib_mail._build_starttls_context(verify=False)
+    context = _transport._build_starttls_context(verify=False)
     assert context.check_hostname is False
     assert context.verify_mode == ssl.CERT_NONE
 
@@ -647,7 +647,7 @@ def test_validate_email_address_accepts_valid() -> None:
     lib_mail.validate_email_address("user@example.com")
 
     # Accepted means usable: recipient preparation keeps it as given.
-    assert lib_mail._prepare_recipients("user@example.com", raise_on_invalid=True) == ("user@example.com",)
+    assert _validation.prepare_recipients("user@example.com", raise_on_invalid=True) == ("user@example.com",)
 
 
 @pytest.mark.os_agnostic
@@ -702,7 +702,7 @@ def test_validate_smtp_host_accepts_a_usable_host(host: str, parsed: tuple[str, 
     lib_mail.validate_smtp_host(host)
 
     # Accepted means usable: it splits into what the transport connects to, and the model keeps it.
-    assert lib_mail._parse_smtp_host(host) == parsed
+    assert _validation.parse_smtp_host(host) == parsed
     assert ConfMail(smtphosts=[host]).smtphosts == [host]
 
 
@@ -2055,11 +2055,11 @@ def test_without_a_dotted_fqdn_the_default_is_the_host_address_literal(monkeypat
     """Mirrors smtplib: RFC 5321 wants a domain in EHLO, else an address literal."""
     monkeypatch.setattr(socket, "getfqdn", _bare_host_fqdn)
     monkeypatch.setattr(socket, "gethostbyname", _documentation_address)
-    lib_mail._default_local_hostname.cache_clear()
+    _transport._default_local_hostname.cache_clear()
     try:
-        assert lib_mail._default_local_hostname() == "[192.0.2.9]"
+        assert _transport._default_local_hostname() == "[192.0.2.9]"
     finally:
-        lib_mail._default_local_hostname.cache_clear()
+        _transport._default_local_hostname.cache_clear()
 
 
 @pytest.mark.os_agnostic
@@ -2069,8 +2069,8 @@ def test_an_unresolvable_host_name_falls_back_to_loopback(monkeypatch: pytest.Mo
 
     monkeypatch.setattr(socket, "getfqdn", _bare_host_fqdn)
     monkeypatch.setattr(socket, "gethostbyname", unresolvable)
-    lib_mail._default_local_hostname.cache_clear()
+    _transport._default_local_hostname.cache_clear()
     try:
-        assert lib_mail._default_local_hostname() == "[127.0.0.1]"
+        assert _transport._default_local_hostname() == "[127.0.0.1]"
     finally:
-        lib_mail._default_local_hostname.cache_clear()
+        _transport._default_local_hostname.cache_clear()

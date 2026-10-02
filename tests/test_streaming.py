@@ -13,8 +13,8 @@ from typing import IO, TYPE_CHECKING, Any, cast
 import pytest
 from click.testing import CliRunner
 
+from btx_lib_mail import _compose, _transport, lib_mail
 from btx_lib_mail import cli as cli_mod
-from btx_lib_mail import lib_mail
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -27,7 +27,7 @@ from smtp_test_server import CollectingHandler as _CollectingHandler
 from smtp_test_server import run_server as _run_server
 
 
-def _compose(
+def _compose_message(
     *,
     sender: str,
     recipient: str,
@@ -37,9 +37,9 @@ def _compose(
     attachments: tuple[lib_mail.AttachmentPayload, ...],
 ) -> IO[bytes]:
     """Compose one recipient's whole message the way send() does: shared body plus its header lines."""
-    body = lib_mail._compose_body(lib_mail._MessageContent(plain_body=plain_body, html_body=html_body, attachments=attachments))
+    body = _compose._compose_body(_compose.MessageContent(plain_body=plain_body, html_body=html_body, attachments=attachments))
     try:
-        return lib_mail._message_for(lib_mail._envelope_header_lines(sender=sender, recipient=recipient, subject=subject), body)
+        return _compose.message_for(_compose.envelope_header_lines(sender=sender, recipient=recipient, subject=subject), body)
     finally:
         body.close()
 
@@ -88,7 +88,7 @@ def bdat_server() -> Iterator[tuple[Controller, _ChunkingHandler]]:
 
 @pytest.mark.os_agnostic
 def test_dot_stuffer_doubles_a_leading_dot_on_a_line() -> None:
-    stuffer = lib_mail._DotStuffer()
+    stuffer = _transport._DotStuffer()
 
     result = stuffer.feed(b"hello\r\n.world\r\n")
 
@@ -97,7 +97,7 @@ def test_dot_stuffer_doubles_a_leading_dot_on_a_line() -> None:
 
 @pytest.mark.os_agnostic
 def test_dot_stuffer_doubles_a_leading_dot_at_the_very_start() -> None:
-    stuffer = lib_mail._DotStuffer()
+    stuffer = _transport._DotStuffer()
 
     result = stuffer.feed(b".start\r\n")
 
@@ -106,7 +106,7 @@ def test_dot_stuffer_doubles_a_leading_dot_at_the_very_start() -> None:
 
 @pytest.mark.os_agnostic
 def test_dot_stuffer_leaves_a_mid_line_dot_untouched() -> None:
-    stuffer = lib_mail._DotStuffer()
+    stuffer = _transport._DotStuffer()
 
     result = stuffer.feed(b"a.b\r\n")
 
@@ -115,7 +115,7 @@ def test_dot_stuffer_leaves_a_mid_line_dot_untouched() -> None:
 
 @pytest.mark.os_agnostic
 def test_dot_stuffer_tracks_line_start_across_chunk_boundaries() -> None:
-    stuffer = lib_mail._DotStuffer()
+    stuffer = _transport._DotStuffer()
 
     first = stuffer.feed(b"a\r\n")
     # The dot that opens the next line arrives as the first byte of a new chunk.
@@ -137,7 +137,7 @@ def test_compose_round_trips_headers_body_and_attachment(tmp_path: Path) -> None
     attachment.write_bytes(payload)
 
     with attachment.open("rb") as handle:
-        spool = _compose(
+        spool = _compose_message(
             sender="sender@example.com",
             recipient="recipient@example.com",
             subject="Grüße",
@@ -172,14 +172,14 @@ def test_compose_streams_attachment_without_loading_it(tmp_path: Path) -> None:
     big.write_bytes(b"\xab" * size)
 
     with big.open("rb") as handle:
-        content = lib_mail._MessageContent(
+        content = _compose.MessageContent(
             plain_body="body",
             html_body="",
             attachments=(lib_mail.AttachmentPayload(filename="big.bin", source=big, handle=handle),),
         )
         tracemalloc.start()
         try:
-            spool = lib_mail._compose_body(content)
+            spool = _compose._compose_body(content)
             _current, peak = tracemalloc.get_traced_memory()
         finally:
             tracemalloc.stop()
@@ -193,7 +193,7 @@ def test_compose_streams_attachment_without_loading_it(tmp_path: Path) -> None:
 
 @pytest.mark.os_agnostic
 def test_compose_uses_crlf_line_endings(tmp_path: Path) -> None:
-    spool = _compose(
+    spool = _compose_message(
         sender="s@example.com",
         recipient="r@example.com",
         subject="Subject",
@@ -624,7 +624,7 @@ class _ScriptedSMTP:
 @pytest.mark.os_agnostic
 def test_a_334_continuation_gets_the_utf8_token_once() -> None:
     server = _ScriptedSMTP([(334, b""), (235, b"2.7.0 Authentication successful")])
-    lib_mail._login_plain_utf8(cast("smtplib.SMTP", server), "user", _UTF8_DUMMY)
+    _transport._login_plain_utf8(cast("smtplib.SMTP", server), "user", _UTF8_DUMMY)
     assert len(server.sent) == 2
     assert server.sent[0][0] == "AUTH"
     assert server.sent[1][0] == server.sent[0][1].removeprefix("PLAIN ")
@@ -634,7 +634,7 @@ def test_a_334_continuation_gets_the_utf8_token_once() -> None:
 def test_a_503_already_authenticated_reply_is_treated_as_success() -> None:
     """smtplib.SMTP.login treats 503 the same as 235; _login_plain_utf8 mirrors that."""
     server = _ScriptedSMTP([(503, b"5.5.1 already authenticated")])
-    lib_mail._login_plain_utf8(cast("smtplib.SMTP", server), "user", _UTF8_DUMMY)
+    _transport._login_plain_utf8(cast("smtplib.SMTP", server), "user", _UTF8_DUMMY)
     assert len(server.sent) == 1, "one AUTH command, no continuation, no raise"
 
 
@@ -642,7 +642,7 @@ def test_a_503_already_authenticated_reply_is_treated_as_success() -> None:
 def test_a_second_334_is_refused_not_looped() -> None:
     server = _ScriptedSMTP([(334, b""), (334, b"")])
     with pytest.raises(smtplib.SMTPAuthenticationError) as caught:
-        lib_mail._login_plain_utf8(cast("smtplib.SMTP", server), "user", _UTF8_DUMMY)
+        _transport._login_plain_utf8(cast("smtplib.SMTP", server), "user", _UTF8_DUMMY)
     assert caught.value.smtp_code == 334
     assert len(server.sent) == 2
 
@@ -678,9 +678,9 @@ def ehlo_server() -> Iterator[tuple[Controller, _EhloRecordingHandler]]:
 @pytest.fixture
 def fresh_local_name_cache() -> Iterator[None]:
     """Start and end with no cached default EHLO name, so a planted one never leaks."""
-    lib_mail._default_local_hostname.cache_clear()
+    _transport._default_local_hostname.cache_clear()
     yield
-    lib_mail._default_local_hostname.cache_clear()
+    _transport._default_local_hostname.cache_clear()
 
 
 def _send_two(controller: Controller, **kwargs: Any) -> None:
