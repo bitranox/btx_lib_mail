@@ -69,6 +69,10 @@ The attachment open-once check relies on that.
 
 ## Exact next action
 
+FIRST apply OPEN-WORK rank 16 (owner decisions taken after this handover was written: implicit
+`./.env` is read again; sensitive-path case-insensitivity on macOS/Windows only), so CI runs once on
+the final code. Then:
+
 ```bash
 git push   # from the btx_lib_mail checkout
 ```
