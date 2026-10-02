@@ -242,8 +242,8 @@ it too, and the CLI exit code follows that builtin.
 
 `AttachmentSecurityError` carries `path` (the offending path), `reason` (a one-line
 description, control characters replaced) and `violation_type`, an `AttachmentViolation`
-member: `PATH_TRAVERSAL`, `SYMLINK`, `SENSITIVE_PATTERN`, `DIRECTORY`, `EXTENSION`, `SIZE` or
-`CHANGED`. The members are strings (`violation_type == "symlink"` holds). Branch on the
+member: `PATH_TRAVERSAL`, `SYMLINK`, `SENSITIVE_PATTERN`, `DIRECTORY`, `EXTENSION`, `SIZE`,
+`CHANGED` or `FILENAME`. The members are strings (`violation_type == "symlink"` holds). Branch on the
 member, never on the message text.
 
 ## Validators

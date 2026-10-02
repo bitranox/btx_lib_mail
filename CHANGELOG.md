@@ -18,6 +18,8 @@
   `/.pypirc`, `/.npmrc` and `/gh/hosts.yml`.
 - `AttachmentViolation.CHANGED`: an attachment path that became a symlink or another file
   after it was checked.
+- `AttachmentViolation.FILENAME`: an attachment whose file name holds a control character
+  (Unicode category `Cc`: CR, LF, NUL, ESC, DEL, ...).
 - `ConfMail.smtp_delivery_deadline` / `send(delivery_deadline=)` / `--delivery-deadline` /
   `BTX_MAIL_SMTP_DELIVERY_DEADLINE`: an upper bound in seconds for one SMTP session. The
   socket timeout bounds each read or write, so a server answering one byte at a time kept a
@@ -91,6 +93,11 @@
 - `smtp_timeout` (and `send(timeout=)`) refuses NaN and infinity (`smtp_timeout must be a
   finite number of seconds, got nan`) instead of failing later as an unrelated delivery
   error. A non-positive value keeps its `must be positive` message.
+- An attachment whose file name holds CR, LF, VT or FF raised a bare `ValueError` from the
+  header serialiser halfway through composing, outside the `BtxMailError` family and past
+  warn mode; NUL, ESC and DEL went into the `Content-Disposition` header raw. Such a name is
+  now an attachment security refusal (`FILENAME`), raised in strict mode and logged and
+  skipped in warn mode, before any delivery.
 - The source distribution ships only the package, its tests, its docs, `README.md`,
   `LICENSE`, `CHANGELOG.md` and `pyproject.toml` (an include list). Earlier sdists also
   carried repository working files such as `handover.md`, `OPEN-WORK.md` and

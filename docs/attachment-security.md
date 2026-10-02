@@ -43,10 +43,14 @@ of sensitive files, dangerous executables, or oversized payloads.
    as `CHANGED`; swapped for a directory or a FIFO, it is reported like a missing
    file (`AttachmentNotFoundError`). Swapping or deleting the file while delivery
    runs changes nothing that is sent. The files are closed before `send()` returns.
+8. **File Name**  -  A file name holding a control character (CR, LF, NUL, ESC, DEL
+   or any other Unicode `Cc` character) is refused as `FILENAME`: the name becomes
+   the attachment's `Content-Disposition` header, and a POSIX file system allows
+   all of them in a name.
 
 A refusal raises `AttachmentSecurityError`, whose `violation_type` is an
 `AttachmentViolation` member: `PATH_TRAVERSAL`, `SYMLINK`, `SENSITIVE_PATTERN`,
-`DIRECTORY`, `EXTENSION`, `SIZE` or `CHANGED`. Branch on it, not on the message.
+`DIRECTORY`, `EXTENSION`, `SIZE`, `CHANGED` or `FILENAME`. Branch on it, not on the message.
 
 ### Configuration Example
 

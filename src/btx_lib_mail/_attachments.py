@@ -11,6 +11,7 @@ import os
 import pathlib
 import stat
 import sys
+import unicodedata
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import IO, TYPE_CHECKING, Final
@@ -241,6 +242,7 @@ class AttachmentViolation(str, Enum):
     EXTENSION = "extension"
     SIZE = "size"
     CHANGED = "changed"
+    FILENAME = "filename"
 
 
 class AttachmentSecurityError(BtxMailError):
@@ -394,6 +396,32 @@ def _check_symlink(*, path: pathlib.Path, allow_symlinks: bool) -> pathlib.Path:
         # Follow the symlink and return the resolved target
         return path.resolve()
     return path.resolve()
+
+
+def _check_filename(path: pathlib.Path) -> None:
+    """Refuse a file name holding a control character (Unicode category ``Cc``).
+
+    Why
+        The name becomes the ``filename`` parameter of the attachment's
+        ``Content-Disposition`` header. CR, LF, VT and FF make the header
+        serialiser raise a bare ``ValueError`` halfway through composing, and
+        NUL, ESC and DEL would be written into the header raw. A POSIX file
+        system allows all of them in a name.
+
+    Examples
+    --------
+    >>> _check_filename(pathlib.Path("/data/Bericht März.pdf"))
+    >>> _check_filename(pathlib.Path("/d/a\\nb"))
+    Traceback (most recent call last):
+        ...
+    btx_lib_mail._attachments.AttachmentSecurityError: Attachment security violation (filename): file name contains a control character: "/d/a b" [path=/d/a b]
+    """
+    if any(unicodedata.category(character) == "Cc" for character in path.name):
+        raise AttachmentSecurityError(
+            path=path,
+            reason=f'file name contains a control character: "{path}"',
+            violation_type=AttachmentViolation.FILENAME,
+        )
 
 
 def _case_as_the_file_system_does(text: str) -> str:
@@ -646,6 +674,8 @@ def _validate_attachment_security(
     """
     _check_path_traversal(path, original_path_str)
     resolved_path = _check_symlink(path=path, allow_symlinks=security.allow_symlinks)
+    # The resolved name is the one the message carries (see _prepare_attachment).
+    _check_filename(resolved_path)
     _check_sensitive_patterns(resolved_path)
     _check_directory_restrictions(
         resolved_path,

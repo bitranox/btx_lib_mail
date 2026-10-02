@@ -11,6 +11,7 @@ import math
 import sys
 import warnings
 from email import message_from_bytes
+from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any
 
 import pytest
@@ -19,7 +20,6 @@ from btx_lib_mail import AttachmentSecurityError, AttachmentViolation, Configura
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
 
 
 class _RecordingTransport:
@@ -382,3 +382,54 @@ def test_a_recipient_message_reads_the_shared_body_in_place() -> None:
         message.close()
     assert not shared.closed, "closing one recipient's message must not close the shared body"
     shared.close()
+
+
+# Control characters a POSIX file name can hold. CR, LF, VT and FF made the header serialiser
+# raise a bare ValueError mid-compose; NUL, ESC and DEL went into the header raw.
+_CONTROL_CHARACTERS = ["\n", "\r", "\x0b", "\x0c", "\x00", "\x1b", "\x7f", "\x85"]
+_CONTROL_CHARACTERS_ON_DISK = [character for character in _CONTROL_CHARACTERS if character != "\x00"]
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("character", _CONTROL_CHARACTERS, ids=repr)
+def test_the_filename_check_refuses_a_control_character(character: str) -> None:
+    with pytest.raises(AttachmentSecurityError) as caught:
+        _attachments._check_filename(Path(f"/data/report{character}final.txt"))
+
+    assert caught.value.violation_type is AttachmentViolation.FILENAME
+    assert character not in caught.value.reason
+
+
+@pytest.mark.os_agnostic
+def test_the_filename_check_accepts_printable_unicode() -> None:
+    _attachments._check_filename(Path("/data/Bericht für März - 日本.txt"))
+
+
+@pytest.mark.os_posix
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows file names cannot hold control characters")
+@pytest.mark.parametrize("character", _CONTROL_CHARACTERS_ON_DISK, ids=repr)
+def test_a_control_character_in_an_attachment_name_is_a_security_refusal_through_send(tmp_path: Path, character: str) -> None:
+    report = tmp_path / f"report{character}final.txt"
+    report.write_bytes(b"quarterly numbers")
+    transport = _RecordingTransport()
+
+    with pytest.raises(AttachmentSecurityError) as caught:
+        _send(transport, report)
+
+    assert caught.value.violation_type is AttachmentViolation.FILENAME
+    assert transport.messages == {}
+
+
+@pytest.mark.os_posix
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows file names cannot hold control characters")
+def test_warn_mode_skips_an_attachment_whose_name_holds_a_line_break(tmp_path: Path) -> None:
+    report = tmp_path / "report\r\nBcc: victim@example.com.txt"
+    report.write_bytes(b"quarterly numbers")
+    transport = _RecordingTransport()
+
+    assert _send(transport, report, attachment_raise_on_security_violation=False) is True
+
+    assert len(transport.messages) == 3
+    for raw in transport.messages.values():
+        assert not [part for part in message_from_bytes(raw).walk() if part.get_filename()]
+        assert b"victim@example.com" not in raw
