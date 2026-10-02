@@ -36,7 +36,7 @@ src/btx_lib_mail/
   _validation.py       # email and host syntax, EHLO name, durations, recipient and host lists
   _compose.py          # message assembly: shared body encoded once, per-recipient header lines
   _transport.py        # Transport protocol, DeliveryOptions, SmtplibTransport (BDAT/DATA), deadline
-  _common.py           # logger and printable()
+  _common.py           # logger, printable(), is_valid_unicode()
   errors.py            # BtxMailError and its subclasses
   secret_safety.py     # SecretSafeModel, redact_validation_error: credential-safe pydantic errors
   typed_click.py       # typed Protocol facade over rich-click's partially-typed decorators

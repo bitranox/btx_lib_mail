@@ -273,7 +273,8 @@ redacted at the credential fields (`smtp_password`, `smtphosts`).
 
 `logger` (`logging.getLogger("btx_lib_mail")`) and `printable(text)`, which replaces
 every non-printable character with a space so no caller-, file- or server-supplied text
-can forge a log line.
+can forge a log line, and `is_valid_unicode(text)`, the UTF-8 test the subject, body and
+attachment-name checks share (each raises its own error).
 
 **Location:** src/btx_lib_mail/_common.py
 

@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import IO, Final, cast
 
-from ._common import logger, printable
+from ._common import is_valid_unicode, logger, printable
 from .errors import AttachmentNotFoundError, BtxMailError, InvalidInputError
 
 DANGEROUS_EXTENSIONS_POSIX: Final[frozenset[str]] = frozenset(
@@ -463,16 +463,12 @@ def _check_filename(path: pathlib.Path) -> None:
             reason=f'file name contains a control character: "{path}"',
             violation_type=AttachmentViolation.FILENAME,
         )
-    try:
-        path.name.encode("utf-8")
-    except UnicodeEncodeError:
-        # An invalid UTF-8 byte in a POSIX name decodes to a lone surrogate, which the
-        # header cannot encode; the exception message would quote the raw byte.
+    if not is_valid_unicode(path.name):
         raise AttachmentSecurityError(
             path=path,
             reason=f'file name is not valid Unicode text: "{path}"',
             violation_type=AttachmentViolation.FILENAME,
-        ) from None
+        )
 
 
 def _check_nul(path: pathlib.Path) -> None:

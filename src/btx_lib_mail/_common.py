@@ -1,4 +1,4 @@
-"""The library logger and the control-character cleaning every log line and message uses.
+"""The library logger, the control-character cleaning every log line and message uses, and the UTF-8 test.
 
 Private to btx_lib_mail: import the public names from `btx_lib_mail` or `btx_lib_mail.lib_mail`.
 """
@@ -27,3 +27,29 @@ def printable(text: str) -> str:
         '535 denied forged'
     """
     return "".join(character if character.isprintable() else " " for character in text)
+
+
+def is_valid_unicode(text: str) -> bool:
+    """Return whether text can be written as UTF-8.
+
+    A lone surrogate is what an invalid UTF-8 byte in argv or a POSIX file name
+    decodes to; the email package raises ``UnicodeEncodeError`` for it, and that
+    exception's message quotes the raw byte.
+
+    Args:
+        text: The text to check.
+
+    Returns:
+        ``False`` when text holds a lone surrogate, else ``True``.
+
+    Examples:
+        >>> is_valid_unicode("Bericht M\u00e4rz")
+        True
+        >>> is_valid_unicode("a" + chr(0xDCFF))
+        False
+    """
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True

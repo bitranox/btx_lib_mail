@@ -19,6 +19,7 @@ from email.utils import formatdate
 from typing import IO, TYPE_CHECKING, Final, cast
 
 from ._attachments import AttachmentPayload, AttachmentSecurityError, AttachmentViolation, log_violation
+from ._common import is_valid_unicode
 from ._transport import STREAM_CHUNK_SIZE
 from .errors import InvalidInputError
 
@@ -269,10 +270,8 @@ def _check_unicode_text(text: str, *, field_name: str) -> None:
     Raises:
         InvalidInputError: If text holds a lone surrogate.
     """
-    try:
-        text.encode("utf-8")
-    except UnicodeEncodeError:
-        raise InvalidInputError(f"{field_name} must be valid Unicode text") from None
+    if not is_valid_unicode(text):
+        raise InvalidInputError(f"{field_name} must be valid Unicode text")
 
 
 def check_subject(subject: str) -> None:
