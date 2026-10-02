@@ -331,6 +331,28 @@ def test_a_subject_at_the_length_limit_is_sent_and_one_past_it_is_refused() -> N
 
 
 @pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    ("subject", "message"),
+    [
+        ("x" * 5000 + "\r", "Header values may not contain linefeed or carriage return characters"),
+        ("x" * 5000 + "\x00", "mail_subject must not contain control characters (only TAB is allowed)"),
+        ("a\x00b" + chr(0x2028) + "c", "mail_subject must not contain control characters (only TAB is allowed)"),
+    ],
+    ids=["line-break-before-length", "control-before-length", "control-before-separator"],
+)
+def test_a_subject_with_two_faults_is_refused_with_the_message_it_always_had(subject: str, message: str) -> None:
+    # The length cap is checked last and a control character before the Unicode separators, so a
+    # subject refused before either check existed keeps the message callers already match on.
+    transport = RecordingTransport()
+
+    with pytest.raises(InvalidInputError) as caught:
+        send("sender@example.com", "one@example.com", subject, smtphosts=["smtp.example.com"], transport=transport)
+
+    assert str(caught.value) == message
+    assert transport.messages == {}
+
+
+@pytest.mark.os_agnostic
 def test_a_subject_with_a_tab_is_sent() -> None:
     transport = RecordingTransport()
 
