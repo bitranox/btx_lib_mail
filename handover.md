@@ -1,82 +1,86 @@
-# Handover - btx_lib_mail, 2026-10-02 18:55 (pushed, 3-OS CI green; release held at 4.0.0)
+# Handover - btx_lib_mail, 2026-10-02 19:45 (review sweep 2 reviewed, nothing presented yet)
 
 Read `OPEN-WORK.md` first. Open: rank 20, 21, 22 and 30 (USER), and rank 50 (FOUND).
 
 ## In flight
 
-Nothing is part-done in btx_lib_mail. Master `05d7347` is pushed, and CI plus CodeQL are green on
-all 15 cells (Linux, macOS, Windows x 3.10-3.14). This is the first cross-platform run of the
-review-sweep-1 work.
+Rank 21, code-quality review sweep 2. Five reviewers ran against HEAD 2f53d41, and their reports
+are stored verbatim in `.private/review-2026-10-02-sweep2.md` (gitignored). The `# Synthesis`
+section at its end holds:
+- the scorecard (6.9 -> 7.8);
+- 8 findings in presentation order;
+- the "counted and left" census results;
+- the facts the main session verified itself, including the PyPI sdist download.
 
-The only part-done item is in another repo: the bitranox-skills twin commit (rank 22). It is
-prepared but NOT committed, in the worktree
-`../../KI/bitranox-skills/.claude/worktrees/send-mail-skill` (branch `skill/send-mail-current`).
-The repo-gate refuses it because another session's in-progress lib_layered_config skill edit has
-drifted from its twin. That drift is not ours, so the commit waits.
+No finding has been presented to the owner or fixed yet.
 
 ## Committed, or not
 
-- btx_lib_mail: everything is committed and pushed, `OPEN-WORK.md` and this file included.
-- bitranox-skills worktree: SKILL.md twin, two `.skillwriter` checklists, the regenerated
-  `skill_triggers.json` and `docs/skills.md`, and a bump to 7.38.2 with a CHANGELOG entry. All
-  uncommitted. Origin moves fast there, so expect to re-bump.
-- `EXECUTION-USER-REVIEW.md` (gitignored) records this session's owner decisions and autonomous
-  decisions.
+- master is pushed together with this file. The push includes:
+  - another session's `.gitignore` fix (7de496a). The owner had its Claude co-author trailer
+    removed first.
+  - the docstring link fix (101cc3b).
+- `.private/` and `EXECUTION-USER-REVIEW.md` are gitignored. This session's owner decisions are
+  logged in the latter.
+- The bitranox-skills worktree for rank 22 is still prepared and uncommitted (see `OPEN-WORK.md`).
 
 ## Decided, and why
 
-- Owner, 2026-10-02:
-  - `./.env` is read again when no `--env-file` is given.
-  - Sensitive-path case-insensitivity applies on macOS and Windows only.
-  - The release version is 4.0.0, merging the unpublished [3.1.0] and [Unreleased] sections.
-  - The release itself stays HELD.
-- A named `--env-file` replaces `./.env` completely: keys it lacks do not fall through. A refusal
-  of the implicit file names `./.env`, not `--env-file`.
-- Tests run from an empty cwd (conftest), because the repo's `.env` holds live relay settings.
-- CLI test messages are compared through `_flat()` in `tests/test_cli_send.py`: Rich wraps the
-  error box, and CI forces colour.
-- The Windows swap and delete tests assert that the OS refused the change (`WinError 32`, the file
-  is held open). They are not skipped.
+- Owner: write the handover only after all five reports were in, so no reviewer work is lost.
+- Owner: drop the `Co-Authored-By: Claude` line from the foreign commit.
+- Finding order follows the review skill: SEVERE first, then MEDIUM, then MINOR.
+- The two surviving mutations (issues 3 and 4) are MEDIUM, per the skill's "unenforced invariant"
+  rule, not the reviewer's MINOR.
+- Error Handling is scored 8, not the reviewer's 9. That reviewer audited only the package's own
+  `raise` sites. A probe showed a stdlib `ValueError` escaping `send()` (issue 2).
+- Issue 7 (docstring style) is ASK-FIRST. The tree CLAUDE.md wants Google style, while
+  `self_documenting_template.md` prescribes the house style the package uses. Two owner
+  instructions conflict.
 
 ## Decided against, and why
 
-- The lib_layered_config twin drift in bitranox-skills was left untouched: it is another live
-  session's work. The symptom is queued against repo-gate in `contrib_queue`.
+- Rewriting the three already-pushed semdex commits that carry the trailer. That needs a force push
+  in a repo another live session owns, so it was left to that owner.
 
 ## Still open, untouched
 
-- Rank 20 (template ConfMail rollout) and rank 50 (sibling `__main__` exit codes): see
-  `OPEN-WORK.md`.
+- Rank 20 (template ConfMail rollout), rank 30 (4.0.0 release, owner hold), rank 50 (sibling
+  `__main__` exit codes) and rank 22 (skill twin): see `OPEN-WORK.md`.
 
 ## Lessons for the next nap
 
-- When a commit in a marketplace repo with mirrored skills is refused for drift in a pair you did
-  not touch, check the sibling checkout's `git status` first. A parallel session's staged edit
-  causes it, and the commit has to wait for that session.
-- When an origin is moving fast, prepare the version bump in a worktree off `origin/master` and
-  re-bump at commit time. A bump chosen earlier collides with the parallel session's release.
+- When joining a state-changing step after a script in one Bash call, use `&&`, never a newline. A
+  failed script was followed by an append of the unfinished draft into the review record.
+- When a PostToolUse formatter hook rewrites a file you will later patch by exact text, re-read it
+  or match by line prefix. Table padding changed, and the exact-text replace failed.
+- tooling: the review skill's "Error contract" row let a reviewer census only the package's own
+  `raise` sites; queued in `contrib_queue`.
 
 ## Exact next action
 
-Start rank 21 sweep 2: invoke `/bitranox:process-review-enhance-code-quality` on master (baseline 6.9/10;
-`src/btx_lib_mail/cli.py`, about 1300 lines, is the first split candidate). Rank 20 outranks
-rank 21 by number, but its own next action asks for a fresh session that writes a rollout plan for
-20 repos. Sweep 2 is the step that finishes the review the owner started. Rank 30 waits for the
-owner to lift the hold.
+Present Issue 1 from `.private/review-2026-10-02-sweep2.md` `# Synthesis`. Use the review skill's
+format (`## Issue 1: ...`, Severity, Affected files, Description, Suggested fix), then ask: "Do you
+want to implement this fix? Or skip it? If skipping, what's the reason?" Invoke
+`/bitranox:process-review-enhance-code-quality` first, to load its Step 5-7 rules. Rank 21 goes
+ahead of rank 20 because it is mid-flight and the owner chose to continue it.
 
 ## Files that matter
 
-- `src/btx_lib_mail/cli.py` (`_env_file_to_read`, `_env_file_refusal`, `_read_env_file`).
-- `src/btx_lib_mail/_attachments.py` (`_PATHS_IGNORE_CASE`, `_check_sensitive_patterns`).
-- `tests/conftest.py` (`_empty_working_directory`), `tests/test_cli_send.py` (`_flat`),
-  `tests/test_attachment_integrity.py` (`_attempt`).
-- `.private/review-2026-10-02.md` (the sweep-1 findings).
+- `.private/review-2026-10-02-sweep2.md`: the reports and the synthesis.
+- `pyproject.toml`: issue 1 (no `[tool.hatch.build.targets.sdist]`).
+- `src/btx_lib_mail/_compose.py:266`, `src/btx_lib_mail/_attachments.py`: issue 2.
+- `src/btx_lib_mail/_attachments.py:_open_attachment` and `tests/test_attachment_integrity.py`:
+  issue 3.
+- `src/btx_lib_mail/_transport.py:_login_plain_utf8` and `tests/test_streaming.py`: issue 4.
+- `src/btx_lib_mail/cli.py`: issue 5.
+- `skills/python-send-mail/SKILL.md`: issue 6.
 
 ## How to verify
 
 - `env -u VIRTUAL_ENV make test` ends with `{"result":"pass",...}`.
 - `gh run list --commit $(git rev-parse --verify -q HEAD) --json name,conclusion` shows CI and
-  CodeQL succeeding after the push.
+  CodeQL succeeding.
+- `grep -c "^# Reviewer:" .private/review-2026-10-02-sweep2.md` prints 5.
 
 > Read this, then replace the first line with `# STALE - read <date>, work continued`. Do not
 > delete it - if this session ends badly it is the only record of where things stood.
