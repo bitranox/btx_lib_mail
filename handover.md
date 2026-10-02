@@ -1,90 +1,87 @@
-# Handover - btx_lib_mail, 2026-10-02 10:45 (3.0.0 and 3.0.1 shipped; rank 20 rollout plan next)
+# Handover - btx_lib_mail, 2026-10-02 11:40 (CLI data-architecture refactor done, uncommitted)
 
-Read `OPEN-WORK.md` first: rank 20 (USER) and rank 30 (FOUND) are open.
+Read `OPEN-WORK.md` first: ranks 20 (USER), 22 (USER), 25 (FOUND), 30 (FOUND) are open.
 
 ## In flight
 
-Nothing is part-done. Old backlog rank 30 (ConfMail accepts a malformed host) shipped as 3.0.0;
-3.0.1 fixed a message regression 3.0.0 caused in consumers. Both are on PyPI, CI/CodeQL/Release
-green, and the bitranox-skills mirror of the skill shipped as 7.31.3.
+The data-architecture pass (rank 22) is finished and verified but NOT committed. Nothing else is
+part-done.
 
 ## Committed, or not
 
-- btx_lib_mail: everything committed. 1 local commit NOT pushed (`3b22b5e`, backlog line only)
-  plus this handover's commit; they ride with the next real change. Before any push, scan the
+- btx_lib_mail, UNCOMMITTED in the working tree (all verified together, nothing else mixed in):
+  - the refactor: `src/btx_lib_mail/cli.py`, `tests/test_cli.py`, `CHANGELOG.md` (Unreleased),
+    `docs/cli.md`, `docs/systemdesign/module_reference.md`, `CLAUDE.md`;
+  - one unrelated hunk: `src/btx_lib_mail/lib_mail.py` moves the orphaned `EMAIL_PATTERN`
+    docstring back under the constant - commit it separately;
+  - `OPEN-WORK.md` (ranks 22 and 25 added) and this file - committed together with this handover.
+- btx_lib_mail unpushed: `3b22b5e`, `696ce16` and the handover commit; before any push, scan the
   whole unpushed range for private names.
-- bitranox-skills clone: level with origin. Another session's `TODO-JEV.md` (staged) and
-  `handover.md` (modified) are uncommitted there; not ours, leave them alone.
+- bitranox-skills: shipped as `5539b236` (7.33.0) on master, CI green. Two local branches remain:
+  `skill/data-arch-error-surface-733` (equals master, safe to delete) and
+  `skill/data-arch-error-surface` (two superseded commits built on 7.32.0 before another session
+  took that number; content is in 5539b236, safe to delete). Its main clone still holds another
+  session's uncommitted `TODO-JEV.md` and `handover.md` - not ours.
 
 ## Decided, and why
 
-- Owner: 3.0.0 as a MAJOR (a host 2.x accepted is refused), shipped at once; 3.0.1 released at
-  once to fix the regression, 3.0.0 NOT yanked. Logged in `EXECUTION-USER-REVIEW.md`.
-- A blank `smtphosts` entry is DROPPED, not refused: `send()` already skipped blanks, and an empty
-  env value must keep meaning "no hosts".
-- `validate_smtp_host` runs the 2.x port/bracket checks FIRST and the new shape checks (comma,
-  extra colon, empty host name) only on what they let through, so every host 2.x refused keeps its
-  exact 2.x message; `tests/test_lib_mail.py::_REFUSED_BY_2X` pins 19 of them from 2.0.0's real
-  output.
-- The range message lost `, got <port>`: ConfMail scrubs the host only as a whole string, so the
-  re-quoted port leaked an all-digit secret written after a colon. The one deliberate 2.x text
-  change.
+- The CLI copies `conf` (`model_copy(deep=True)`) and assigns each resolved value with
+  validation, then calls `send(config=settings)`: the copy keeps the global untouched and carries
+  `raise_on_*`, which have no CLI option.
+- Refusals stay a plain `ValueError` (exit 22), not `click.BadParameter` (exit 1): `docs/cli.md`
+  documents 22.
+- Hosts are pre-checked with `validate_smtp_host` before the model, so a refused host is still
+  quoted; through the model it would read `"[redacted]"` (smtphosts is a credential field).
+- The EHLO-name refusal now names `smtp_local_hostname` instead of `local_hostname`: keeping the
+  old label would copy a private check into the CLI. Listed in the CHANGELOG.
+- Multi-fault input now reports a refused setting before a refused sender; inherent to boundary
+  parsing, documented.
 
 ## Decided against, and why
 
-- No yank of 3.0.0: its only defect is the message order, fixed in 3.0.1.
-- Did not change consumer tests to the 3.0.0 wording (semdex had started to; it reverted, and
-  said it pushes once 3.0.1 is on PyPI, which it now is): the library was wrong, not the tests.
+- No fix for the rank-25 blank-env STARTTLS finding in this change: it is a behaviour change
+  needing the owner's call on what a blank value means.
+- No fix for the bitranox-skills performance-review tests that fail from an interactive shell:
+  out of scope, queued in contrib_queue with the measured premise.
 
 ## Still open, untouched
 
-- Rank 20 (USER) and rank 30 (FOUND): see `OPEN-WORK.md`.
-- SessionStart nudges not acted on: memory consolidation due, self-improve near-miss candidates,
-  pending upstream contributions (two queued this session: the bitranox-skills pre-push linearity
-  flake, and the `git reset --keep` trap for compuse-git).
+- Ranks 20, 25, 30: see `OPEN-WORK.md`.
 
 ## Lessons for the next nap
 
-- The two previous handovers' lessons were never napped: `git show fca2a92:handover.md` and
-  `git show fe5e8d1:handover.md`.
-- When a skill paragraph is checked against the library, execute every claim with output
-  assertions: that run found the `, got <port>` digit leak.
-- When a gate runs only `tests/`, remember `make test` also runs `--doctest-modules` over `src/`:
-  a docstring example (`bad:host:format`) failed only in the full gate.
-- When syncing a mirrored skill into bitranox-skills, fetch first: another session can push the
-  plugin version you bumped locally; rebuild the commit on origin/master in a worktree with the
-  next version.
-- When uv says a just-published version does not exist, retry with `--no-cache`: a plain run
-  reuses its cached negative index answer even after `--no-cache` succeeded once.
-- tooling: the bitranox-skills pre-push linearity test asserts a wall-clock ratio and failed at
-  load ~38, then passed 3/3 in isolation (queued in contrib_queue).
+- When a refactor moves validation into a boundary model, diff exception type, exit code and
+  message through HEAD and the new code for single-fault inputs: green tests miss it (now STEP C
+  item 5 of the data-architecture skill).
+- When asserting on rich-click usage-error text in a test, assert on the exception
+  (`standalone_mode=False` or `result.exception`), not `result.output`: the box wraps at 80 columns.
+- When a marketplace push finds the version you bumped already taken upstream, rebuild on a fresh
+  branch from origin/master with the next number; `git commit --amend` is refused as destructive.
+- tooling: coding-python-performance-review tests fail (13) from an interactive Bash shell but pass
+  under the repo-gate push hook and CI; cause unknown, queued.
 
 ## Exact next action
 
-Rank 20 is the top item. In a fresh session, with bitranox:process-plan-writing-plans, write the
-rollout plan from Section 2 of
-`../../apps/bitranox_template_py_cli/.private/plans/2026-10-01-confmail-move-design.md`, with a
-first task that raises the template's floor to `btx_lib_mail>=3.0.1` and drops
-`EmailConfig._check_hosts`. Re-enumerate the targets fresh:
-
-```bash
-find <softdev root> -name config.py -path '*adapters/email/*' -not -path '*/.venv*' -not -path '*/.claude/worktrees/*'
-```
+Rank 22 goes before rank 20 although 20 is bigger: it is uncommitted work in a shared tree that a
+reset or another session can lose, and it needs only a review and two commits. Start with
+`git diff` in the btx_lib_mail root, then commit the refactor and the `lib_mail.py` docstring move
+as two pathspec commits, then ask the owner whether to release 3.1.0. After that, rank 20 as the
+previous handover described (rollout plan with bitranox:process-plan-writing-plans).
 
 ## Files that matter
 
-- `OPEN-WORK.md`
-- `../../apps/bitranox_template_py_cli/.private/plans/2026-10-01-confmail-move-design.md` (Section 2)
-- `../../apps/bitranox_template_py_cli/src/bitranox_template_py_cli/adapters/email/config.py`
-- `src/btx_lib_mail/lib_mail.py` (`validate_smtp_host`, `_validate_port_and_brackets`,
-  `_validate_host_shape`, `_checked_hosts`)
+- `src/btx_lib_mail/cli.py` (`cli_send_mail`, `_refusals_as_value_error`, `_checked_hosts`,
+  `_or_default`, `_unquoted`)
+- `tests/test_cli.py` (`_sent_config`, `_LOOSE_SETTING_KEYWORDS`, the refusal tests)
+- `EXECUTION-USER-REVIEW.md` (gitignored; 2026-10-02 data-architecture entry)
 
 ## How to verify
 
-- PyPI: `curl -s -H 'Accept: application/vnd.pypi.simple.v1+json' https://pypi.org/simple/btx-lib-mail/`
-  lists `btx_lib_mail-3.0.1` wheel and sdist.
-- Gate: `env -u VIRTUAL_ENV make test` (via the compuse-toolbox gate jig when backgrounded).
-- Backlog current: `uv run ~/.claude/skills/toolbox/tools/backlogcheck.py --file OPEN-WORK.md`.
+- `env -u VIRTUAL_ENV make test` ends `{"result":"pass"}`.
+- `env -u VIRTUAL_ENV .venv/bin/pyright --pythonpath .venv/bin/python` reports 0 errors.
+- `BTX_MAIL_ATTACHMENT_MAX_SIZE=0 .venv/bin/python -m btx_lib_mail send --host relay.example.com
+  --recipient b@example.com --subject s --body b` exits 22 with
+  `ValueError: attachment_max_size_bytes must be positive, got 0`.
 
 > Read this, then replace the first line with `# STALE - read <date>, work continued`. Do not
 > delete it - if this session ends badly it is the only record of where things stood.
