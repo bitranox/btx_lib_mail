@@ -1287,7 +1287,7 @@ def test_send_refuses_a_host_with_a_control_character_before_any_delivery(hosts:
             transport=transport,
         )
     assert "\n" not in str(caught.value)
-    assert "FORGED line" not in caplog.text, "no delivery attempt, so no log line at all was produced"
+    assert caplog.records == [], "no delivery attempt, so no log line at all was produced"
 
 
 @pytest.mark.os_agnostic

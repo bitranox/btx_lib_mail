@@ -507,6 +507,7 @@ def _utf8_authenticator(seen: list[bool]) -> Any:
 
 
 @pytest.mark.os_agnostic
+@pytest.mark.filterwarnings("ignore:Requiring AUTH while not requiring TLS:UserWarning")  # the plain-text AUTH is the point
 def test_a_non_ascii_password_authenticates_with_utf8_plain() -> None:
     seen: list[bool] = []
     handler = _CollectingHandler()
@@ -529,6 +530,7 @@ def test_a_non_ascii_password_authenticates_with_utf8_plain() -> None:
 
 
 @pytest.mark.os_agnostic
+@pytest.mark.filterwarnings("ignore:Requiring AUTH while not requiring TLS:UserWarning")  # the plain-text AUTH is the point
 def test_credentials_sent_without_tls_are_reported_as_a_warning(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level("WARNING", logger="btx_lib_mail")
     seen: list[bool] = []
@@ -570,6 +572,7 @@ def test_an_anonymous_session_without_tls_logs_no_credential_warning(
 
 
 @pytest.mark.os_agnostic
+@pytest.mark.filterwarnings("ignore:Requiring AUTH while not requiring TLS:UserWarning")  # the plain-text AUTH is the point
 def test_a_wrong_non_ascii_password_is_refused_without_quoting_it(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level("WARNING", logger="btx_lib_mail")
     seen: list[bool] = []

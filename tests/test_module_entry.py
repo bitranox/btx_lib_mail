@@ -200,14 +200,14 @@ def test_when_traceback_flag_is_used_via_module_entry_the_full_poem_is_printed(
 
 
 @pytest.mark.os_agnostic
-def test_when_module_entry_imports_cli_the_alias_stays_intact() -> None:
-    assert cli_mod.cli.name == cli_mod.cli.name
-
-
-@pytest.mark.os_agnostic
 def test_when_the_module_is_imported_it_runs_nothing() -> None:
-    sys.modules.pop("btx_lib_mail.__main__", None)
+    # Left imported, every later runpy of btx_lib_mail.__main__ warns that it is already loaded.
+    previous = sys.modules.pop("btx_lib_mail.__main__", None)
+    try:
+        module = importlib.import_module("btx_lib_mail.__main__")
 
-    module = importlib.import_module("btx_lib_mail.__main__")
-
-    assert module.cli is cli_mod
+        assert module.cli is cli_mod
+    finally:
+        sys.modules.pop("btx_lib_mail.__main__", None)
+        if previous is not None:
+            sys.modules["btx_lib_mail.__main__"] = previous
