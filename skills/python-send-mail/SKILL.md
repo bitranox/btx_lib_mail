@@ -99,13 +99,12 @@ send(
 `ConfMail` field names are NOT the `send()` keyword names: the connection fields carry an `smtp_`
 prefix (`use_starttls` -> `smtp_use_starttls`, `starttls_verify` -> `smtp_starttls_verify`,
 `timeout` -> `smtp_timeout`, `local_hostname` -> `smtp_local_hostname`, `credentials` ->
-`smtp_username` plus `smtp_password`; `smtp_timeout` defaults to `30.0` seconds). From btx_lib_mail
-2.0.0 a key that is not a `ConfMail` field is REFUSED: construction and `model_validate` raise
+`smtp_username` plus `smtp_password`; `smtp_timeout` defaults to `30.0` seconds). A key that is
+not a `ConfMail` field is REFUSED: construction and `model_validate` raise
 one `pydantic.ValidationError` listing every unknown key (each entry's `type` is `extra_forbidden`
 and its `loc` the key, never the value; branch on those, not on the message text), so
-`ConfMail(use_starttls=False)` fails instead of leaving STARTTLS on. Before 2.0.0 the same key was
-silently ignored. `sorted(ConfMail.model_fields)` lists every valid name. A loader maps each of its
-keys onto a field name and drops only the keys it KNOWS are not SMTP settings; never pass "the rest"
+`ConfMail(use_starttls=False)` fails instead of leaving STARTTLS on.
+`sorted(ConfMail.model_fields)` lists every valid name. A loader maps each of its keys onto a field name and drops only the keys it KNOWS are not SMTP settings; never pass "the rest"
 through, and never filter down to `model_fields`, which would bring the silent drop back:
 
 ```python
@@ -125,16 +124,14 @@ def build_conf(section: Mapping[str, object]) -> ConfMail:
 A `credentials` pair is not a `ConfMail` key either: split it into `smtp_username` and
 `smtp_password` before validating.
 
-From btx_lib_mail 3.0.0 `ConfMail` checks every `smtphosts` entry with `validate_smtp_host` when it
+`ConfMail` checks every `smtphosts` entry with `validate_smtp_host` when it
 is built, validated or assigned, so a malformed host raises `pydantic.ValidationError` (`loc`
 `("smtphosts",)`, the host never repeated) at load time instead of at the first `send()`: a port
-outside 1-65535 or not a number (`smtp.example.com:58o7`; from 3.1.0 also a port that is not plain
-ASCII digits, such as `:+25`, `:2_5` or Arabic-Indic digits), an unclosed IPv6 bracket, an IPv6
-address without brackets (`fe80::1`; write `[fe80::1]:25`), a port with no host name (`:25`), and
+outside 1-65535 or not plain ASCII digits (`smtp.example.com:58o7`, `:+25`, `:2_5`),
+an unclosed IPv6 bracket, an IPv6 address without brackets (`fe80::1`; write `[fe80::1]:25`), a port with no host name (`:25`), and
 two hosts in one entry (`smtphosts="a.example.com:25,b.example.com:25"` is refused; write
 `ConfMail(smtphosts=["a.example.com:25", "b.example.com:25"])`). A blank entry, such as
-an environment variable that is set but empty, is dropped, so `""` means no hosts. Before 3.0.0
-`ConfMail` accepted all of these and the mistake surfaced only at delivery. Only the CLI splits a
+an environment variable that is set but empty, is dropped, so `""` means no hosts. Only the CLI splits a
 comma-separated `--host` or `BTX_MAIL_SMTP_HOSTS`; a Python caller splits such a string itself.
 
 A non-ASCII username or password (an umlaut, a non-Latin script) authenticates over RFC 4616 AUTH
@@ -261,10 +258,9 @@ precedence.
 
 The client announces itself in `EHLO` with the name from `send(local_hostname=...)`, else
 `ConfMail.smtp_local_hostname` (on `conf` or on your `config=`); on the CLI, `--local-hostname`, else
-`BTX_MAIL_SMTP_LOCAL_HOSTNAME`. Available from btx_lib_mail 1.8.0. Unset, it is this host's fully
+`BTX_MAIL_SMTP_LOCAL_HOSTNAME`. Unset, it is this host's fully
 qualified name found by reverse DNS (an address literal such as `[192.0.2.7]` when the name has no
-dot), looked up once per process and reused (before 1.8.0 it was looked up again for every
-connection, so every recipient of every send paid it). Set it when a send stalls before the first byte reaches
+dot), looked up once per process and reused. Set it when a send stalls before the first byte reaches
 the relay while the relay itself answers instantly (slow reverse DNS), or when the relay refuses the
 greeting (`501 ... HELO/EHLO argument invalid`), typically from a container whose hostname has no
 domain part:
