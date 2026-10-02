@@ -130,6 +130,27 @@ def test_when_module_entry_raises_the_exit_helpers_format_the_song(monkeypatch: 
 
 
 @pytest.mark.os_agnostic
+@pytest.mark.parametrize(("traceback", "expected_limit"), [(True, 22), (False, 11)], ids=["verbose", "summary"])
+def test_an_exception_escaping_the_cli_runner_is_printed_with_the_budget_of_the_traceback_mode(
+    monkeypatch: pytest.MonkeyPatch, isolated_traceback_config: None, traceback: bool, expected_limit: int
+) -> None:
+    # run_cli handles a command's own failure, so main()'s except branch needs one escaping it.
+    printed: list[PrintedTraceback] = []
+
+    def exploding_run_cli(*_args: object, **_kwargs: object) -> int:
+        cli_mod.apply_traceback_preferences(traceback)  # what --traceback does once parsed
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(lib_cli_exit_tools, "print_exception_message", _record_print_message(printed))
+    monkeypatch.setattr(lib_cli_exit_tools, "run_cli", exploding_run_cli)
+
+    exit_code = cli_mod.main(["info"], summary_limit=11, verbose_limit=22)
+
+    assert exit_code != 0
+    assert printed == [PrintedTraceback(trace_back=traceback, length_limit=expected_limit, stream_present=False)]
+
+
+@pytest.mark.os_agnostic
 @pytest.mark.parametrize("argv", [["send", "--host", "smtp.example.com"], ["no-such-command"], ["validate-email", "not-an-address"]])
 def test_module_entry_exits_with_the_code_the_console_script_gives(monkeypatch: pytest.MonkeyPatch, isolated_traceback_config: None, argv: list[str]) -> None:
     script_code = cli_mod.main(argv)
