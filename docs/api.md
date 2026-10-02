@@ -168,8 +168,8 @@ C:\Windows, C:\Windows\System32, C:\Program Files, C:\Program Files (x86), C:\Pr
 
 #### Sensitive Path Patterns (always blocked, all platforms)
 
-Matched as substrings of the resolved path (forward slashes), ignoring case, because
-macOS and Windows file systems are case-insensitive:
+Matched as substrings of the resolved path (forward slashes); ignoring case on macOS and
+Windows, whose file systems do, and exactly on Linux:
 
 ```
 /.ssh/, /id_rsa, /id_ed25519, /id_ecdsa, /authorized_keys, /known_hosts,

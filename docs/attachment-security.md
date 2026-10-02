@@ -16,9 +16,9 @@ of sensitive files, dangerous executables, or oversized payloads.
    allowed one.
 3. **Sensitive Pattern Detection**  -  Paths matching patterns like `/.ssh/`,
    `/id_rsa`, `/.env`, `/credentials`, `/.aws/credentials`, `/.netrc`,
-   `/.git-credentials` are always blocked. The match ignores case on every platform,
-   since macOS and Windows file systems are case-insensitive (`.SSH/config` is
-   `~/.ssh/config` there).
+   `/.git-credentials` are always blocked. On macOS and Windows the match ignores
+   case, since their file systems do (`.SSH/config` is `~/.ssh/config` there); on
+   Linux it is exact, where `.SSH/config` is a different file.
 4. **Directory Restrictions**  -  By default, files from system directories
    (`/etc`, `/var`, `/root`, etc. on POSIX; `C:\Windows`, etc. on Windows) are
    blocked. Use `attachment_allowed_directories` for whitelist mode.

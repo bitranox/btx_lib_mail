@@ -157,8 +157,13 @@ SENSITIVE_PATH_PATTERNS: Final[tuple[str, ...]] = (
 )
 """Path patterns that indicate sensitive files (always blocked).
 
-Matched as substrings of the resolved path with forward slashes, ignoring case.
+Matched as substrings of the resolved path with forward slashes; ignoring case on
+macOS and Windows, exactly on other platforms.
 """
+
+# macOS and Windows file systems ignore case by default, so .SSH/config IS ~/.ssh/config
+# there; on Linux it is a different file that no SSH client reads.
+_PATHS_IGNORE_CASE: Final[bool] = sys.platform in ("darwin", "win32")
 
 
 def default_blocked_extensions() -> frozenset[str]:
@@ -391,6 +396,10 @@ def _check_symlink(*, path: pathlib.Path, allow_symlinks: bool) -> pathlib.Path:
     return path.resolve()
 
 
+def _case_as_the_file_system_does(text: str) -> str:
+    return text.casefold() if _PATHS_IGNORE_CASE else text
+
+
 def _check_sensitive_patterns(path: pathlib.Path) -> None:
     """Check if the path matches any sensitive patterns.
 
@@ -406,12 +415,11 @@ def _check_sensitive_patterns(path: pathlib.Path) -> None:
     ------------
     Raises AttachmentSecurityError if sensitive pattern is matched.
     """
-    # Forward slashes so one pattern serves Windows too; casefolded because macOS and
-    # Windows file systems are case-insensitive, where .SSH/config IS ~/.ssh/config.
-    path_str_normalised = str(path).replace("\\", "/").casefold()
+    # Forward slashes so one pattern serves Windows too.
+    path_str_normalised = _case_as_the_file_system_does(str(path).replace("\\", "/"))
 
     for pattern in SENSITIVE_PATH_PATTERNS:
-        if pattern.casefold() in path_str_normalised:
+        if _case_as_the_file_system_does(pattern) in path_str_normalised:
             raise AttachmentSecurityError(
                 path=path,
                 reason=f'path matches sensitive pattern "{pattern}": "{path}"',

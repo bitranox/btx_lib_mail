@@ -279,9 +279,10 @@ Authentication needs both a username and a password; with only one of them the m
 without authenticating.
 
 Settings resolve, per setting: the command-line option, then the `BTX_MAIL_*` environment
-variable, then the `KEY=value` file named by `--env-file PATH` (or `BTX_MAIL_ENV_FILE`), then the
-library's `conf`. No file is read unless it is named: a `.env` in the working directory is
-ignored, so run `btx-lib-mail send --env-file .env ...` to use one; when no source gives a host
+variable, then the `KEY=value` env file, then the library's `conf`. The env file is `.env` in the
+working directory when it is a regular file; `--env-file PATH` (or `BTX_MAIL_ENV_FILE`) names
+another file to read INSTEAD (a key it lacks is not looked up in `./.env`). A `.env` can set the
+relay and switch STARTTLS off, so run `send` only where you trust it; when no source gives a host
 (`conf.smtphosts` is empty by default), `send` stops with "Provide at least one SMTP host",
 exit code `2`, and sends nothing. The environment variable names
 are NOT mechanically derived from the flags - `--host` reads `BTX_MAIL_SMTP_HOSTS`, `--recipient`
@@ -345,9 +346,10 @@ the container's hostname is not needed.
 ## Attachment security
 
 Attachments are checked before any bytes are read, and rejected for: a `..` path component, a
-symlink as the last path component (off by default), sensitive paths matched case-insensitively
-(`/.ssh/`, `/id_rsa`, `/.env`, `/.aws/credentials`, `/.netrc`, `/.git-credentials`, `/.pypirc`,
-`/token`, `/password`, and more), system directories, dangerous extensions, and oversize payloads.
+symlink as the last path component (off by default), sensitive paths (`/.ssh/`, `/id_rsa`, `/.env`,
+`/.aws/credentials`, `/.netrc`, `/.git-credentials`, `/.pypirc`, `/token`, `/password`, and more;
+case ignored on macOS and Windows, exact on Linux), system directories, dangerous extensions, and
+oversize payloads.
 The dangerous-extension default is the SAME on every platform: the union of
 `DANGEROUS_EXTENSIONS_POSIX` and `DANGEROUS_EXTENSIONS_WINDOWS`, because the recipient's system
 decides what an attachment runs as, so a Linux sender refuses `invoice.exe` and `run.bat`. The

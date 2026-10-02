@@ -73,7 +73,7 @@ tests/
   FileNotFoundError, `DeliveryError` RuntimeError with `failed_recipients`/`hosts`)
 - **CLI**: `cli.py` uses rich-click groups; `lib_cli_exit_tools` handles exit codes (`docs/cli.md`, "Exit codes").
   `send` builds one `ConfMail` (a copy of `conf`, each resolved option assigned with validation) from options >
-  environment > `--env-file` (never an implicit `./.env`) and calls `send(config=)`. `ctx.obj` is a typed
+  environment > the env file (`--env-file`, else `./.env`) and calls `send(config=)`. `ctx.obj` is a typed
   `CliContext` (output mode, traceback, and a `transport` seam for embedding/tests). `--json`/`--json-bare` on the
   group (read from the tokens before the subcommand); failures become JSON in `main()`'s exception handler.
   `python -m btx_lib_mail` runs `cli.main()` too
@@ -153,7 +153,7 @@ Attachments are validated against multiple security checks:
 
 1. **Path Traversal**  -  a `..` path component is rejected
 2. **Symlinks**  -  a symlink as the last component is rejected by default (`attachment_allow_symlinks=False`)
-3. **Sensitive Patterns**  -  `/.ssh/`, `/id_rsa`, `/.env`, `/.netrc`, etc. always blocked, case-insensitively
+3. **Sensitive Patterns**  -  `/.ssh/`, `/id_rsa`, `/.env`, `/.netrc`, etc. always blocked; case ignored on macOS/Windows only
 4. **Directory Restrictions**  -  System directories blocked by default
 5. **Extension Filtering**  -  POSIX and Windows dangerous extensions (`.sh`, `.exe`, etc.) blocked on every platform
 6. **Size Limits**  -  Default 25 MiB (`attachment_max_size_bytes`), also enforced while reading

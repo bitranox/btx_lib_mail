@@ -60,7 +60,9 @@ _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
 _T = TypeVar("_T")
 
-# An --env-file is a handful of KEY=value lines; anything larger is not one, and is
+# Resolved against the working directory each time it is read, so it follows a chdir.
+_DOTENV_PATH: Final[Path] = Path(".env")
+# An env file is a handful of KEY=value lines; anything larger is not one, and is
 # refused before it is read rather than parsed into memory.
 _ENV_FILE_MAX_BYTES: Final[int] = 64 * 1024
 # A password file holds one line; more than this is not a password file.
@@ -73,7 +75,7 @@ _FAILED_RUN_SKIPPED: ContextVar[tuple[dict[str, str], ...]] = ContextVar("btx_ma
 
 
 # ---------------------------------------------------------------------------
-# Where unset options come from: the environment, then an explicit --env-file
+# Where unset options come from: the environment, then the env file
 # ---------------------------------------------------------------------------
 
 
@@ -81,10 +83,9 @@ _FAILED_RUN_SKIPPED: ContextVar[tuple[dict[str, str], ...]] = ContextVar("btx_ma
 class _Sources:
     """The values a command may read for an option it was not given.
 
-    The process environment wins over the ``--env-file``; a key set to an empty
-    string in either counts as unset. No file is read unless it was named, so a
-    ``.env`` that happens to sit in the working directory (a cloned repository,
-    a shared folder) cannot redirect delivery or relax a security setting.
+    The process environment wins over the env file; a key set to an empty
+    string in either counts as unset. The env file is the one ``--env-file``
+    names, otherwise ``.env`` in the working directory when it is a file.
     """
 
     environ: Mapping[str, str]
@@ -97,26 +98,43 @@ class _Sources:
         return self.env_file.get(key) or None
 
 
+def _env_file_to_read(named: Path | None) -> Path | None:
+    """Return the file ``--env-file`` names, else ``./.env`` when it is a regular file.
+
+    A named file replaces ``./.env`` entirely: keys it lacks do not fall through.
+    """
+    if named is not None:
+        return named
+    return _DOTENV_PATH if _DOTENV_PATH.is_file() else None
+
+
+def _env_file_refusal(path: Path, problem: str) -> click.UsageError:
+    """Name the file the way the user chose it: the ``--env-file`` value, or the implicit ``./.env``."""
+    if path is _DOTENV_PATH:
+        return click.UsageError(f"./.env in the working directory {problem}")
+    return click.BadParameter(f"{path} {problem}", param_hint="--env-file")
+
+
 def _read_env_file(path: Path | None) -> dict[str, str]:
-    """Parse the named env file once into ``KEY -> value`` (first occurrence wins).
+    """Parse the env file once into ``KEY -> value`` (first occurrence wins).
 
     Lines are ``KEY=value``; blank lines, ``#`` comments and lines without ``=``
     are skipped; a value is stripped of whitespace and one layer of quotes.
 
     Raises
     ------
-    click.BadParameter
+    click.UsageError
         The file is larger than ``_ENV_FILE_MAX_BYTES`` or not UTF-8.
     """
     if path is None:
         return {}
     size = path.stat().st_size
     if size > _ENV_FILE_MAX_BYTES:
-        raise click.BadParameter(f"{path} is {size} bytes; an env file may be at most {_ENV_FILE_MAX_BYTES} bytes", param_hint="--env-file")
+        raise _env_file_refusal(path, f"is {size} bytes; an env file may be at most {_ENV_FILE_MAX_BYTES} bytes")
     try:
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError as exc:
-        raise click.BadParameter(f"{path} is not UTF-8 text", param_hint="--env-file") from exc
+        raise _env_file_refusal(path, "is not UTF-8 text") from exc
     values: dict[str, str] = {}
     for line in text.splitlines():
         stripped = line.strip()
@@ -876,7 +894,7 @@ def cli_hello(ctx: click.Context) -> None:
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     envvar="BTX_MAIL_ENV_FILE",
     default=None,
-    help="Read unset BTX_MAIL_* settings from this KEY=value file (also BTX_MAIL_ENV_FILE). No file is read unless named.",
+    help="Read unset BTX_MAIL_* settings from this KEY=value file instead of ./.env (also BTX_MAIL_ENV_FILE).",
 )
 @option(
     "--starttls/--no-starttls",
@@ -1012,8 +1030,8 @@ def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per sett
     - `html_body: str | None` - Optional HTML body.
     - `attachments: Sequence[Path]` - Zero or more filesystem paths to attach.
     - `env_file: Path | None` - `KEY=value` file read for settings neither an
-      option nor the environment gave; also `BTX_MAIL_ENV_FILE`. No file is
-      read unless it is named.
+      option nor the environment gave; also `BTX_MAIL_ENV_FILE`. When it is not
+      given, `./.env` is read if it is a regular file.
     - `starttls: bool | None` - Override for STARTTLS preference. When `None`,
       falls back to the sources, then `conf`.
     - `starttls_verify: bool | None` - Override for STARTTLS certificate
@@ -1037,7 +1055,7 @@ def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per sett
     propagate to the shared error handlers.
     """
 
-    sources = _Sources(environ=os.environ, env_file=_read_env_file(env_file))
+    sources = _Sources(environ=os.environ, env_file=_read_env_file(_env_file_to_read(env_file)))
     requested_hosts = _resolve_list(hosts, "BTX_MAIL_SMTP_HOSTS", label="SMTP host", sources=sources)
     resolved_recipients = _resolve_list(recipients, "BTX_MAIL_RECIPIENTS", label="recipient", sources=sources)
     sender_value = sender or sources.value("BTX_MAIL_SENDER") or resolved_recipients[0]

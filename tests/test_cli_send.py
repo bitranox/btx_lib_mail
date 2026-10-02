@@ -223,21 +223,71 @@ def test_without_a_host_the_command_asks_for_one(cli_runner: CliRunner) -> None:
 
 
 # ---------------------------------------------------------------------------
-# The env file is read only when it is named
+# The env file: ./.env by default, or the one named
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.os_agnostic
-def test_a_dotenv_in_the_working_directory_is_not_read(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner, tmp_path: Path) -> None:
-    # A cloned repository or a shared folder can carry a .env; it must not be able
-    # to redirect delivery, switch STARTTLS off, or lift a blocklist on its own.
-    (tmp_path / ".env").write_text("BTX_MAIL_SMTP_HOSTS=attacker.example.com\nBTX_MAIL_SMTP_USE_STARTTLS=false\n", encoding="utf-8")
+def test_a_dotenv_in_the_working_directory_supplies_unset_settings(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner, tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text("BTX_MAIL_SMTP_HOSTS=relay.example.com\nBTX_MAIL_SMTP_USE_STARTTLS=false\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
     result, transport = _invoke(cli_runner, ["send", "--recipient", "one@example.com", *_MESSAGE])
 
+    assert result.exit_code == 0, result.output
+    assert transport.only.host == "relay.example.com"
+    assert transport.only.options.use_starttls is False
+
+
+@pytest.mark.os_agnostic
+def test_a_named_env_file_replaces_the_dotenv_in_the_working_directory(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner, tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text("BTX_MAIL_SMTP_HOSTS=dotenv.example.com\nBTX_MAIL_SENDER=dotenv@example.com\n", encoding="utf-8")
+    named = tmp_path / "mail.env"
+    named.write_text("BTX_MAIL_SMTP_HOSTS=named.example.com\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    result, transport = _invoke(cli_runner, ["send", "--env-file", str(named), "--recipient", "one@example.com", *_MESSAGE])
+
+    assert result.exit_code == 0, result.output
+    # Only the named file is read: a key it lacks does not fall through to ./.env.
+    assert (transport.only.host, transport.only.sender) == ("named.example.com", "one@example.com")
+
+
+@pytest.mark.os_agnostic
+def test_the_environment_wins_over_the_dotenv_in_the_working_directory(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner, tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text("BTX_MAIL_SMTP_HOSTS=dotenv.example.com\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BTX_MAIL_SMTP_HOSTS", "env.example.com")
+
+    result, transport = _invoke(cli_runner, ["send", "--recipient", "one@example.com", *_MESSAGE])
+
+    assert result.exit_code == 0, result.output
+    assert transport.only.host == "env.example.com"
+
+
+@pytest.mark.os_agnostic
+def test_a_dotenv_that_is_not_a_file_is_ignored(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner, tmp_path: Path) -> None:
+    (tmp_path / ".env").mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    result, transport = _invoke(cli_runner, ["send", *_ROUTE, *_MESSAGE])
+
+    assert result.exit_code == 0, result.output
+    assert transport.only.host == "smtp.example.com"
+
+
+@pytest.mark.os_agnostic
+def test_an_oversized_dotenv_in_the_working_directory_is_refused(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner, tmp_path: Path) -> None:
+    (tmp_path / ".env").write_bytes(b"#" * (cli_mod._ENV_FILE_MAX_BYTES + 1))
+    monkeypatch.chdir(tmp_path)
+
+    result, transport = _invoke(cli_runner, ["send", *_ROUTE, *_MESSAGE])
+
     assert result.exit_code == 2
-    assert "Provide at least one SMTP host" in result.output
+    # Rich wraps the message in a box; compare it as one line.
+    flat = " ".join(result.output.replace("│", " ").split())
+    assert f"./.env in the working directory is {cli_mod._ENV_FILE_MAX_BYTES + 1} bytes; an env file may be at most" in flat
+    assert "--env-file" not in flat
     assert transport.deliveries == []
 
 

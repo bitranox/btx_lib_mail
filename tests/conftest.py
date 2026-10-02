@@ -65,6 +65,16 @@ def _restore_cli_config(snapshot: dict[str, object]) -> None:
         setattr(lib_cli_exit_tools.config, name, value)
 
 
+@pytest.fixture(autouse=True)
+def _empty_working_directory(monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:  # pyright: ignore[reportUnusedFunction]
+    """Run every test from an empty directory.
+
+    The CLI reads a ``.env`` in the working directory; run from a checkout, a
+    developer's own ``.env`` would route test mail to their real relay.
+    """
+    monkeypatch.chdir(tmp_path_factory.mktemp("cwd"))
+
+
 @pytest.fixture
 def cli_runner() -> CliRunner:
     """Provide a fresh :class:`CliRunner` per test."""

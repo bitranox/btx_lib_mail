@@ -191,8 +191,8 @@ that one call and is not checked, while passing `None` uses the value on the con
 The `send` command resolves each setting in this order:
 1. **CLI options** passed to `btx_lib_mail send`.
 2. **Environment variables** exported in the shell (`BTX_MAIL_*` keys below).
-3. Entries in the `KEY=value` file named by `--env-file` (or `BTX_MAIL_ENV_FILE`). No file
-   is read unless it is named; a `.env` in the working directory is ignored.
+3. Entries in the `KEY=value` env file: the one named by `--env-file` (or
+   `BTX_MAIL_ENV_FILE`), otherwise `.env` in the working directory when it is a file.
 4. Defaults baked into `btx_lib_mail.conf`.
 
 Environment variables understood by the CLI:
@@ -225,12 +225,13 @@ Environment variables understood by the CLI:
 | `BTX_MAIL_ATTACHMENT_ALLOW_SYMLINKS`    | Boolean flag allowing symlinks.                           | `false`                |
 | `BTX_MAIL_ATTACHMENT_RAISE_ON_SECURITY` | Boolean flag to raise on violations (vs. warn and skip).  | `true`                 |
 
-An env file is optional and read only when named (`--env-file PATH` or
-`BTX_MAIL_ENV_FILE`). The CLI trims whitespace, honours quoted values, and treats empty
-strings as unset; the first occurrence of a key wins, and the file must be UTF-8 and at
-most 64 KiB. Exporting an environment variable always overrides the file; explicit CLI
-flags override both. A `.env` that merely sits in the working directory is never read:
-it could otherwise redirect delivery or relax a security setting (see
+The env file is optional: `send` reads `.env` in the working directory when it is a
+regular file, and `--env-file PATH` (or `BTX_MAIL_ENV_FILE`) names another file to read
+instead. The CLI trims whitespace, honours quoted values, and treats empty strings as
+unset; the first occurrence of a key wins, and the file must be UTF-8 and at most 64 KiB.
+Exporting an environment variable always overrides the file; explicit CLI flags override
+both. A `.env` can set the relay and relax security settings, so run `send` only from a
+directory whose `.env` you trust (see
 [the CLI reference](cli.md#where-send-settings-come-from)).
 
 > **Note:** Environment and env-file lookups occur only in the CLI adapter. If you

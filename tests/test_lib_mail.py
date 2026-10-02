@@ -1453,6 +1453,28 @@ class TestSizeLimit:
         assert result is True
 
 
+# Case variants of names the SSH, AWS and GnuPG clients and dotenv loaders read.
+_CASE_VARIANTS_OF_CREDENTIAL_FILES: tuple[str, ...] = (".SSH/config", ".AWS/CREDENTIALS", ".GNUPG/pubring.kbx", ".Env")
+
+
+def _written(target: Path) -> Path:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("secret material")
+    return target
+
+
+def _send_one_attachment(attachment: Path) -> bool:
+    return lib_mail.send(
+        mail_from="sender@example.com",
+        mail_recipients="recipient@example.com",
+        mail_subject="Subject",
+        smtphosts=["smtp.example.com"],
+        attachment_file_paths=[attachment],
+        attachment_blocked_directories=frozenset(),
+        transport=FakeTransport(),
+    )
+
+
 class TestSensitivePatterns:
     """Tests for sensitive path pattern detection."""
 
@@ -1494,10 +1516,10 @@ class TestSensitivePatterns:
     @pytest.mark.parametrize(
         "relative",
         [
-            ".SSH/config",
-            ".AWS/CREDENTIALS",
-            ".GNUPG/pubring.kbx",
-            ".Env",
+            ".ssh/config",
+            ".aws/credentials",
+            ".gnupg/pubring.kbx",
+            ".env",
             ".netrc",
             ".pgpass",
             ".git-credentials",
@@ -1507,24 +1529,30 @@ class TestSensitivePatterns:
             ".config/gh/hosts.yml",
         ],
     )
-    def test_a_credential_file_is_blocked_whatever_its_case(self, tmp_path: Path, relative: str) -> None:
-        # macOS and Windows file systems are case-insensitive, so .SSH/config IS
-        # ~/.ssh/config there; the match ignores case on every platform.
-        target = tmp_path / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("secret material")
-
+    def test_a_credential_file_is_blocked(self, tmp_path: Path, relative: str) -> None:
         with pytest.raises(lib_mail.AttachmentSecurityError) as excinfo:
-            lib_mail.send(
-                mail_from="sender@example.com",
-                mail_recipients="recipient@example.com",
-                mail_subject="Subject",
-                smtphosts=["smtp.example.com"],
-                attachment_file_paths=[target],
-                attachment_blocked_directories=frozenset(),
-                transport=FakeTransport(),
-            )
+            _send_one_attachment(_written(tmp_path / relative))
         assert excinfo.value.violation_type is lib_mail.AttachmentViolation.SENSITIVE_PATTERN
+
+    @pytest.mark.os_macos
+    @pytest.mark.os_windows
+    @pytest.mark.skipif(sys.platform not in ("darwin", "win32"), reason="macOS and Windows file systems ignore case; Linux file systems do not")
+    @pytest.mark.parametrize("relative", _CASE_VARIANTS_OF_CREDENTIAL_FILES)
+    def test_a_case_variant_of_a_credential_file_is_blocked_where_paths_ignore_case(self, tmp_path: Path, relative: str) -> None:
+        # .SSH/config IS ~/.ssh/config on a case-insensitive file system.
+        with pytest.raises(lib_mail.AttachmentSecurityError) as excinfo:
+            _send_one_attachment(_written(tmp_path / relative))
+        assert excinfo.value.violation_type is lib_mail.AttachmentViolation.SENSITIVE_PATTERN
+
+    @pytest.mark.os_linux
+    @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux file systems tell names apart by case")
+    @pytest.mark.parametrize("relative", _CASE_VARIANTS_OF_CREDENTIAL_FILES)
+    def test_a_case_variant_of_a_credential_file_is_an_ordinary_file_on_linux(self, tmp_path: Path, relative: str) -> None:
+        # On Linux .SSH/config is a different file from .ssh/config, not the SSH client's.
+        FakeTransport.reset()
+        assert _send_one_attachment(_written(tmp_path / relative)) is True
+        (delivery,) = FakeTransport.created
+        assert b"c2VjcmV0IG1hdGVyaWFs" in delivery.sent_messages[0][2]  # base64 of the file's content
 
     @pytest.mark.os_agnostic
     def test_an_ordinary_document_passes_the_sensitive_pattern_check(self, tmp_path: Path) -> None:

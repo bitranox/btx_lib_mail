@@ -188,7 +188,8 @@ redacted at the credential fields (`smtp_password`, `smtphosts`).
 * Constants: `DANGEROUS_EXTENSIONS_POSIX`, `DANGEROUS_EXTENSIONS_WINDOWS` (both blocked
   by default on every platform, through `default_blocked_extensions`),
   `DANGEROUS_DIRECTORIES_POSIX`, `DANGEROUS_DIRECTORIES_WINDOWS` (the running platform's
-  set is the default), `SENSITIVE_PATH_PATTERNS` (matched case-insensitively).
+  set is the default), `SENSITIVE_PATH_PATTERNS` (matched ignoring case on macOS and
+  Windows, exactly elsewhere: `_PATHS_IGNORE_CASE`).
 * `AttachmentViolation` - `str` enum: `PATH_TRAVERSAL`, `SYMLINK`, `SENSITIVE_PATTERN`,
   `DIRECTORY`, `EXTENSION`, `SIZE`, `CHANGED`.
 * `AttachmentSecurityError(BtxMailError)` - `path`, `reason` (control characters
@@ -309,9 +310,9 @@ outer model's `model_validate_json`, where the JSON parser fails before the mode
   `ctx.obj`, keeping a transport an embedding caller passed through `obj=`.
 * **Commands:** `info`, `hello`, `send`, `validate-email`, `validate-smtp-host`, `fail`.
   Each prints through `_emit`, which writes the human line or the JSON envelope.
-* **`send`:** `_Sources` reads the environment, then the file named by `--env-file` /
-  `BTX_MAIL_ENV_FILE` (parsed once by `_read_env_file`, UTF-8, at most 64 KiB); no file is
-  read unless named. Resolved values are assigned onto one copy of `conf`, so
+* **`send`:** `_Sources` reads the environment, then the env file `_env_file_to_read`
+  picks: the one named by `--env-file` / `BTX_MAIL_ENV_FILE`, else `./.env` when it is a
+  regular file (parsed once by `_read_env_file`, UTF-8, at most 64 KiB). Resolved values are assigned onto one copy of `conf`, so
   `ConfMail`'s checks run before delivery; a refusal is re-raised as `InvalidInputError`
   with the validator's message (`_refusals_as_value_error`). `--password-file` reads one
   line (`-` is stdin). `_collect_skipped` (a logger filter) gathers the warn-mode skips for
@@ -411,8 +412,8 @@ Doctests run through `--doctest-modules`; markers `os_agnostic`, `os_windows`, `
 
 * Credentials: `SecretStr` in `ConfMail`, hidden from `repr`, `model_dump`, validation
   errors, `DeliveryOptions` repr and failure logs; a host carrying `user:password@` is
-  refused without echoing it; the CLI offers `--password-file` and reads no implicit
-  `.env`.
+  refused without echoing it; the CLI offers `--password-file`. The CLI reads `./.env`
+  unless `--env-file` names another file, so a `.env` is trusted like the command line.
 * Transport: STARTTLS on and certificate verification on by default; STARTTLS fails
   closed when the server does not offer it; credentials sent without TLS are logged as a
   warning.

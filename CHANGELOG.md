@@ -29,8 +29,8 @@
   exit code it has without `--json`. `skipped` lists attachments and recipients `send` left
   out in warn mode. The exit codes are documented in `docs/cli.md`.
 - CLI: `--password-file PATH` (`-` reads stdin) keeps the password out of the process list.
-- CLI: `--env-file PATH` (or `BTX_MAIL_ENV_FILE`) names a `KEY=value` file for unset settings;
-  it is read once, must be UTF-8 and at most 64 KiB.
+- CLI: `--env-file PATH` (or `BTX_MAIL_ENV_FILE`) names a `KEY=value` file to read instead of
+  `./.env`. Either file is read once and must be UTF-8 and at most 64 KiB.
 - `CliContext`, the typed `ctx.obj`; its `transport` lets an application embedding the CLI
   (or a test) deliver through its own `Transport`.
 - A WARNING when credentials are sent with STARTTLS off, naming the host.
@@ -44,8 +44,9 @@
   as, not the sender's. The blocked-directory default stays per platform.
 - The extension check drops trailing dots and spaces before reading the extension, so
   `x.exe.` and `x.sh ` are refused like `x.exe` and `x.sh`.
-- Sensitive-path patterns match without regard to case on every platform: `.SSH/config` and
-  `.AWS/CREDENTIALS` are refused (they are `~/.ssh/config` on macOS and Windows).
+- Sensitive-path patterns ignore case on macOS and Windows: `.SSH/config` and
+  `.AWS/CREDENTIALS` are refused there (they are `~/.ssh/config` on those file systems). On
+  Linux the match stays exact, where `.SSH/config` is a different file.
 - `lib_mail.py` is split into private modules (`_config`, `_attachments`, `_validation`,
   `_compose`, `_transport`, `_common`) behind `btx_lib_mail.lib_mail`, which keeps `send()`
   and re-exports the public names (`__all__`). Importing from `btx_lib_mail` or
@@ -63,14 +64,6 @@
   `InvalidInputError` before the first delivery (`mail_subject must not contain control
   characters (only TAB is allowed)`); CR and LF keep the email package's message. Before,
   NUL, ESC and the rest were sent raw.
-
-### Removed
-
-- CLI: a `.env` file in the working directory is no longer read. It let any directory the
-  command ran in (a cloned repository, a shared folder) redirect `BTX_MAIL_SMTP_HOSTS` to a
-  host with a valid certificate for its own name (so a verified STARTTLS still handed it the
-  password), switch STARTTLS off, or lift the attachment blocklists. Name the file with
-  `--env-file .env` (or `BTX_MAIL_ENV_FILE=.env`) to keep using it.
 
 ### Fixed
 

@@ -73,7 +73,7 @@ subcommand.
 | `--body TEXT`                            | Plain-text email body (required).                                                                                                                                                     |
 | `--html-body TEXT`                       | Optional HTML body content.                                                                                                                                                           |
 | `--attachment PATH`                      | Attachment file path (repeat for multiple).                                                                                                                                           |
-| `--env-file PATH`                        | Read unset `BTX_MAIL_*` settings from this `KEY=value` file. Env: `BTX_MAIL_ENV_FILE`. No file is read unless named.                                                                  |
+| `--env-file PATH`                        | Read unset `BTX_MAIL_*` settings from this `KEY=value` file instead of `./.env`. Env: `BTX_MAIL_ENV_FILE`.                                                                            |
 | `--starttls/--no-starttls`               | Force STARTTLS negotiation. Env: `BTX_MAIL_SMTP_USE_STARTTLS`.                                                                                                                        |
 | `--starttls-verify/--no-starttls-verify` | Verify the server certificate during STARTTLS (default: verify). Env: `BTX_MAIL_SMTP_STARTTLS_VERIFY`.                                                                                |
 | `--username TEXT`                        | SMTP username. Env: `BTX_MAIL_SMTP_USERNAME`.                                                                                                                                         |
@@ -122,11 +122,13 @@ sent without authenticating. `--password-file` reads the first line of a file of
 applies. `--attachment-allowed-dir` and `--attachment-blocked-dir` split each value on
 commas, like `--host` and `--recipient`.
 
-No file is read unless it is named. A `.env` in the working directory is ignored: a
-cloned repository or a shared folder could otherwise redirect `BTX_MAIL_SMTP_HOSTS` to a
-host that holds a valid certificate for its own name (so a verified STARTTLS still hands
-it the password), switch STARTTLS off, or lift the attachment blocklists, just by being
-the directory the command ran in.
+Without `--env-file`, `send` reads `.env` in the working directory when it is a regular
+file; a named file replaces it, and a key the named file lacks is not looked up in
+`./.env`. A `.env` is trusted like the command line: in a cloned repository or a shared
+folder it can redirect `BTX_MAIL_SMTP_HOSTS` to a host that holds a valid certificate for
+its own name (so a verified STARTTLS still hands it the password), switch STARTTLS off, or
+lift the attachment blocklists. Run `send` from a directory whose `.env` you trust, or name
+the file with `--env-file`.
 
 When credentials are sent with STARTTLS off, the library logs a warning naming the host;
 the delivery is not refused, since an internal relay may offer no TLS.
