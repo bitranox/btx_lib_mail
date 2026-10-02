@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 import gc
 import math
+import sys
 import warnings
 from email import message_from_bytes
 from typing import IO, TYPE_CHECKING, Any
@@ -34,6 +35,22 @@ class _RecordingTransport:
         if self._on_first_delivery is not None:
             hook, self._on_first_delivery = self._on_first_delivery, None
             hook()
+
+
+def _attempt(change: Callable[[], None]) -> bool:
+    """Run *change* to the attachment's path; return whether the OS allowed it.
+
+    Windows refuses to delete or replace a file another handle has open, and ``send`` holds
+    each attachment open from its check until it returns, so there the change is refused with
+    ``PermissionError``. POSIX allows it. Every recipient must get the checked bytes either way.
+    """
+    try:
+        change()
+    except PermissionError:
+        if sys.platform != "win32":
+            raise
+        return False
+    return True
 
 
 def _attachment_bytes(raw: bytes) -> bytes:
@@ -70,9 +87,11 @@ def test_a_path_swapped_for_a_symlink_after_the_check_does_not_reach_later_recip
         report.unlink()
         report.symlink_to(secret)
 
-    transport = _RecordingTransport(on_first_delivery=swap)
+    applied: list[bool] = []
+    transport = _RecordingTransport(on_first_delivery=lambda: applied.append(_attempt(swap)))
     assert _send(transport, report) is True
 
+    assert applied == [sys.platform != "win32"]
     assert set(transport.messages) == {"one@example.com", "two@example.com", "three@example.com"}
     for raw in transport.messages.values():
         assert _attachment_bytes(raw) == b"quarterly numbers"
@@ -83,9 +102,11 @@ def test_an_attachment_deleted_during_delivery_does_not_abandon_later_recipients
     report = tmp_path / "report.txt"
     report.write_bytes(b"quarterly numbers")
 
-    transport = _RecordingTransport(on_first_delivery=report.unlink)
+    applied: list[bool] = []
+    transport = _RecordingTransport(on_first_delivery=lambda: applied.append(_attempt(report.unlink)))
     assert _send(transport, report) is True
 
+    assert applied == [sys.platform != "win32"]
     assert len(transport.messages) == 3
     assert all(_attachment_bytes(raw) == b"quarterly numbers" for raw in transport.messages.values())
 

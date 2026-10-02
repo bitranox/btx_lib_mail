@@ -90,7 +90,8 @@ def test_the_public_validators_raise_invalid_input_error(validator: Any, value: 
 @pytest.mark.os_agnostic
 def test_a_missing_attachment_is_an_attachment_not_found_error_and_a_file_not_found_error(tmp_path: Path) -> None:
     with pytest.raises(AttachmentNotFoundError) as caught:
-        _send(attachment_file_paths=[tmp_path / "missing.txt"])
+        # The temporary directory is under /private/var on macOS, a blocked directory by default.
+        _send(attachment_file_paths=[tmp_path / "missing.txt"], attachment_blocked_directories=frozenset())
 
     assert isinstance(caught.value, BtxMailError)
     assert isinstance(caught.value, FileNotFoundError)

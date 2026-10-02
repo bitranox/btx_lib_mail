@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from email import message_from_bytes
 from typing import IO, TYPE_CHECKING, Any
@@ -61,6 +62,20 @@ def _no_ambient_mail_settings(monkeypatch: pytest.MonkeyPatch) -> None:  # pyrig
     for key in list(os.environ):
         if key.startswith("BTX_MAIL_"):
             monkeypatch.delenv(key)
+
+
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_BOX_DRAWING = re.compile("[\u2500-\u257f]")
+
+
+def _flat(output: str) -> str:
+    """Return CLI output as one line: no colour codes, no box borders, whitespace collapsed.
+
+    Rich draws an error in a box as wide as the terminal and wraps the message inside it, so
+    where a line breaks depends on the length of a temporary path on the machine running the
+    test; CI also forces colour. Compare messages against this form, never the raw output.
+    """
+    return " ".join(_BOX_DRAWING.sub(" ", _ANSI_ESCAPE.sub("", output)).split())
 
 
 _MESSAGE = ["--subject", "S", "--body", "B"]
@@ -197,7 +212,7 @@ def test_an_unparseable_boolean_is_a_bad_parameter(monkeypatch: pytest.MonkeyPat
     result, transport = _invoke(cli_runner, ["send", *_ROUTE, *_MESSAGE])
 
     assert result.exit_code == 2
-    assert "Unrecognised boolean value for BTX_MAIL_SMTP_USE_STARTTLS" in result.output
+    assert "Unrecognised boolean value for BTX_MAIL_SMTP_USE_STARTTLS" in _flat(result.output)
     assert transport.deliveries == []
 
 
@@ -209,7 +224,7 @@ def test_an_unparseable_number_is_a_bad_parameter(monkeypatch: pytest.MonkeyPatc
     result, transport = _invoke(cli_runner, ["send", *_ROUTE, *_MESSAGE])
 
     assert result.exit_code == 2
-    assert f"Unrecognised {kind} value for {env_key}" in result.output
+    assert f"Unrecognised {kind} value for {env_key}" in _flat(result.output)
     assert transport.deliveries == []
 
 
@@ -218,7 +233,7 @@ def test_without_a_host_the_command_asks_for_one(cli_runner: CliRunner) -> None:
     result, transport = _invoke(cli_runner, ["send", "--recipient", "one@example.com", *_MESSAGE])
 
     assert result.exit_code == 2
-    assert "Provide at least one SMTP host" in result.output
+    assert "Provide at least one SMTP host" in _flat(result.output)
     assert transport.deliveries == []
 
 
@@ -284,10 +299,8 @@ def test_an_oversized_dotenv_in_the_working_directory_is_refused(monkeypatch: py
     result, transport = _invoke(cli_runner, ["send", *_ROUTE, *_MESSAGE])
 
     assert result.exit_code == 2
-    # Rich wraps the message in a box; compare it as one line.
-    flat = " ".join(result.output.replace("│", " ").split())
-    assert f"./.env in the working directory is {cli_mod._ENV_FILE_MAX_BYTES + 1} bytes; an env file may be at most" in flat
-    assert "--env-file" not in flat
+    assert f"./.env in the working directory is {cli_mod._ENV_FILE_MAX_BYTES + 1} bytes; an env file may be at most" in _flat(result.output)
+    assert "--env-file" not in _flat(result.output)
     assert transport.deliveries == []
 
 
@@ -352,7 +365,7 @@ def test_an_oversized_env_file_is_refused_before_it_is_read(cli_runner: CliRunne
     result, transport = _invoke(cli_runner, ["send", "--env-file", str(env_file), *_ROUTE, *_MESSAGE])
 
     assert result.exit_code == 2
-    assert "an env file may be at most" in result.output
+    assert "an env file may be at most" in _flat(result.output)
     assert transport.deliveries == []
 
 
@@ -364,7 +377,7 @@ def test_an_env_file_that_is_not_utf8_is_refused(cli_runner: CliRunner, tmp_path
     result, transport = _invoke(cli_runner, ["send", "--env-file", str(env_file), *_ROUTE, *_MESSAGE])
 
     assert result.exit_code == 2
-    assert "is not UTF-8 text" in result.output
+    assert "is not UTF-8 text" in _flat(result.output)
     assert transport.deliveries == []
 
 
@@ -408,7 +421,7 @@ def test_password_and_password_file_exclude_each_other(cli_runner: CliRunner, tm
     result, transport = _invoke(cli_runner, ["send", *_ROUTE, *_MESSAGE, "--username", "u", "--password", "y", "--password-file", str(password_file)])
 
     assert result.exit_code == 2
-    assert "mutually exclusive" in result.output
+    assert "mutually exclusive" in _flat(result.output)
     assert transport.deliveries == []
 
 
@@ -420,7 +433,7 @@ def test_an_overlong_password_file_is_refused(cli_runner: CliRunner, tmp_path: P
     result, transport = _invoke(cli_runner, ["send", *_ROUTE, *_MESSAGE, "--username", "u", "--password-file", str(password_file)])
 
     assert result.exit_code == 2
-    assert "a password file holds one line" in result.output
+    assert "a password file holds one line" in _flat(result.output)
     assert transport.deliveries == []
 
 
@@ -484,7 +497,7 @@ def test_a_malformed_host_is_refused_with_the_message_send_gives(cli_runner: Cli
 
     assert type(result.exception) is InvalidInputError
     assert str(result.exception) == reason
-    assert "s3cr3t-pw" not in result.output
+    assert "s3cr3t-pw" not in _flat(result.output)
     assert transport.deliveries == []
 
 
@@ -668,7 +681,7 @@ def test_json_and_json_bare_exclude_each_other(cli_runner: CliRunner) -> None:
     result = cli_runner.invoke(cli_mod.cli, ["--json", "--json-bare", "hello"])
 
     assert result.exit_code == 2
-    assert "mutually exclusive" in result.output
+    assert "mutually exclusive" in _flat(result.output)
 
 
 def _main(argv: list[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, str]:
@@ -800,5 +813,5 @@ def test_command_help_is_plain_text_not_docstring_markup(cli_runner: CliRunner, 
     result = cli_runner.invoke(cli_mod.cli, [command, "--help"])
 
     assert result.exit_code == 0
-    assert "###" not in result.output
-    assert "**Purpose:**" not in result.output
+    assert "###" not in _flat(result.output)
+    assert "**Purpose:**" not in _flat(result.output)
