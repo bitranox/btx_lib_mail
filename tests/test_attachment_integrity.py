@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 import gc
 import math
+import os
 import sys
 import warnings
 from email import message_from_bytes
@@ -433,3 +434,35 @@ def test_warn_mode_skips_an_attachment_whose_name_holds_a_line_break(tmp_path: P
     for raw in transport.messages.values():
         assert not [part for part in message_from_bytes(raw).walk() if part.get_filename()]
         assert b"victim@example.com" not in raw
+
+
+@pytest.mark.os_agnostic
+def test_a_path_swapped_for_another_regular_file_after_the_check_is_refused_as_changed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The (device, inode) comparison is the only thing that catches a same-kind swap.
+
+    The swap must land between the lstat that records the checked file and the open that
+    reads it, a window inside one function; os.open is wrapped (the stdlib edge) so the
+    replacement happens at exactly that moment.
+    """
+    report = tmp_path / "report.txt"
+    report.write_bytes(b"quarterly numbers")
+    impostor = tmp_path / "impostor.txt"
+    impostor.write_bytes(b"NOT FOR MAIL")
+    real_open = os.open
+    swapped: list[bool] = []
+
+    def open_after_swap(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        if not swapped and os.fspath(path) == os.fspath(report.resolve()):
+            impostor.replace(report)
+            swapped.append(True)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", open_after_swap)
+    transport = _RecordingTransport()
+
+    with pytest.raises(AttachmentSecurityError) as caught:
+        _send(transport, report)
+
+    assert swapped, "positive control: the swap ran inside the open"
+    assert caught.value.violation_type is AttachmentViolation.CHANGED
+    assert transport.messages == {}
