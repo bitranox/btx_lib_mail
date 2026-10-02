@@ -107,6 +107,7 @@ tests/
 - Python 3.10+; `from __future__ import annotations` in every module
 - `ruff` for linting/formatting (line-length 160)
 - `pyright` strict mode
+- Docstrings: Google style (Args/Returns/Raises/Examples, Attributes for classes), enforced on `src/` by ruff's `D` rules
 - `bandit` security scanning
 - `import-linter` enforces one layers contract (a module imports only from layers below it; modules in one layer
   are independent): `cli` > `lib_mail` > `_compose` > `_config | _transport` > `_attachments | _validation` >

@@ -106,10 +106,14 @@ def read_env_file(path: Path | None) -> dict[str, str]:
     Lines are ``KEY=value``; blank lines, ``#`` comments and lines without ``=``
     are skipped; a value is stripped of whitespace and one layer of quotes.
 
-    Raises
-    ------
-    click.UsageError
-        The file is larger than ``_ENV_FILE_MAX_BYTES`` or not UTF-8.
+    Args:
+        path: Path to the env file, or ``None`` when none applies.
+
+    Returns:
+        Mapping of ``KEY`` to value for every parsed line.
+
+    Raises:
+        click.UsageError: The file is larger than ``_ENV_FILE_MAX_BYTES`` or not UTF-8.
     """
     if path is None:
         return {}
@@ -211,10 +215,15 @@ def _unquoted(value: str) -> str:
     Only a pair is removed, so a password that merely starts or ends with a quote
     character keeps it.
 
-    Examples
-    --------
-    >>> _unquoted(' "s3cret" '), _unquoted('s3cret"'), _unquoted('""x""')
-    ('s3cret', 's3cret"', '"x"')
+    Args:
+        value: Raw value to strip.
+
+    Returns:
+        The stripped value.
+
+    Examples:
+        >>> _unquoted(' "s3cret" '), _unquoted('s3cret"'), _unquoted('""x""')
+        ('s3cret', 's3cret"', '"x"')
     """
     stripped = value.strip()
     if len(stripped) >= _QUOTED_MIN_LEN and stripped[0] == stripped[-1] and stripped[0] in "\"'":
@@ -264,7 +273,16 @@ def resolve_password(*, password: str | None, password_file: IO[str] | None, sou
 def resolve_float(cli_value: float | None, env_key: str, *, sources: Sources) -> float | None:
     """Return the float given on the CLI or in the sources, or ``None`` when neither set it.
 
-    Raises :class:`click.BadParameter` when the source value is not a number.
+    Args:
+        cli_value: Value given on the CLI, or ``None``.
+        env_key: Environment/env-file key to fall back to.
+        sources: The environment and env-file values to read from.
+
+    Returns:
+        The resolved float, or ``None`` when neither source set it.
+
+    Raises:
+        click.BadParameter: The source value is not a number.
     """
     if cli_value is not None:
         return cli_value
@@ -280,7 +298,16 @@ def resolve_float(cli_value: float | None, env_key: str, *, sources: Sources) ->
 def resolve_int(cli_value: int | None, env_key: str, *, sources: Sources) -> int | None:
     """Return the int given on the CLI or in the sources, or ``None`` when neither set it.
 
-    Raises :class:`click.BadParameter` when the source value is not an integer.
+    Args:
+        cli_value: Value given on the CLI, or ``None``.
+        env_key: Environment/env-file key to fall back to.
+        sources: The environment and env-file values to read from.
+
+    Returns:
+        The resolved int, or ``None`` when neither source set it.
+
+    Raises:
+        click.BadParameter: The source value is not an integer.
     """
     if cli_value is not None:
         return cli_value

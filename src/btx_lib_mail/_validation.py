@@ -25,25 +25,46 @@ _EHLO_NAME_LAST_CHAR: Final[int] = 0x7E
 
 
 def check_local_hostname(value: str, *, label: str) -> None:
-    """Raise ``ValueError`` unless *value* can be sent as the EHLO argument.
+    """Raise unless value can be sent as the EHLO argument.
 
     The value is not echoed: a refused name may carry control characters.
+
+    Args:
+        value: Candidate EHLO/HELO name.
+        label: Name of the setting or argument to use in the error message.
+
+    Raises:
+        InvalidInputError: If value is empty or not printable ASCII without spaces.
     """
     if not value or not all(_EHLO_NAME_FIRST_CHAR <= ord(char) <= _EHLO_NAME_LAST_CHAR for char in value):
         raise InvalidInputError(f"{label} must be non-empty printable ASCII without spaces")
 
 
 def check_timeout(value: float) -> None:
-    """Raise unless *value* is a usable socket timeout: positive and finite."""
+    """Raise unless value is a usable socket timeout: positive and finite.
+
+    Args:
+        value: Candidate timeout in seconds.
+
+    Raises:
+        InvalidInputError: If value is not positive and finite.
+    """
     check_seconds(value, label="smtp_timeout")
 
 
 def check_seconds(value: float, *, label: str) -> None:
-    """Raise unless *value* is a positive, finite number of seconds.
+    """Raise unless value is a positive, finite number of seconds.
 
     The non-positive check runs first, so a timeout refused before keeps its
-    message; NaN and infinity, which ``value <= 0`` let through to fail later as
-    an unrelated delivery error, get their own.
+    message; NaN and infinity, which `value <= 0` let through to fail later
+    as an unrelated delivery error, get their own.
+
+    Args:
+        value: Candidate number of seconds.
+        label: Name of the setting or argument to use in the error message.
+
+    Raises:
+        InvalidInputError: If value is not positive and finite.
     """
     if value <= 0:
         raise InvalidInputError(f"{label} must be positive, got {value}")
@@ -54,27 +75,18 @@ def check_seconds(value: float, *, label: str) -> None:
 def prepare_hosts(hosts: tuple[str, ...]) -> tuple[str, ...]:
     """Return a deduplicated tuple of normalised host strings.
 
-    Why
-        Ensures the host list is stable, stripped, and free of empties.
+    Ensures the host list is stable, stripped, and free of empties. Strips
+    formatting, removes blanks, and deduplicates while preserving order.
 
-    Inputs
-    ------
-    hosts:
-        Tuple of raw host strings collected from config and overrides.
+    Args:
+        hosts: Tuple of raw host strings collected from config and overrides.
 
-    What
-        Strips formatting, removes blanks, and deduplicates while preserving order.
-
-    Outputs
-    -------
-    tuple[str, ...]
+    Returns:
         Ordered, deduplicated host strings.
 
-    Side Effects
-    ------------
-    None.
+    Raises:
+        InvalidInputError: If no valid host remains, or a host fails `validate_smtp_host`.
     """
-
     normalised = [_normalise_host(entry) for entry in hosts]
     filtered = [value for value in normalised if value]
     unique = tuple(dict.fromkeys(filtered))
@@ -92,30 +104,22 @@ def prepare_recipients(
 ) -> tuple[str, ...]:
     """Return a deduplicated tuple of valid, lower-cased recipient addresses.
 
-    Why
-        Consolidates parsing, trimming, deduplication, and validation.
+    Consolidates parsing, trimming, deduplication, and validation into a
+    ready-to-send tuple. Logs a warning for each invalid recipient tolerated.
 
-    Inputs
-    ------
-    recipients:
-        Single email or sequence of emails supplied by callers.
-    raise_on_invalid:
-        When ``True``, invalid recipients raise ``ValueError``; when ``False``,
-        a warning is logged and the address is skipped.
+    Args:
+        recipients: Single email or sequence of emails supplied by callers.
+        raise_on_invalid: When `True`, invalid recipients raise `ValueError`;
+            when `False`, a warning is logged and the address is skipped.
 
-    What
-        Produces a ready-to-send tuple after validation and deduplication.
-
-    Outputs
-    -------
-    tuple[str, ...]
+    Returns:
         Validated, deduplicated, lower-cased emails.
 
-    Side Effects
-    ------------
-    Logs warnings when invalid recipients are tolerated.
+    Raises:
+        InvalidInputError: If recipients is not a string or sequence, an
+            entry fails validation and raise_on_invalid is True, or no valid
+            recipient remains.
     """
-
     if isinstance(recipients, str):
         raw_items: Iterable[str] = (recipients,)
     elif isinstance(recipients, Sequence):  # pyright: ignore[reportUnnecessaryIsInstance] - a caller ignoring the annotation can pass anything
@@ -151,82 +155,50 @@ def prepare_recipients(
 def _normalise_email_address(candidate: str) -> str:
     """Trim whitespace/quotes and lower-case the candidate email.
 
-    Why
-        Email addresses should compare case-insensitively in our context.
+    Email addresses should compare case-insensitively in our context, so this
+    returns a lower-case, trimmed representation that supports deduping.
 
-    Inputs
-    ------
-    candidate:
-        Raw string supplied by the caller.
+    Args:
+        candidate: Raw string supplied by the caller.
 
-    What
-        Returns a lower-case, trimmed representation that supports deduping.
-
-    Outputs
-    -------
-    str
+    Returns:
         Normalised email address (may be empty string).
-
-    Side Effects
-    ------------
-    None.
     """
-
     return candidate.strip().strip('"').strip("'").lower()
 
 
 def _normalise_host(candidate: str) -> str:
     """Trim whitespace/quotes from the candidate host entry.
 
-    Why
-        Host strings from .env files often contain whitespace; this removes it.
+    Host strings from .env files often contain whitespace; this removes
+    surrounding quotes and whitespace without altering order.
 
-    Inputs
-    ------
-    candidate:
-        Raw host string.
+    Args:
+        candidate: Raw host string.
 
-    What
-        Removes surrounding quotes/whitespace without altering order.
-
-    Outputs
-    -------
-    str
+    Returns:
         Normalised host string.
-
-    Side Effects
-    ------------
-    None.
     """
-
     return candidate.strip().strip('"').strip("'")
 
 
 def collect_host_inputs(value: Any) -> list[str]:
     """Coerce user input into a list of host strings.
 
-    Why
-        Supports ``None``, strings, and iterables while validating entries.
+    Supports `None`, strings, and iterables while validating entries, and
+    converts supported forms into a list while validating element types.
+    Refuses a host carrying userinfo or a path, without quoting it.
 
-    Inputs
-    ------
-    value:
-        Caller-supplied host configuration.
+    Args:
+        value: Caller-supplied host configuration.
 
-    What
-        Converts supported forms into a list while validating element types.
-        Refuses a host carrying userinfo or a path, without quoting it.
-
-    Outputs
-    -------
-    list[str]
+    Returns:
         Normalised list of hosts (possibly empty).
 
-    Side Effects
-    ------------
-    None.
+    Raises:
+        InvalidInputError: If value is not a string or iterable of strings,
+            or a host fails `validate_smtp_host`.
     """
-
     if value is None:
         return []
     if isinstance(value, str):
@@ -242,13 +214,20 @@ def collect_host_inputs(value: Any) -> list[str]:
 def _checked_hosts(raw_hosts: list[str]) -> list[str]:
     """Normalise each host, drop the blank ones, and validate the rest.
 
-    Why
-        A blank entry is what an empty environment value or a trailing comma
-        in a list produces; :func:`send` already skips it, so the model reads
-        it as absent rather than as a malformed host. Every other entry is
-        checked with :func:`validate_smtp_host`, so a typo in a port or an
-        IPv6 bracket is refused when the configuration is built instead of at
-        the first delivery.
+    A blank entry is what an empty environment value or a trailing comma in a
+    list produces; `send` already skips it, so the model reads it as absent
+    rather than as a malformed host. Every other entry is checked with
+    `validate_smtp_host`, so a typo in a port or an IPv6 bracket is refused
+    when the configuration is built instead of at the first delivery.
+
+    Args:
+        raw_hosts: Raw host strings to normalise and validate.
+
+    Returns:
+        Normalised, non-blank host strings.
+
+    Raises:
+        InvalidInputError: If a non-blank host fails `validate_smtp_host`.
     """
     hosts = [_normalise_host(raw) for raw in raw_hosts]
     present = [host for host in hosts if host]
@@ -258,54 +237,50 @@ def _checked_hosts(raw_hosts: list[str]) -> list[str]:
 
 
 def validate_email_address(address: str) -> None:
-    """Raise ``ValueError`` when *address* does not match the email pattern.
+    """Raise when address does not match the email pattern.
 
-    Why
-        Prevents avoidable SMTP failures by checking syntax early.
+    Prevents avoidable SMTP failures by checking syntax early, applying
+    `EMAIL_PATTERN` and raising on mismatch.
 
-    What
-        Applies :data:`EMAIL_PATTERN` and raises on mismatch.
+    Args:
+        address: Candidate email string.
 
-    Inputs
-    ------
-    address:
-        Candidate email string.
+    Raises:
+        InvalidInputError: If address does not match `EMAIL_PATTERN`.
 
-    Outputs
-    -------
-    None
-
-    Side Effects
-    ------------
-    None.
-
-    Examples
-    --------
-    >>> validate_email_address("user@example.com")
-    >>> validate_email_address("invalid@")
-    Traceback (most recent call last):
-        ...
-    btx_lib_mail.errors.InvalidInputError: invalid email address: 'invalid@'
+    Examples:
+        >>> validate_email_address("user@example.com")
+        >>> validate_email_address("invalid@")
+        Traceback (most recent call last):
+            ...
+        btx_lib_mail.errors.InvalidInputError: invalid email address: 'invalid@'
     """
-
     if not EMAIL_PATTERN.fullmatch(address):
         raise InvalidInputError(f"invalid email address: {address!r}")
 
 
 def _refuse_credentials_in_host(host: str) -> str:
-    """Return *host* unchanged, or raise when it carries userinfo, a path, or an interior control character.
+    """Return host unchanged, or raise when it carries userinfo, a path, or an interior control character.
 
-    Why
-        ``smtp://user:<password>@relay`` in a host list puts the password into
-        every log line and error text that names the host. The error never
-        quotes the value.
+    `smtp://user:<password>@relay` in a host list puts the password into
+    every log line and error text that names the host. The error never
+    quotes the value.
 
-        A host carrying a newline or an escape sequence can forge an extra log
-        line or a terminal control sequence wherever the host is later logged.
-        Callers run this after :func:`_normalise_host`, which trims OUTER
-        whitespace, so only an INTERIOR whitespace or control character is
-        refused here; an ordinary ``" smtp.example.com "`` from an env file
-        still validates.
+    A host carrying a newline or an escape sequence can forge an extra log
+    line or a terminal control sequence wherever the host is later logged.
+    Callers run this after `_normalise_host`, which trims OUTER whitespace,
+    so only an INTERIOR whitespace or control character is refused here; an
+    ordinary `" smtp.example.com "` from an env file still validates.
+
+    Args:
+        host: Host string already stripped of outer whitespace.
+
+    Returns:
+        The host, unchanged.
+
+    Raises:
+        InvalidInputError: If host carries userinfo, a path, or an interior
+            whitespace or control character.
     """
     if "@" in host or "/" in host:
         # Never quote the value: a userinfo part here is a password in the wrong field.
@@ -317,52 +292,43 @@ def _refuse_credentials_in_host(host: str) -> str:
 
 
 def validate_smtp_host(host: str) -> None:
-    """Raise ``ValueError`` when *host* is not a valid SMTP host string.
+    """Raise when host is not a valid SMTP host string.
 
     Accepts the following forms:
 
-    - ``hostname``
-    - ``hostname:port``
-    - ``[IPv6]:port``  (e.g. ``[::1]:25``)
-    - ``[IPv6]``       (e.g. ``[::1]``)
+    - `hostname`
+    - `hostname:port`
+    - `[IPv6]:port`  (e.g. `[::1]:25`)
+    - `[IPv6]`       (e.g. `[::1]`)
 
     Never accepted: userinfo (user:password@host) or a URL (smtp://...), for
     which the error does not echo the value; several hosts in one string
-    (``a.example.com,b.example.com``); a port with no host name (``:25``);
-    an IPv6 address without brackets (``fe80::1``), whose last group
-    would otherwise be read as the port; and a port that is not plain ASCII
-    digits in 1-65535 (``+25``, ``2_5``, non-ASCII digits).
+    (`a.example.com,b.example.com`); a port with no host name (`:25`); an
+    IPv6 address without brackets (`fe80::1`), whose last group would
+    otherwise be read as the port; and a port that is not plain ASCII digits
+    in 1-65535 (`+25`, `2_5`, non-ASCII digits).
 
-    Why
-        Validates SMTP host syntax early so errors surface before delivery.
+    Validates SMTP host syntax early so errors surface before delivery.
 
-    Inputs
-    ------
-    host:
-        Host string with optional port and/or IPv6 bracket notation.
+    Args:
+        host: Host string with optional port and/or IPv6 bracket notation.
 
-    Outputs
-    -------
-    None
+    Raises:
+        InvalidInputError: If host is empty or does not match one of the
+            accepted forms.
 
-    Side Effects
-    ------------
-    None.
-
-    Examples
-    --------
-    >>> validate_smtp_host("smtp.example.com:587")
-    >>> validate_smtp_host("[::1]:25")
-    >>> validate_smtp_host("smtp.example.com:abc")
-    Traceback (most recent call last):
-        ...
-    btx_lib_mail.errors.InvalidInputError: invalid smtp port in "smtp.example.com:abc"
-    >>> validate_smtp_host("a.example.com,b.example.com")
-    Traceback (most recent call last):
-        ...
-    btx_lib_mail.errors.InvalidInputError: SMTP host must be one host per entry; pass several hosts as a list, got "a.example.com,b.example.com"
+    Examples:
+        >>> validate_smtp_host("smtp.example.com:587")
+        >>> validate_smtp_host("[::1]:25")
+        >>> validate_smtp_host("smtp.example.com:abc")
+        Traceback (most recent call last):
+            ...
+        btx_lib_mail.errors.InvalidInputError: invalid smtp port in "smtp.example.com:abc"
+        >>> validate_smtp_host("a.example.com,b.example.com")
+        Traceback (most recent call last):
+            ...
+        btx_lib_mail.errors.InvalidInputError: SMTP host must be one host per entry; pass several hosts as a list, got "a.example.com,b.example.com"
     """
-
     if not host:
         raise InvalidInputError("empty SMTP host")
 
@@ -376,7 +342,15 @@ def validate_smtp_host(host: str) -> None:
 
 
 def _validate_port_and_brackets(host: str) -> None:
-    """Validate the bracket syntax and the port, splitting a port off at the last colon."""
+    """Validate the bracket syntax and the port, splitting a port off at the last colon.
+
+    Args:
+        host: Host string with optional port and/or IPv6 bracket notation.
+
+    Raises:
+        InvalidInputError: If the bracket is unclosed, trailing characters
+            follow it, or the port is invalid.
+    """
     if not host.startswith("["):
         if ":" in host:
             _validate_port(host.rsplit(":", 1)[1], host)
@@ -395,10 +369,17 @@ def _validate_port_and_brackets(host: str) -> None:
 def _validate_host_shape(host: str) -> None:
     """Refuse a host whose port is valid but whose shape is not one host name.
 
-    Runs after :func:`_validate_port_and_brackets`, so every input reaching it has a
-    well-formed port; what is left is two hosts in one string, a host name containing a
-    colon (an IPv6 address without brackets, whose last group would read as the port),
-    and an empty host name.
+    Runs after `_validate_port_and_brackets`, so every input reaching it has
+    a well-formed port; what is left is two hosts in one string, a host name
+    containing a colon (an IPv6 address without brackets, whose last group
+    would read as the port), and an empty host name.
+
+    Args:
+        host: Host string already validated for port and bracket syntax.
+
+    Raises:
+        InvalidInputError: If host names more than one host, an unbracketed
+            IPv6 address, or no host name at all.
     """
     if "," in host:
         raise InvalidInputError(f'SMTP host must be one host per entry; pass several hosts as a list, got "{host}"')
@@ -413,24 +394,15 @@ def _validate_host_shape(host: str) -> None:
 
 
 def _validate_port(port_str: str, original: str) -> None:
-    """Validate that *port_str* is plain ASCII digits naming a port in the 1-65535 range.
+    """Validate that port_str is plain ASCII digits naming a port in the 1-65535 range.
 
-    Inputs
-    ------
-    port_str:
-        Raw port substring extracted from the host string.
-    original:
-        The full host string used in error messages.
+    Args:
+        port_str: Raw port substring extracted from the host string.
+        original: The full host string used in error messages.
 
-    Outputs
-    -------
-    None
-
-    Side Effects
-    ------------
-    None.
+    Raises:
+        InvalidInputError: If port_str is not a plain ASCII decimal integer in 1-65535.
     """
-
     min_port = 1
     max_port = 65535  # highest valid TCP port
     try:
@@ -450,27 +422,19 @@ def _validate_port(port_str: str, original: str) -> None:
 def parse_smtp_host(address: str) -> tuple[str, int | None]:
     """Validate and split an SMTP host string into hostname and port.
 
-    Calls :func:`validate_smtp_host` first, then extracts the components.
-    IPv6 brackets are stripped so ``smtplib.SMTP`` receives a bare address.
+    Calls `validate_smtp_host` first, then extracts the components. IPv6
+    brackets are stripped so `smtplib.SMTP` receives a bare address, since
+    delivery helpers need separate hostname and port values.
 
-    Why
-        Delivery helpers need separate hostname and port values.
+    Args:
+        address: Host string to validate and split.
 
-    Inputs
-    ------
-    address:
-        Host string validated by :func:`validate_smtp_host`.
-
-    Outputs
-    -------
-    tuple[str, int | None]
+    Returns:
         Hostname (bare for IPv6) and optional port number.
 
-    Side Effects
-    ------------
-    None.
+    Raises:
+        InvalidInputError: If address fails `validate_smtp_host`.
     """
-
     validate_smtp_host(address)
 
     if address.startswith("["):

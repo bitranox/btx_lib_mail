@@ -1,5 +1,7 @@
-"""The delivery seam (`Transport`, `DeliveryOptions`) and the stdlib SMTP transport that streams a
-message to the server as RFC 3030 BDAT chunks or through the DATA phase with dot-stuffing.
+"""The delivery seam (Transport, DeliveryOptions) and the stdlib SMTP transport.
+
+The transport streams a message to the server as RFC 3030 BDAT chunks or
+through the DATA phase with dot-stuffing.
 
 Private to btx_lib_mail: import the public names from `btx_lib_mail` or `btx_lib_mail.lib_mail`.
 """
@@ -25,23 +27,23 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class DeliveryOptions:
-    """### DeliveryOptions {#lib-mail-deliveryoptions}
+    """Capture the resolved runtime knobs for a single delivery attempt.
 
-    **Purpose:** Capture the resolved runtime knobs for a single delivery attempt
-    so low-level helpers receive one immutable object.
+    Bundles them into one immutable object so low-level helpers receive a
+    single argument instead of a long parameter list.
 
-    **Fields:**
-    - `credentials: tuple[str, str] | None` - `(username, password)` pair or
-      `None` when anonymous delivery is requested.
-    - `use_starttls: bool` - `True` enables `STARTTLS` handshakes.
-    - `starttls_verify: bool` - `True` verifies the server certificate and
-      hostname during `STARTTLS`; `False` keeps the traffic encrypted but skips
-      verification (for internal self-signed relays).
-    - `timeout: float` - Socket timeout (seconds) applied to SMTP connections.
-    - `local_hostname: str | None` - Name announced in `EHLO`; `None` lets the
-      transport use the host's own name, looked up once per process.
-    - `deadline: float | None` - Upper bound in seconds for the whole SMTP
-      session once connected; `None` sets none.
+    Attributes:
+        credentials: (username, password) pair, or None when anonymous
+            delivery is requested.
+        use_starttls: True enables STARTTLS handshakes.
+        starttls_verify: True verifies the server certificate and hostname
+            during STARTTLS; False keeps the traffic encrypted but skips
+            verification (for internal self-signed relays).
+        timeout: Socket timeout (seconds) applied to SMTP connections.
+        local_hostname: Name announced in EHLO; None lets the transport use
+            the host's own name, looked up once per process.
+        deadline: Upper bound in seconds for the whole SMTP session once
+            connected; None sets none.
     """
 
     # repr=False: a transport or a debugger printing the options must not print the password.
@@ -58,12 +60,15 @@ class DeliveryOptions:
 def _default_local_hostname() -> str:
     """Return the EHLO name smtplib would compute, looked up once per process.
 
-    Why
-        smtplib calls ``socket.getfqdn()`` (a reverse DNS lookup) for every
-        connection it opens without ``local_hostname``, and delivery opens one
-        connection per recipient; on a host with slow reverse DNS each one
-        waits for it. The rule is smtplib's own: the FQDN when it has a dot,
-        else an address literal (RFC 5321 section 4.1.3).
+    smtplib calls socket.getfqdn() (a reverse DNS lookup) for every
+    connection it opens without local_hostname, and delivery opens one
+    connection per recipient; on a host with slow reverse DNS each one waits
+    for it. The rule is smtplib's own: the FQDN when it has a dot, else an
+    address literal (RFC 5321 section 4.1.3).
+
+    Returns:
+        The FQDN when it contains a dot, otherwise a bracketed IP address
+        literal.
     """
     fqdn = socket.getfqdn()
     if "." in fqdn:
@@ -77,30 +82,20 @@ def _default_local_hostname() -> str:
 def _build_starttls_context(*, verify: bool) -> ssl.SSLContext:
     """Return the SSL context used for the STARTTLS handshake.
 
-    Why
-        Internal relays often present a self-signed certificate or one whose
-        hostname does not match. Verifying such a certificate makes ``starttls``
-        fail even though the channel would still be encrypted. ``verify=False``
-        lets an operator keep encryption while opting out of validation, which
-        is strictly better than falling back to plaintext.
+    Internal relays often present a self-signed certificate or one whose
+    hostname does not match. Verifying such a certificate makes starttls fail
+    even though the channel would still be encrypted. verify=False lets an
+    operator keep encryption while opting out of validation, which is
+    strictly better than falling back to plaintext.
 
-    Inputs
-    ------
-    verify:
-        ``True`` returns the standard verifying context (certificate chain and
-        hostname checked). ``False`` disables both checks.
+    Args:
+        verify: True returns the standard verifying context (certificate
+            chain and hostname checked). False disables both checks.
 
-    Outputs
-    -------
-    ssl.SSLContext
-        A verifying context by default, or a non-verifying one when
-        ``verify`` is ``False``.
-
-    Side Effects
-    ------------
-    None.
+    Returns:
+        A verifying context by default, or a non-verifying one when verify
+        is False.
     """
-
     context = ssl.create_default_context()
     if not verify:
         # Opt-in for internal self-signed relays: the channel stays encrypted,
@@ -143,18 +138,15 @@ _CRLF_LEN: Final[int] = 2
 
 
 class Transport(Protocol):
-    """### Transport {#lib-mail-transport}
+    """Delivery seam that decouples failover orchestration from the SMTP wire protocol.
 
-    **Purpose:** Delivery seam that decouples failover orchestration from the
-    concrete SMTP wire protocol, so an alternative transport (or a test double)
-    is injected rather than monkeypatched over :mod:`smtplib`.
-
-    An implementation delivers one already-composed message to one recipient via
-    one host and raises on any failure so the caller can fall over to the next
-    host. An OSError (including any smtplib.SMTPException) raised by deliver()
-    is logged with its text, stripped of control characters; any other
-    exception is logged by type name only. Do not put a credential into the
-    text of an OSError.
+    An alternative transport (or a test double) is injected through this seam
+    rather than monkeypatched over smtplib. An implementation delivers one
+    already-composed message to one recipient via one host and raises on any
+    failure so the caller can fall over to the next host. An OSError
+    (including any smtplib.SMTPException) raised by deliver() is logged with
+    its text, stripped of control characters; any other exception is logged
+    by type name only. Do not put a credential into the text of an OSError.
     """
 
     def deliver(
@@ -166,18 +158,27 @@ class Transport(Protocol):
         message: IO[bytes],
         delivery: DeliveryOptions,
     ) -> None:
-        """Deliver ``message`` (a rewindable byte stream) to ``recipient`` via ``host``."""
+        """Deliver a message to one recipient via one host.
+
+        Args:
+            host: SMTP host spec consumed by parse_smtp_host (host[:port]).
+            sender: Envelope sender address.
+            recipient: Envelope recipient address.
+            message: Rewindable byte stream holding the already-composed
+                message.
+            delivery: Resolved delivery options (STARTTLS, credentials,
+                timeouts, deadline).
+        """
         ...
 
 
 class SmtplibTransport:
-    """### SmtplibTransport {#lib-mail-smtplibtransport}
+    """Production Transport that streams the message instead of buffering it whole.
 
-    **Purpose:** Production :class:`Transport` that streams the message to the
-    server over :mod:`smtplib` chunk by chunk instead of buffering the whole
-    payload. When the server advertises ``CHUNKING`` (RFC 3030) it frames the
-    body with ``BDAT``; otherwise it drives the classic ``DATA`` phase with
-    incremental dot-stuffing. Either way peak transfer memory is ~one chunk.
+    It streams to the server over smtplib chunk by chunk. When the server
+    advertises CHUNKING (RFC 3030) it frames the body with BDAT; otherwise it
+    drives the classic DATA phase with incremental dot-stuffing. Either way
+    peak transfer memory is about one chunk.
     """
 
     def deliver(
@@ -189,6 +190,17 @@ class SmtplibTransport:
         message: IO[bytes],
         delivery: DeliveryOptions,
     ) -> None:
+        """Deliver a message to one recipient via one host over smtplib.
+
+        Args:
+            host: SMTP host spec consumed by parse_smtp_host (host[:port]).
+            sender: Envelope sender address.
+            recipient: Envelope recipient address.
+            message: Rewindable byte stream holding the already-composed
+                message.
+            delivery: Resolved delivery options (STARTTLS, credentials,
+                timeouts, deadline).
+        """
         hostname, port = parse_smtp_host(host)
         local_hostname = delivery.local_hostname or _default_local_hostname()
         with (
@@ -221,15 +233,25 @@ class SmtplibTransport:
 
 @contextmanager
 def _session_deadline(smtp_connection: smtplib.SMTP, seconds: float | None) -> Generator[None, None, None]:
-    """Bound the whole SMTP session to *seconds*, raising ``TimeoutError`` past it.
+    """Bound the whole SMTP session to seconds, raising TimeoutError past it.
 
-    Why
-        The socket timeout bounds ONE read or write, so a server that answers a
-        byte at a time keeps a session alive indefinitely. When the deadline
-        passes, a watchdog thread shuts the socket down, which ends whatever
-        read or write is blocked; the resulting failure is reported as a
-        ``TimeoutError`` naming the deadline, so the host counts as failed and
-        the next one is tried.
+    The socket timeout bounds one read or write, so a server that answers a
+    byte at a time keeps a session alive indefinitely. When the deadline
+    passes, a watchdog thread shuts the socket down, which ends whatever read
+    or write is blocked; the resulting failure is reported as a TimeoutError
+    naming the deadline, so the host counts as failed and the next one is
+    tried.
+
+    Args:
+        smtp_connection: The SMTP connection to bound.
+        seconds: Deadline in seconds for the whole session, or None to apply
+            no bound.
+
+    Yields:
+        None, for the duration of the bounded session.
+
+    Raises:
+        TimeoutError: The deadline passed while a read or write was blocked.
     """
     if seconds is None:
         yield
@@ -259,10 +281,14 @@ def _session_deadline(smtp_connection: smtplib.SMTP, seconds: float | None) -> G
 def _authenticate(smtp_connection: smtplib.SMTP, username: str, password: str) -> None:
     """Log in, using UTF-8 AUTH PLAIN only when the credentials are not ASCII.
 
-    Why
-        stdlib ``smtplib`` encodes every AUTH exchange as ASCII, so a non-ASCII
-        password raises ``UnicodeEncodeError`` whose repr quotes the whole AUTH
-        string. ASCII credentials keep the stdlib path unchanged.
+    stdlib smtplib encodes every AUTH exchange as ASCII, so a non-ASCII
+    password raises UnicodeEncodeError whose repr quotes the whole AUTH
+    string. ASCII credentials keep the stdlib path unchanged.
+
+    Args:
+        smtp_connection: The SMTP connection to authenticate on.
+        username: SMTP account name.
+        password: SMTP account password.
     """
     if username.isascii() and password.isascii():
         smtp_connection.login(username, password)
@@ -273,13 +299,17 @@ def _authenticate(smtp_connection: smtplib.SMTP, username: str, password: str) -
 def _login_plain_utf8(smtp_connection: smtplib.SMTP, username: str, password: str) -> None:
     """Authenticate with RFC 4616 AUTH PLAIN, credentials encoded as UTF-8.
 
-    Raises
-    ------
-    smtplib.SMTPNotSupportedError
-        The server offers no AUTH, or no PLAIN mechanism.
-    smtplib.SMTPAuthenticationError
-        The server rejected the credentials, or answered a second 334;
-        carries only the server reply.
+    Args:
+        smtp_connection: The SMTP connection to authenticate on.
+        username: SMTP account name.
+        password: SMTP account password.
+
+    Raises:
+        smtplib.SMTPNotSupportedError: The server offers no AUTH, or no
+            PLAIN mechanism.
+        smtplib.SMTPAuthenticationError: The server rejected the
+            credentials, or answered a second 334; carries only the server
+            reply.
     """
     if not smtp_connection.has_extn("auth"):
         raise smtplib.SMTPNotSupportedError("SMTP AUTH extension not supported by server.")
@@ -297,7 +327,17 @@ def _login_plain_utf8(smtp_connection: smtplib.SMTP, username: str, password: st
 
 
 def _require_socket(smtp_connection: smtplib.SMTP) -> socket.socket:
-    """Return the live socket, or raise if the connection was never established."""
+    """Return the live socket, or raise if the connection was never established.
+
+    Args:
+        smtp_connection: The SMTP connection to read the socket from.
+
+    Returns:
+        The connection's live socket.
+
+    Raises:
+        smtplib.SMTPServerDisconnected: The connection has no socket yet.
+    """
     sock = smtp_connection.sock
     if sock is None:  # pragma: no cover - smtplib sets sock once connected
         raise smtplib.SMTPServerDisconnected("connection unexpectedly closed")
@@ -305,7 +345,17 @@ def _require_socket(smtp_connection: smtplib.SMTP) -> socket.socket:
 
 
 def _open_envelope(smtp_connection: smtplib.SMTP, sender: str, recipient: str) -> None:
-    """Issue MAIL FROM / RCPT TO, raising on rejection (shared by DATA and BDAT)."""
+    """Issue MAIL FROM / RCPT TO, raising on rejection (shared by DATA and BDAT).
+
+    Args:
+        smtp_connection: The SMTP connection to issue the commands on.
+        sender: Envelope sender address.
+        recipient: Envelope recipient address.
+
+    Raises:
+        smtplib.SMTPSenderRefused: The server rejected MAIL FROM.
+        smtplib.SMTPRecipientsRefused: The server rejected RCPT TO.
+    """
     code, resp = smtp_connection.mail(sender)
     if code != _SMTP_OK:
         raise smtplib.SMTPSenderRefused(code, resp, sender)
@@ -315,7 +365,18 @@ def _open_envelope(smtp_connection: smtplib.SMTP, sender: str, recipient: str) -
 
 
 def _send_via_data(smtp_connection: smtplib.SMTP, sender: str, recipient: str, message: IO[bytes]) -> None:
-    """Stream the message through the classic DATA phase with incremental dot-stuffing."""
+    """Stream the message through the classic DATA phase with incremental dot-stuffing.
+
+    Args:
+        smtp_connection: The SMTP connection to stream on.
+        sender: Envelope sender address.
+        recipient: Envelope recipient address.
+        message: Rewindable byte stream holding the already-composed message.
+
+    Raises:
+        smtplib.SMTPDataError: The server rejected DATA or the final
+            transcript.
+    """
     _open_envelope(smtp_connection, sender, recipient)
     code, resp = smtp_connection.docmd("DATA")
     if code != _SMTP_START_MAIL_INPUT:
@@ -341,7 +402,17 @@ def _send_via_data(smtp_connection: smtplib.SMTP, sender: str, recipient: str, m
 
 
 def _send_via_bdat(smtp_connection: smtplib.SMTP, sender: str, recipient: str, message: IO[bytes]) -> None:
-    """Stream the message as RFC 3030 BDAT chunks (length-prefixed, no dot-stuffing)."""
+    """Stream the message as RFC 3030 BDAT chunks (length-prefixed, no dot-stuffing).
+
+    Args:
+        smtp_connection: The SMTP connection to stream on.
+        sender: Envelope sender address.
+        recipient: Envelope recipient address.
+        message: Rewindable byte stream holding the already-composed message.
+
+    Raises:
+        smtplib.SMTPDataError: The server rejected a BDAT chunk.
+    """
     _open_envelope(smtp_connection, sender, recipient)
     sock = _require_socket(smtp_connection)
     while True:
@@ -365,26 +436,33 @@ DEFAULT_TRANSPORT: Final[Transport] = SmtplibTransport()
 class _DotStuffer:
     """Incrementally SMTP-dot-stuff a CRLF byte stream for the DATA phase.
 
-    Why
-        RFC 5321 section 4.5.2 requires that a line beginning with ``.`` be
-        transmitted as ``..`` so the single-dot line stays reserved as the
-        end-of-data marker. When the message is streamed in fixed-size chunks a
-        line boundary (and therefore the leading dot to protect) can fall on any
-        chunk edge, so the transform must remember whether the next byte starts
-        a fresh line across ``feed`` calls rather than re-scanning whole lines.
+    RFC 5321 section 4.5.2 requires that a line beginning with "." be
+    transmitted as ".." so the single-dot line stays reserved as the
+    end-of-data marker. When the message is streamed in fixed-size chunks a
+    line boundary (and therefore the leading dot to protect) can fall on any
+    chunk edge, so the transform must remember whether the next byte starts a
+    fresh line across feed calls rather than re-scanning whole lines.
 
-    What
-        Assumes the input already uses CRLF line endings (the caller serialises
-        with :class:`email.policy.SMTP`); only period doubling is applied here.
+    Assumes the input already uses CRLF line endings (the caller serialises
+    with email.policy.SMTP); only period doubling is applied here.
     """
 
     def __init__(self) -> None:
+        """Start the stuffer so the first byte fed is treated as a line start."""
         # The DATA payload begins at the start of a line, so the first byte is a
         # candidate for doubling.
         self._at_line_start = True
 
     def feed(self, chunk: bytes) -> bytes:
-        """Return ``chunk`` with any line-leading ``.`` doubled."""
+        """Return chunk with any line-leading "." doubled.
+
+        Args:
+            chunk: The next slice of the CRLF byte stream to dot-stuff.
+
+        Returns:
+            chunk with each line-leading "." doubled, carrying the
+            line-start state across calls.
+        """
         dot = ord(".")
         line_feed = ord("\n")
         out = bytearray()

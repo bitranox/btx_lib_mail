@@ -1,5 +1,4 @@
-"""Attachment security: the default blocklists, the path checks, and opening each checked file once
-so the bytes sent are those of the file that was checked.
+"""Attachment security: the default blocklists, the path checks, and opening each checked file once so the bytes sent are those of the file that was checked.
 
 Private to btx_lib_mail: import the public names from `btx_lib_mail` or `btx_lib_mail.lib_mail`.
 """
@@ -170,15 +169,12 @@ _PATHS_IGNORE_CASE: Final[bool] = sys.platform in ("darwin", "win32")
 def default_blocked_extensions() -> frozenset[str]:
     """Return the dangerous extensions of every platform.
 
-    Why
-        What runs an attachment is the RECIPIENT's machine, not the sender's, so a
-        Linux sender must refuse ``.exe`` as firmly as a Windows sender refuses
-        ``.sh``. Unlike the blocked directories, which describe the sender's own
-        disk, this set does not depend on where the library runs.
+    What runs an attachment is the RECIPIENT's machine, not the sender's, so a
+    Linux sender must refuse ``.exe`` as firmly as a Windows sender refuses
+    ``.sh``. Unlike the blocked directories, which describe the sender's own
+    disk, this set does not depend on where the library runs.
 
-    Outputs
-    -------
-    frozenset[str]
+    Returns:
         The union of :data:`DANGEROUS_EXTENSIONS_POSIX` and
         :data:`DANGEROUS_EXTENSIONS_WINDOWS`.
     """
@@ -188,12 +184,9 @@ def default_blocked_extensions() -> frozenset[str]:
 def default_blocked_directories() -> frozenset[pathlib.Path]:
     """Return the OS-appropriate set of dangerous directories.
 
-    Why
-        Provides sensible defaults without requiring manual configuration.
+    Provides sensible defaults without requiring manual configuration.
 
-    Outputs
-    -------
-    frozenset[pathlib.Path]
+    Returns:
         Dangerous directories for the current operating system.
     """
     if sys.platform == "win32":
@@ -202,15 +195,23 @@ def default_blocked_directories() -> frozenset[pathlib.Path]:
 
 
 def normalise_extensions(values: Iterable[object]) -> frozenset[str]:
-    """Return *values* as lower-case, dot-prefixed extensions; blanks are dropped.
+    """Return values as lower-case, dot-prefixed extensions; blanks are dropped.
 
     Used for the `ConfMail` fields and for the `send()` keywords alike, so
     `{"PDF"}`, `{".pdf"}` and `{" .PDF "}` mean the same set wherever they are given.
 
-    Examples
-    --------
-    >>> sorted(normalise_extensions(["PDF", ".Txt", " ", "exe"]))
-    ['.exe', '.pdf', '.txt']
+    Args:
+        values: Extension strings, with or without a leading dot, in any case.
+
+    Returns:
+        The normalised, lower-case, dot-prefixed extensions.
+
+    Raises:
+        InvalidInputError: If any value is not a string.
+
+    Examples:
+        >>> sorted(normalise_extensions(["PDF", ".Txt", " ", "exe"]))
+        ['.exe', '.pdf', '.txt']
     """
     normalised: set[str] = set()
     for ext in values:
@@ -224,15 +225,13 @@ def normalise_extensions(values: Iterable[object]) -> frozenset[str]:
 
 
 class AttachmentViolation(str, Enum):
-    """### AttachmentViolation {#lib-mail-attachmentviolation}
+    """Enumerate the closed set of attachment security violation categories.
 
-    **Purpose:** Enumerate the closed set of attachment security violation
-    categories so callers match on a typed member instead of a bare string.
-
-    Members subclass ``str`` (``str, Enum`` rather than 3.11+ ``StrEnum`` to keep
-    the 3.10 baseline), so ``violation is AttachmentViolation.SYMLINK``,
-    ``violation == "symlink"``, and JSON serialisation all behave as expected and
-    the wire value is unchanged.
+    Callers match on a typed member instead of a bare string. Members
+    subclass ``str`` (``str, Enum`` rather than 3.11+ ``StrEnum`` to keep the
+    3.10 baseline), so ``violation is AttachmentViolation.SYMLINK``,
+    ``violation == "symlink"``, and JSON serialisation all behave as expected
+    and the wire value is unchanged.
     """
 
     PATH_TRAVERSAL = "path_traversal"
@@ -248,22 +247,31 @@ class AttachmentViolation(str, Enum):
 class AttachmentSecurityError(BtxMailError):
     """Raised when an attachment violates security policies.
 
-    **Purpose:** Provide a structured exception for attachment security
-    violations so callers can handle or report them appropriately.
+    Provides a structured exception for attachment security violations so
+    callers can handle or report them appropriately.
 
-    **Fields:**
-    - `path: pathlib.Path` - The offending attachment path.
-    - `reason: str` - Human-readable description of the violation, with every
-      control character (CR, LF, ESC, NUL, ...) already replaced by a space, since
-      the path embedded in it is filesystem-supplied and could otherwise forge a
-      line in whatever renders `str(exc)`, `repr(exc)`, or a log line built from
-      this field.
-    - `violation_type: AttachmentViolation` - Category of the violation
-      (`AttachmentViolation.SYMLINK`, `.EXTENSION`, `.SIZE`, etc.). Members
-      subclass `str`, so `== "symlink"` comparisons keep working.
+    Attributes:
+        path: The offending attachment path.
+        reason: Human-readable description of the violation, with every
+            control character (CR, LF, ESC, NUL, ...) already replaced by a
+            space, since the path embedded in it is filesystem-supplied and
+            could otherwise forge a line in whatever renders `str(exc)`,
+            `repr(exc)`, or a log line built from this field.
+        violation_type: Category of the violation
+            (`AttachmentViolation.SYMLINK`, `.EXTENSION`, `.SIZE`, etc.).
+            Members subclass `str`, so `== "symlink"` comparisons keep
+            working.
     """
 
     def __init__(self, path: pathlib.Path, reason: str, violation_type: AttachmentViolation) -> None:
+        """Build the error, cleaning *reason* of forgeable control characters.
+
+        Args:
+            path: The offending attachment path.
+            reason: Human-readable description of the violation; may embed
+                a filesystem-supplied path.
+            violation_type: Category of the violation.
+        """
         # `reason` is built with an f-string at every call site and usually
         # embeds `path` (filesystem-supplied), so it is cleaned once here:
         # this also cleans `self.args` (via `super().__init__`), so neither
@@ -277,6 +285,11 @@ class AttachmentSecurityError(BtxMailError):
         self.violation_type = violation_type
 
     def __str__(self) -> str:
+        """Return the forgery-safe one-line rendering used by logs and tracebacks.
+
+        Returns:
+            The violation type, cleaned reason, and cleaned path in one line.
+        """
         # .value keeps the message text stable across Python versions, where
         # f-string formatting of a `str, Enum` member is inconsistent.
         return f"Attachment security violation ({self.violation_type.value}): {self.reason} [path={printable(str(self.path))}]"
@@ -284,22 +297,19 @@ class AttachmentSecurityError(BtxMailError):
 
 @dataclass(frozen=True)
 class AttachmentPayload:
-    """### AttachmentPayload {#lib-mail-attachmentpayload}
+    """Name a validated attachment and hold the file it was checked as, open.
 
-    **Purpose:** Name a validated attachment and hold the file it was checked
-    as, open, so the bytes encoded into the message are those of the checked
-    file even if the path is swapped afterwards.
+    The bytes encoded into the message are those of the checked file even if
+    the path is swapped afterwards. Instances are immutable (`frozen=True`);
+    the handle itself is rewound before each read.
 
-    **Fields:**
-    - `filename: str` - Basename surfaced in the `Content-Disposition` header.
-    - `source: pathlib.Path` - The resolved path that was checked (for messages).
-    - `handle: IO[bytes]` - The checked file, opened once; read while the
-      message body is encoded and closed when `send()` returns.
-    - `size_limit: int | None` - The size limit in force; a file that grows
-      past it while it is read is refused.
-
-    Instances are immutable (`frozen=True`); the handle itself is rewound before
-    each read.
+    Attributes:
+        filename: Basename surfaced in the `Content-Disposition` header.
+        source: The resolved path that was checked (for messages).
+        handle: The checked file, opened once; read while the message body is
+            encoded and closed when `send()` returns.
+        size_limit: The size limit in force; a file that grows past it while
+            it is read is refused.
     """
 
     filename: str
@@ -310,23 +320,22 @@ class AttachmentPayload:
 
 @dataclass(frozen=True)
 class AttachmentSecurityOptions:
-    """### AttachmentSecurityOptions {#lib-mail-attachmentsecurityoptions}
+    """Capture the resolved attachment security options for a single send operation.
 
-    **Purpose:** Capture the resolved attachment security options for a single
-    send operation so validation helpers receive one immutable object.
+    Validation helpers receive one immutable object.
 
-    **Fields:**
-    - `allowed_extensions: frozenset[str] | None` - When set, only these
-      extensions are allowed (whitelist mode).
-    - `blocked_extensions: frozenset[str]` - Extensions to reject (ignored
-      when whitelist is active).
-    - `allowed_directories: frozenset[pathlib.Path] | None` - When set,
-      attachments must reside under one of these directories.
-    - `blocked_directories: frozenset[pathlib.Path]` - Directories from which
-      attachments cannot be read.
-    - `max_size_bytes: int | None` - Maximum attachment size in bytes.
-    - `allow_symlinks: bool` - Whether symlinks are permitted.
-    - `raise_on_violation: bool` - Whether violations raise or just warn.
+    Attributes:
+        allowed_extensions: When set, only these extensions are allowed
+            (whitelist mode).
+        blocked_extensions: Extensions to reject (ignored when whitelist is
+            active).
+        allowed_directories: When set, attachments must reside under one of
+            these directories.
+        blocked_directories: Directories from which attachments cannot be
+            read.
+        max_size_bytes: Maximum attachment size in bytes.
+        allow_symlinks: Whether symlinks are permitted.
+        raise_on_violation: Whether violations raise or just warn.
     """
 
     allowed_extensions: frozenset[str] | None
@@ -341,19 +350,14 @@ class AttachmentSecurityOptions:
 def _check_path_traversal(path: pathlib.Path, original_str: str) -> None:
     """Detect path traversal attempts in the original path string.
 
-    Why
-        Path traversal sequences like `../` can escape intended directories.
+    Path traversal sequences like `../` can escape intended directories.
 
-    Inputs
-    ------
-    path:
-        The path object (for error reporting).
-    original_str:
-        The original string representation of the path.
+    Args:
+        path: The path object (for error reporting).
+        original_str: The original string representation of the path.
 
-    Side Effects
-    ------------
-    Raises AttachmentSecurityError if traversal is detected.
+    Raises:
+        AttachmentSecurityError: If traversal is detected.
     """
     # A ".." COMPONENT climbs out of a directory; "report..final.txt" is just a name.
     if ".." in pathlib.Path(original_str).parts:
@@ -367,24 +371,18 @@ def _check_path_traversal(path: pathlib.Path, original_str: str) -> None:
 def _check_symlink(*, path: pathlib.Path, allow_symlinks: bool) -> pathlib.Path:
     """Check symlink status and return the resolved path.
 
-    Why
-        Symlinks can point to sensitive files outside intended directories.
+    Symlinks can point to sensitive files outside intended directories.
 
-    Inputs
-    ------
-    path:
-        The path to check.
-    allow_symlinks:
-        Whether symlinks are permitted.
+    Args:
+        path: The path to check.
+        allow_symlinks: Whether symlinks are permitted.
 
-    Outputs
-    -------
-    pathlib.Path
+    Returns:
         The resolved path (follows symlinks if allowed).
 
-    Side Effects
-    ------------
-    Raises AttachmentSecurityError if symlink is rejected.
+    Raises:
+        AttachmentSecurityError: If the path is a symlink and symlinks are
+            not allowed.
     """
     if path.is_symlink():
         if not allow_symlinks:
@@ -399,22 +397,27 @@ def _check_symlink(*, path: pathlib.Path, allow_symlinks: bool) -> pathlib.Path:
 
 
 def _check_filename(path: pathlib.Path) -> None:
-    """Refuse a file name holding a control character (Unicode category ``Cc``).
+    r"""Refuse a file name holding a control character (Unicode category ``Cc``).
 
-    Why
-        The name becomes the ``filename`` parameter of the attachment's
-        ``Content-Disposition`` header. CR, LF, VT and FF make the header
-        serialiser raise a bare ``ValueError`` halfway through composing, and
-        NUL, ESC and DEL would be written into the header raw. A POSIX file
-        system allows all of them in a name.
+    The name becomes the ``filename`` parameter of the attachment's
+    ``Content-Disposition`` header. CR, LF, VT and FF make the header
+    serialiser raise a bare ``ValueError`` halfway through composing, and NUL,
+    ESC and DEL would be written into the header raw. A POSIX file system
+    allows all of them in a name.
 
-    Examples
-    --------
-    >>> _check_filename(pathlib.Path("/data/Bericht März.pdf"))
-    >>> _check_filename(pathlib.Path("/d/a\\nb"))
-    Traceback (most recent call last):
-        ...
-    btx_lib_mail._attachments.AttachmentSecurityError: Attachment security violation (filename): file name contains a control character: "/d/a b" [path=/d/a b]
+    Args:
+        path: The path whose name is checked.
+
+    Raises:
+        AttachmentSecurityError: If the file name contains a control
+            character.
+
+    Examples:
+        >>> _check_filename(pathlib.Path("/data/Bericht März.pdf"))
+        >>> _check_filename(pathlib.Path("/d/a\nb"))  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+            ...
+        btx_lib_mail._attachments.AttachmentSecurityError: ...contains a control character: "/d/a b" [path=/d/a b]
     """
     if any(unicodedata.category(character) == "Cc" for character in path.name):
         raise AttachmentSecurityError(
@@ -431,17 +434,13 @@ def _case_as_the_file_system_does(text: str) -> str:
 def _check_sensitive_patterns(path: pathlib.Path) -> None:
     """Check if the path matches any sensitive patterns.
 
-    Why
-        Some paths (SSH keys, credentials) should never be attached.
+    Some paths (SSH keys, credentials) should never be attached.
 
-    Inputs
-    ------
-    path:
-        The resolved path to check.
+    Args:
+        path: The resolved path to check.
 
-    Side Effects
-    ------------
-    Raises AttachmentSecurityError if sensitive pattern is matched.
+    Raises:
+        AttachmentSecurityError: If a sensitive pattern is matched.
     """
     # Forward slashes so one pattern serves Windows too.
     path_str_normalised = _case_as_the_file_system_does(str(path).replace("\\", "/"))
@@ -462,21 +461,15 @@ def _check_directory_restrictions(
 ) -> None:
     """Check directory whitelist/blacklist restrictions.
 
-    Why
-        Restrict which directories attachments can be read from.
+    Restrict which directories attachments can be read from.
 
-    Inputs
-    ------
-    path:
-        The resolved path to check.
-    allowed:
-        When set, path must be under one of these directories.
-    blocked:
-        Path must not be under any of these directories.
+    Args:
+        path: The resolved path to check.
+        allowed: When set, path must be under one of these directories.
+        blocked: Path must not be under any of these directories.
 
-    Side Effects
-    ------------
-    Raises AttachmentSecurityError if directory restriction is violated.
+    Raises:
+        AttachmentSecurityError: If a directory restriction is violated.
     """
     resolved_path = path.resolve()
 
@@ -509,21 +502,16 @@ def _check_extension(
 ) -> None:
     """Check extension whitelist/blacklist restrictions.
 
-    Why
-        Prevent attachment of dangerous executable file types.
+    Prevent attachment of dangerous executable file types.
 
-    Inputs
-    ------
-    path:
-        The path to check.
-    allowed:
-        When set, only these extensions are permitted (whitelist mode).
-    blocked:
-        Extensions to reject (ignored when whitelist is active).
+    Args:
+        path: The path to check.
+        allowed: When set, only these extensions are permitted (whitelist
+            mode).
+        blocked: Extensions to reject (ignored when whitelist is active).
 
-    Side Effects
-    ------------
-    Raises AttachmentSecurityError if extension is not allowed.
+    Raises:
+        AttachmentSecurityError: If the extension is not allowed.
     """
     ext = _effective_suffix(path.name)
 
@@ -545,25 +533,38 @@ def _check_extension(
 
 
 def _effective_suffix(name: str) -> str:
-    """Return the lower-cased extension a recipient's system sees for *name*.
+    """Return the lower-cased extension a recipient's system sees for name.
 
-    Why
-        Windows drops trailing dots and spaces from a file name, so ``x.exe.``
-        and ``x.exe `` are saved as ``x.exe``; :attr:`pathlib.PurePath.suffix`
-        reports ``.`` and ``.exe `` for them, which no blocklist entry matches.
+    Windows drops trailing dots and spaces from a file name, so ``x.exe.`` and
+    ``x.exe `` are saved as ``x.exe``; :attr:`pathlib.PurePath.suffix` reports
+    ``.`` and ``.exe `` for them, which no blocklist entry matches.
 
-    Examples
-    --------
-    >>> _effective_suffix("x.sh. . ")
-    '.sh'
-    >>> _effective_suffix("REPORT.PDF")
-    '.pdf'
+    Args:
+        name: The file name to derive the effective suffix from.
+
+    Returns:
+        The lower-cased extension, as the recipient's system would see it.
+
+    Examples:
+        >>> _effective_suffix("x.sh. . ")
+        '.sh'
+        >>> _effective_suffix("REPORT.PDF")
+        '.pdf'
     """
     return pathlib.PurePath(name.rstrip(". ") or name).suffix.lower()
 
 
 def _check_size(path: pathlib.Path, size: int, max_size: int | None) -> None:
-    """Raise when *size* (of the opened file at *path*) exceeds *max_size*."""
+    """Raise when size (of the opened file at path) exceeds max_size.
+
+    Args:
+        path: The attachment path, for the error message.
+        size: The opened file's actual size, in bytes.
+        max_size: The size limit in force, or None for no limit.
+
+    Raises:
+        AttachmentSecurityError: If size exceeds max_size.
+    """
     if max_size is not None and size > max_size:
         raise AttachmentSecurityError(
             path=path,
@@ -592,27 +593,27 @@ def _changed_after_check(path: pathlib.Path) -> AttachmentSecurityError:
 
 
 def _open_attachment(path: pathlib.Path, max_size: int | None) -> IO[bytes] | None:
-    """Open the checked, resolved *path* once and prove it is the file that was checked.
+    """Open the checked, resolved path once and prove it is the file that was checked.
 
-    Why
-        Reading the file again later by name (once per recipient, as before)
-        lets a path swapped after the checks - a symlink to ``/etc/passwd``, a
-        file grown past the limit - reach the message. The file is opened here
-        once, compared with what was checked (same device and inode, still a
-        regular file, size within the limit), and that open file is what the
-        message body is encoded from.
+    Reading the file again later by name (once per recipient, as before) lets
+    a path swapped after the checks - a symlink to ``/etc/passwd``, a file
+    grown past the limit - reach the message. The file is opened here once,
+    compared with what was checked (same device and inode, still a regular
+    file, size within the limit), and that open file is what the message body
+    is encoded from.
 
-    Outputs
-    -------
-    IO[bytes] | None
-        The opened file, or ``None`` when *path* does not exist or is not a
+    Args:
+        path: The already-checked, resolved path to open.
+        max_size: The size limit in force, or None for no limit.
+
+    Returns:
+        The opened file, or ``None`` when path does not exist or is not a
         regular file (the caller reports it as missing).
 
-    Raises
-    ------
-    AttachmentSecurityError
-        ``CHANGED`` when the path became a symlink or another file after the
-        checks; ``SIZE`` when the file exceeds *max_size*.
+    Raises:
+        AttachmentSecurityError: ``CHANGED`` when the path became a symlink or
+            another file after the checks; ``SIZE`` when the file exceeds
+            max_size.
     """
     try:
         checked = os.lstat(path)
@@ -649,28 +650,21 @@ def _validate_attachment_security(
 ) -> pathlib.Path:
     """Run the path-based security checks for a single attachment.
 
-    Why
-        Provides a single entry point for attachment path validation. The size
-        is checked on the opened file (:func:`_open_attachment`), not here.
+    Provides a single entry point for attachment path validation. The size is
+    checked on the opened file (:func:`_open_attachment`), not here.
 
-    Inputs
-    ------
-    path:
-        The path object to validate.
-    original_path_str:
-        The original string representation (for traversal detection).
-    security:
-        Resolved security options.
+    Args:
+        path: The path object to validate.
+        original_path_str: The original string representation (for traversal
+            detection).
+        security: Resolved security options.
 
-    Outputs
-    -------
-    pathlib.Path
+    Returns:
         The resolved path (after symlink resolution if applicable).
 
-    Side Effects
-    ------------
-    Raises AttachmentSecurityError if any check fails. File existence is not
-    checked here.
+    Raises:
+        AttachmentSecurityError: If any check fails. File existence is not
+            checked here.
     """
     _check_path_traversal(path, original_path_str)
     resolved_path = _check_symlink(path=path, allow_symlinks=security.allow_symlinks)
@@ -698,30 +692,21 @@ def prepare_attachments(
 ) -> tuple[AttachmentPayload, ...]:
     """Check each attachment path, open the checked file once, and return the payloads.
 
-    Why
-        Validates attachment existence and security before SMTP attempts begin,
-        and ties what is sent to the file that was checked.
+    Validates attachment existence and security before SMTP attempts begin,
+    and ties what is sent to the file that was checked. Opens files; logs or
+    raises when missing or security violations occur.
 
-    Inputs
-    ------
-    paths:
-        Tuple of candidate filesystem paths (may be empty).
-    security:
-        Resolved security options for validation.
-    raise_on_missing:
-        When ``True``, missing files raise ``AttachmentNotFoundError``; when
-        ``False``, a warning is logged and the attachment is skipped.
+    Args:
+        paths: Tuple of candidate filesystem paths (may be empty).
+        security: Resolved security options for validation.
+        raise_on_missing: When ``True``, missing files raise
+            ``AttachmentNotFoundError``; when ``False``, a warning is logged
+            and the attachment is skipped.
 
-    Outputs
-    -------
-    tuple[AttachmentPayload, ...]
+    Returns:
         Payloads holding open files; the caller closes them
         (:func:`close_attachments`). On any failure, those already opened are
         closed before the error propagates.
-
-    Side Effects
-    ------------
-    Opens files; logs or raises when missing or security violations occur.
     """
     prepared: list[AttachmentPayload] = []
     try:

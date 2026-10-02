@@ -31,18 +31,16 @@ FAILED_RUN_SKIPPED: ContextVar[tuple[dict[str, str], ...]] = ContextVar("btx_mai
 
 @dataclass(frozen=True)
 class CliContext:
-    """### CliContext {#cli-clicontext}
+    """The typed `ctx.obj` every command reads.
 
-    **Purpose:** The typed `ctx.obj` every command reads.
-
-    **Fields:**
-    - `traceback: bool` - Verbose tracebacks were requested.
-    - `json_output: bool` - Print the JSON envelope.
-    - `json_bare: bool` - Print the JSON payload without the envelope.
-    - `transport: Transport | None` - Delivery adapter `send` hands to the
-      library; `None` uses the SMTP transport. An application embedding the
-      CLI, or a test, passes its own through `cli.main(obj=CliContext(transport=...))`
-      or `CliRunner.invoke(cli, args, obj=...)`.
+    Attributes:
+        traceback: Verbose tracebacks were requested.
+        json_output: Print the JSON envelope.
+        json_bare: Print the JSON payload without the envelope.
+        transport: Delivery adapter `send` hands to the library; `None` uses the SMTP
+            transport. An application embedding the CLI, or a test, passes its own
+            through `cli.main(obj=CliContext(transport=...))` or
+            `CliRunner.invoke(cli, args, obj=...)`.
     """
 
     traceback: bool = False

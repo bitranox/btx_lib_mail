@@ -32,20 +32,16 @@ __all__ = ["main"]
 def _invoke_cli(argv: Sequence[str] | None) -> int:
     """Ask ``lib_cli_exit_tools`` to execute the Click command.
 
-    Why
-        ``lib_cli_exit_tools`` normalises exit codes and exception handling; we
-        centralise the call so tests can stub it cleanly.
+    ``lib_cli_exit_tools`` normalises exit codes and exception handling; this
+    centralises the call so tests can stub it cleanly.
 
-    Inputs
-        argv:
-        Optional sequence of command-line arguments. ``None`` delegates to
+    Args:
+        argv: Optional sequence of command-line arguments. ``None`` delegates to
             ``sys.argv`` inside ``lib_cli_exit_tools``.
 
-    Outputs
-        int:
-            Exit code returned by the CLI execution.
+    Returns:
+        Exit code returned by the CLI execution.
     """
-
     argv_list = list(argv) if argv is not None else None
     as_json, bare = _json_mode(argv_list if argv_list is not None else sys.argv[1:])
     if not as_json:
@@ -61,66 +57,48 @@ def _invoke_cli(argv: Sequence[str] | None) -> int:
 def _current_traceback_mode() -> bool:
     """Return the global traceback preference as a boolean.
 
-    Why
-        Error handling logic needs to know whether verbose tracebacks are active
-        so it can pick the right character budget and ensure colouring is
-        consistent.
+    Error handling logic needs to know whether verbose tracebacks are active
+    so it can pick the right character budget and ensure colouring is
+    consistent.
 
-    Outputs
-        bool:
-            ``True`` when verbose tracebacks are enabled; ``False`` otherwise.
+    Returns:
+        ``True`` when verbose tracebacks are enabled; ``False`` otherwise.
     """
-
     return bool(getattr(lib_cli_exit_tools.config, "traceback", False))
 
 
 def _traceback_limit(*, tracebacks_enabled: bool, summary_limit: int, verbose_limit: int) -> int:
     """Return the character budget that matches the current traceback mode.
 
-    Why
-        Verbose tracebacks should show the full story while compact ones keep the
-        terminal tidy. This helper makes that decision explicit.
+    Verbose tracebacks should show the full story while compact ones keep the
+    terminal tidy. This helper makes that decision explicit.
 
-    Inputs
-        tracebacks_enabled:
-            ``True`` when verbose tracebacks are active.
-        summary_limit:
-            Character budget for truncated output.
-        verbose_limit:
-            Character budget for the full traceback.
+    Args:
+        tracebacks_enabled: ``True`` when verbose tracebacks are active.
+        summary_limit: Character budget for truncated output.
+        verbose_limit: Character budget for the full traceback.
 
-    Outputs
-        int:
-            The applicable character limit.
+    Returns:
+        The applicable character limit.
     """
-
     return verbose_limit if tracebacks_enabled else summary_limit
 
 
 def _print_exception(exc: BaseException, *, tracebacks_enabled: bool, length_limit: int) -> int:
     """Render the exception through ``lib_cli_exit_tools`` and return its exit code.
 
-    Why
-        All transports funnel errors through ``lib_cli_exit_tools`` so that exit
-        codes and formatting stay consistent; this helper keeps the plumbing in
-        one place.
+    All transports funnel errors through ``lib_cli_exit_tools`` so that exit
+    codes and formatting stay consistent; this helper keeps the plumbing in
+    one place. Writes the formatted exception to stderr via ``lib_cli_exit_tools``.
 
-    Inputs
-        exc:
-            Exception raised by the CLI.
-        tracebacks_enabled:
-            ``True`` when verbose tracebacks should be shown.
-        length_limit:
-            Maximum number of characters to print.
+    Args:
+        exc: Exception raised by the CLI.
+        tracebacks_enabled: ``True`` when verbose tracebacks should be shown.
+        length_limit: Maximum number of characters to print.
 
-    Outputs
-        int:
-            Exit code to surface to the shell.
-
-    Side Effects
-        Writes the formatted exception to stderr via ``lib_cli_exit_tools``.
+    Returns:
+        Exit code to surface to the shell.
     """
-
     lib_cli_exit_tools.print_exception_message(
         trace_back=tracebacks_enabled,
         length_limit=length_limit,
@@ -136,24 +114,18 @@ def _run_cli_via_exit_tools(
 ) -> int:
     """Run the command while narrating the failure path with care.
 
-    Why
-        Consolidates the call to ``lib_cli_exit_tools`` so happy paths and error
-        handling remain consistent across the application and tests.
+    Consolidates the call to ``lib_cli_exit_tools`` so happy paths and error
+    handling remain consistent across the application and tests. Delegates to
+    ``lib_cli_exit_tools`` which may write to stderr.
 
-    Inputs
-        argv:
-        Optional sequence of CLI arguments.
-        summary_limit / verbose_limit:
-            Character budgets steering exception output length.
+    Args:
+        argv: Optional sequence of CLI arguments.
+        summary_limit: Character budget steering exception output length.
+        verbose_limit: Character budget steering exception output length.
 
-    Outputs
-        int:
-            Exit code produced by the command.
-
-    Side Effects
-        Delegates to ``lib_cli_exit_tools`` which may write to stderr.
+    Returns:
+        Exit code produced by the command.
     """
-
     try:
         return _invoke_cli(argv)
     except BaseException as exc:
@@ -177,31 +149,23 @@ def main(
     summary_limit: int = TRACEBACK_SUMMARY_LIMIT,
     verbose_limit: int = TRACEBACK_VERBOSE_LIMIT,
 ) -> int:
-    """### main(...) -> int {#cli-main-entry}
+    """Serve as the shared entry point for console scripts and `python -m` execution.
 
-    **Purpose:** Serve as the shared entry point for console scripts and
-    `python -m` execution, orchestrating error handling and traceback
-    restoration.
+    Orchestrates error handling and traceback restoration. Temporarily mutates
+    `lib_cli_exit_tools.config` while the CLI executes.
 
-    **Parameters:**
-    - `argv: Sequence[str] | None = None` - Optional argument vector. `None`
-      lets Click consume `sys.argv`.
-    - `restore_traceback: bool = True` - `True` restores the prior traceback
-      configuration after execution; set to `False` to leave modifications in
-      place.
-    - `summary_limit: int = TRACEBACK_SUMMARY_LIMIT` - Character budget applied
-      when tracebacks are summarised.
-    - `verbose_limit: int = TRACEBACK_VERBOSE_LIMIT` - Character budget applied
-      when verbose tracebacks are enabled.
+    Args:
+        argv: Optional argument vector. `None` lets Click consume `sys.argv`.
+        restore_traceback: `True` restores the prior traceback configuration after
+            execution; set to `False` to leave modifications in place.
+        summary_limit: Character budget applied when tracebacks are summarised.
+        verbose_limit: Character budget applied when verbose tracebacks are enabled.
 
-    **Returns:** `int` - Exit code produced by the CLI. With `--json` or
-    `--json-bare`, a failure is printed as JSON on standard output and the exit
-    code is the one the same failure has without them.
-
-    **Side Effects:** Temporarily mutates `lib_cli_exit_tools.config` while the
-    CLI executes.
+    Returns:
+        Exit code produced by the CLI. With `--json` or `--json-bare`, a failure is
+        printed as JSON on standard output and the exit code is the one the same
+        failure has without them.
     """
-
     previous_state = snapshot_traceback_state()
     try:
         return _run_cli_via_exit_tools(
@@ -220,6 +184,12 @@ def _json_mode(argv: Sequence[str]) -> tuple[bool, bool]:
     context exists (a malformed option), and its report must still be JSON. Only
     the tokens before the subcommand count, so an option VALUE spelled like the
     flag (``--body --json``) does not switch JSON on.
+
+    Args:
+        argv: Command-line arguments, including the subcommand and its options.
+
+    Returns:
+        A tuple of ``(as_json, bare)``.
     """
     group_options: list[str] = []
     for token in argv:
@@ -231,7 +201,14 @@ def _json_mode(argv: Sequence[str]) -> tuple[bool, bool]:
 
 
 def _command_named(argv: Sequence[str]) -> str | None:
-    """Return the subcommand name in *argv*, for the failure envelope."""
+    """Return the subcommand name in *argv*, for the failure envelope.
+
+    Args:
+        argv: Command-line arguments, including the subcommand and its options.
+
+    Returns:
+        The subcommand name, or ``None`` when *argv* names no known subcommand.
+    """
     return next((token for token in argv if token in cli.commands), None)
 
 
@@ -240,6 +217,13 @@ def _json_exception_handler(argv: Sequence[str], *, bare: bool) -> Callable[[Bas
 
     The exit code is resolved as ``lib_cli_exit_tools`` resolves it without
     JSON, so a caller may switch on it in either mode.
+
+    Args:
+        argv: Command-line arguments, for naming the failed command in the envelope.
+        bare: ``True`` to print the error payload alone, without the envelope.
+
+    Returns:
+        A callable taking the raised exception and returning the exit code.
     """
 
     def handle(exc: BaseException) -> int:
@@ -261,22 +245,16 @@ def _json_exception_handler(argv: Sequence[str], *, bare: bool) -> Callable[[Bas
 def _restore_when_requested(*, state: TracebackState, should_restore: bool) -> None:
     """Restore the prior traceback configuration when requested.
 
-    Why
-        CLI execution may toggle verbose tracebacks for the duration of the run.
-        Once the command ends we restore the previous configuration so other
-        code paths continue with their expected defaults.
+    CLI execution may toggle verbose tracebacks for the duration of the run.
+    Once the command ends this restores the previous configuration so other
+    code paths continue with their expected defaults. May mutate
+    ``lib_cli_exit_tools.config``.
 
-    Inputs
-        state:
-            Tuple captured by :func:`snapshot_traceback_state` describing the
+    Args:
+        state: Tuple captured by :func:`snapshot_traceback_state` describing the
             prior configuration.
-        should_restore:
-            ``True`` to reapply the stored configuration; ``False`` to keep the
-            current settings.
-
-    Side Effects
-        May mutate ``lib_cli_exit_tools.config``.
+        should_restore: ``True`` to reapply the stored configuration; ``False`` to
+            keep the current settings.
     """
-
     if should_restore:
         restore_traceback_state(state)

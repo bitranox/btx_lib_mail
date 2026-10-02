@@ -1,20 +1,19 @@
-"""## btx_lib_mail.lib_mail {#module-btx-lib-mail-lib-mail}
+"""Provide `send()`, the delivery entry point and public face of the library's mail machinery.
 
-**Purpose:** The delivery entry point, `send()`, and the public face of the
-library's mail machinery. `send()` resolves its keywords against a `ConfMail`,
-checks and opens the attachments, composes the message once, and hands one
-copy per recipient to a `Transport`, failing over across hosts.
+`send()` resolves its keywords against a `ConfMail`, checks and opens the
+attachments, composes the message once, and hands one copy per recipient to
+a `Transport`, failing over across hosts.
 
-**Contents:**
-- `send` - public orchestration entry point.
-- Re-exported from the private modules it composes: `ConfMail` and `conf`
-  (`_config`), `Transport`, `SmtplibTransport` and `DeliveryOptions`
-  (`_transport`), the attachment security names (`_attachments`),
-  `validate_email_address`, `validate_smtp_host` and `EMAIL_PATTERN`
-  (`_validation`), and `logger` (`_common`).
+Contents:
+    - `send` - public orchestration entry point.
+    - Re-exported from the private modules it composes: `ConfMail` and `conf`
+      (`_config`), `Transport`, `SmtplibTransport` and `DeliveryOptions`
+      (`_transport`), the attachment security names (`_attachments`),
+      `validate_email_address`, `validate_smtp_host` and `EMAIL_PATTERN`
+      (`_validation`), and `logger` (`_common`).
 
-**System Role:** Matches `docs/systemdesign/module_reference.md#core-components`
-by translating intent gathered by the CLI into SMTP side effects while keeping
+Matches `docs/systemdesign/module_reference.md#core-components` by
+translating intent gathered by the CLI into SMTP side effects while keeping
 configuration flow and delivery flow separated.
 """
 
@@ -90,115 +89,110 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
     # Delivery seam (advanced/testing): override the SMTP transport adapter.
     transport: Transport | None = None,
 ) -> bool:
-    """### send(...) -> bool {#lib-mail-send}
+    """Turn validated intent into SMTP delivery, honouring the policies in ConfMail.
 
-    **Purpose:** Provide the library/CLI façade that turns validated intent
-    (sender, recipients, message bodies, attachments) into SMTP activity while
-    honouring delivery policies defined in `ConfMail`.
+    Provides the library/CLI facade that turns validated intent (sender,
+    recipients, message bodies, attachments) into SMTP activity. Each
+    attachment is checked, opened once, and encoded once; every recipient's
+    message carries the bytes of that open file, and the files are closed
+    before `send()` returns.
 
-    **Parameters:**
-    - `mail_from: str` - Envelope sender address. Must be a syntactically valid
-      email.
-    - `mail_recipients: str | Sequence[str]` - Single recipient or iterable of
-      recipients. Values are trimmed, deduplicated, lower-cased, and validated.
-    - `mail_subject: str` - Subject line; UTF-8 is supported.
-    - `mail_body: str = ""` - Optional plain-text body.
-    - `mail_body_html: str = ""` - Optional HTML body.
-    - `smtphosts: Sequence[str] | None = None` - Override host list. When
-      `None`, the helper falls back to the passed `config.smtphosts`, else the
-      global `conf.smtphosts`.
-    - `attachment_file_paths: Sequence[pathlib.Path] | None = None` - Optional
-      iterable of filesystem paths. Each existing file becomes an attachment.
-    - `credentials: tuple[str, str] | None = None` - Override credentials. When
-      omitted, `resolved_credentials()` of the passed `config`, else of `conf`,
-      is used.
-    - `use_starttls: bool | None = None` - Override STARTTLS preference. When
-      `None`, the helper uses `smtp_use_starttls` of the passed `config`, else
-      `conf`.
-    - `starttls_verify: bool | None = None` - Override STARTTLS certificate
-      verification. When `None`, the helper uses `smtp_starttls_verify` of the
-      passed `config`, else `conf`. `False` keeps the connection encrypted but
-      skips certificate/hostname validation (for internal self-signed relays).
-      Ignored unless STARTTLS runs.
-    - `timeout: float | None = None` - Override socket timeout in seconds. When
-      `None`, the helper uses `smtp_timeout` of the passed `config`, else `conf`.
-    - `local_hostname: str | None = None` - Override the name announced in
-      `EHLO`. When `None`, the helper uses `smtp_local_hostname` of the passed
-      `config`, else `conf`; when that is unset too, the host's own name,
-      looked up once per process.
-    - `delivery_deadline: float | None = None` - Override the upper bound in
-      seconds for one SMTP session. When `None`, the helper uses
-      `smtp_delivery_deadline` of the passed `config`, else `conf`.
-    - `attachment_allowed_extensions: frozenset[str] | None = None` - Override
-      allowed extensions (whitelist mode). When `None`, uses the passed
-      `config`'s default, else `conf`'s.
-    - `attachment_blocked_extensions: frozenset[str] | None = None` - Override
-      blocked extensions. When `None`, uses the passed `config`'s default, else
-      `conf`'s.
-    - `attachment_allowed_directories: frozenset[pathlib.Path] | None = None` -
-      Override allowed directories. When `None`, uses the passed `config`'s
-      default, else `conf`'s.
-    - `attachment_blocked_directories: frozenset[pathlib.Path] | None = None` -
-      Override blocked directories. When `None`, uses the passed `config`'s
-      default, else `conf`'s.
-    - `attachment_max_size_bytes: int | None = None` - Override max attachment
-      size in bytes. When `None`, uses the passed `config`'s default, else
-      `conf`'s.
-    - `attachment_allow_symlinks: bool | None = None` - Override symlink policy.
-      When `None`, uses the passed `config`'s default, else `conf`'s.
-    - `attachment_raise_on_security_violation: bool | None = None` - Override
-      security violation behaviour. When `None`, uses the passed `config`'s
-      default, else `conf`'s.
-    - `raise_on_missing_attachments: bool | None = None` - Override
-      `raise_on_missing_attachments` of the passed `config`, else `conf`. When
-      `None`, uses that default; `True` raises on missing, `False` logs warning
-      and skips.
-    - `raise_on_invalid_recipient: bool | None = None` - Override
-      `raise_on_invalid_recipient` of the passed `config`, else `conf`. When
-      `None`, uses that default; `True` raises on invalid, `False` logs warning
-      and skips.
-    - `config: ConfMail | None = None` - Settings used in place of the
-      module-global `conf` for every value not passed explicitly; when given,
-      `conf` is not read. Lets an application hold its own `ConfMail` (or
-      subclass) without mutating the global.
+    Args:
+        mail_from: Envelope sender address. Must be a syntactically valid email.
+        mail_recipients: Single recipient or iterable of recipients. Values
+            are trimmed, deduplicated, lower-cased, and validated.
+        mail_subject: Subject line; UTF-8 is supported.
+        mail_body: Optional plain-text body. Defaults to "".
+        mail_body_html: Optional HTML body. Defaults to "".
+        smtphosts: Override host list. When `None`, the helper falls back to
+            the passed `config.smtphosts`, else the global `conf.smtphosts`.
+        attachment_file_paths: Optional iterable of filesystem paths. Each
+            existing file becomes an attachment.
+        credentials: Override credentials. When omitted,
+            `resolved_credentials()` of the passed `config`, else of `conf`,
+            is used.
+        use_starttls: Override STARTTLS preference. When `None`, the helper
+            uses `smtp_use_starttls` of the passed `config`, else `conf`.
+        starttls_verify: Override STARTTLS certificate verification. When
+            `None`, the helper uses `smtp_starttls_verify` of the passed
+            `config`, else `conf`. `False` keeps the connection encrypted but
+            skips certificate/hostname validation (for internal self-signed
+            relays). Ignored unless STARTTLS runs.
+        timeout: Override socket timeout in seconds. When `None`, the helper
+            uses `smtp_timeout` of the passed `config`, else `conf`.
+        local_hostname: Override the name announced in `EHLO`. When `None`,
+            the helper uses `smtp_local_hostname` of the passed `config`,
+            else `conf`; when that is unset too, the host's own name, looked
+            up once per process.
+        delivery_deadline: Override the upper bound in seconds for one SMTP
+            session. When `None`, the helper uses `smtp_delivery_deadline` of
+            the passed `config`, else `conf`.
+        attachment_allowed_extensions: Override allowed extensions (whitelist
+            mode). When `None`, uses the passed `config`'s default, else
+            `conf`'s.
+        attachment_blocked_extensions: Override blocked extensions. When
+            `None`, uses the passed `config`'s default, else `conf`'s.
+        attachment_allowed_directories: Override allowed directories. When
+            `None`, uses the passed `config`'s default, else `conf`'s.
+        attachment_blocked_directories: Override blocked directories. When
+            `None`, uses the passed `config`'s default, else `conf`'s.
+        attachment_max_size_bytes: Override max attachment size in bytes.
+            When `None`, uses the passed `config`'s default, else `conf`'s.
+        attachment_allow_symlinks: Override symlink policy. When `None`, uses
+            the passed `config`'s default, else `conf`'s.
+        attachment_raise_on_security_violation: Override security violation
+            behaviour. When `None`, uses the passed `config`'s default, else
+            `conf`'s.
+        raise_on_missing_attachments: Override `raise_on_missing_attachments`
+            of the passed `config`, else `conf`. When `None`, uses that
+            default; `True` raises on missing, `False` logs a warning and
+            skips.
+        raise_on_invalid_recipient: Override `raise_on_invalid_recipient` of
+            the passed `config`, else `conf`. When `None`, uses that default;
+            `True` raises on invalid, `False` logs a warning and skips.
+        config: Settings used in place of the module-global `conf` for every
+            value not passed explicitly; when given, `conf` is not read.
+            Lets an application hold its own `ConfMail` (or subclass) without
+            mutating the global.
+        transport: Delivery seam (advanced/testing): override the SMTP
+            transport adapter. When `None`, the default stdlib-based
+            transport is used.
 
-    **Returns:** `bool` - Always `True` when all deliveries succeed. A failure
-    raises instead of returning `False`.
+    Returns:
+        Always `True` when all deliveries succeed. A failure raises instead
+        of returning `False`.
 
-    **Raises:** (every one a `BtxMailError`)
-    - `InvalidInputError` (a `ValueError`) - When the sender, a recipient (in
-      strict mode), a host, the subject (a control character other than TAB),
-      `local_hostname`, `timeout` or `delivery_deadline` is refused, or no
-      valid recipient remains.
-      Raised before the first delivery.
-    - `AttachmentNotFoundError` (a `FileNotFoundError`) - When required
-      attachments are missing and `raise_on_missing_attachments` is `True` on
-      the config in use (the passed `config`, else the global `conf`).
-    - `AttachmentSecurityError` - When an attachment violates security policies
-      and `attachment_raise_on_security_violation` is `True`, including a file
-      that changed or grew past the size limit after it was checked.
-    - `DeliveryError` (a `RuntimeError`) - When every SMTP host fails for a
-      recipient; the error lists the affected recipients and host set, and
-      carries them as `failed_recipients` and `hosts`.
+    Raises:
+        InvalidInputError: If the sender, a recipient (in strict mode), a
+            host, the subject (a control character other than TAB),
+            `local_hostname`, `timeout` or `delivery_deadline` is refused, or
+            no valid recipient remains. Raised before the first delivery.
+            Also a `ValueError`.
+        AttachmentNotFoundError: If required attachments are missing and
+            `raise_on_missing_attachments` is `True` on the config in use
+            (the passed `config`, else the global `conf`). Also a
+            `FileNotFoundError`.
+        AttachmentSecurityError: If an attachment violates security policies
+            and `attachment_raise_on_security_violation` is `True`,
+            including a file that changed or grew past the size limit after
+            it was checked.
+        DeliveryError: If every SMTP host fails for a recipient; the error
+            lists the affected recipients and host set, and carries them as
+            `failed_recipients` and `hosts`. Also a `RuntimeError`.
 
-    **Attachments:** each file is checked, opened once, and encoded once; every
-    recipient's message carries the bytes of that open file, and the files are
-    closed before `send()` returns.
-
-    **Example:**
-    >>> class _NullTransport:  # a stand-in transport that accepts every message
-    ...     def deliver(self, **kwargs: object) -> None:
-    ...         return None
-    >>> send(
-    ...     mail_from="sender@example.com",
-    ...     mail_recipients="receiver@example.com",
-    ...     mail_subject="Hello",
-    ...     config=ConfMail(smtphosts=["smtp.example.com"]),
-    ...     transport=_NullTransport(),
-    ... )
-    True
+    Examples:
+        >>> class _NullTransport:  # a stand-in transport that accepts every message
+        ...     def deliver(self, **kwargs: object) -> None:
+        ...         return None
+        >>> send(
+        ...     mail_from="sender@example.com",
+        ...     mail_recipients="receiver@example.com",
+        ...     mail_subject="Hello",
+        ...     config=ConfMail(smtphosts=["smtp.example.com"]),
+        ...     transport=_NullTransport(),
+        ... )
+        True
     """
-
     settings = config if config is not None else conf
 
     try:
@@ -298,29 +292,19 @@ class _DeliveryPlan:
 def _resolve_delivery_options(*, settings: ConfMail, overrides: _DeliveryOverrides) -> DeliveryOptions:
     """Resolve per-call overrides against configuration defaults.
 
-    Why
-        Centralises option resolution so callers remain declarative.
+    Centralises option resolution so callers remain declarative, returning
+    an immutable snapshot applied to each SMTP attempt. Pure function.
 
-    Inputs
-    ------
-    settings:
-        The `ConfMail` whose values fill in anything not passed explicitly.
-    overrides:
-        The delivery keywords supplied by :func:`send`.
+    Args:
+        settings: The `ConfMail` whose values fill in anything not passed explicitly.
+        overrides: The delivery keywords supplied by `send`.
 
-    What
-        Returns an immutable snapshot applied to each SMTP attempt.
-
-    Outputs
-    -------
-    DeliveryOptions
+    Returns:
         Frozen options object consumed by the delivery helpers.
 
-    Side Effects
-    ------------
-    None; pure function.
+    Raises:
+        InvalidInputError: If the resolved timeout, local_hostname, or deadline is refused.
     """
-
     credentials = overrides.credentials or settings.resolved_credentials()
     use_starttls = bool(overrides.use_starttls if overrides.use_starttls is not None else settings.smtp_use_starttls)
     starttls_verify = bool(overrides.starttls_verify if overrides.starttls_verify is not None else settings.smtp_starttls_verify)
@@ -355,31 +339,33 @@ def _resolve_attachment_security_options(  # noqa: PLR0913 - one keyword-only ov
 ) -> AttachmentSecurityOptions:
     """Resolve per-call security overrides against configuration defaults.
 
-    Why
-        Centralises security option resolution so callers remain declarative.
+    Centralises security option resolution so callers remain declarative.
+    Pure function.
 
-    Inputs
-    ------
-    settings:
-        The `ConfMail` whose values fill in anything not passed explicitly.
-    explicit_allowed_extensions / explicit_blocked_extensions / ... :
-        Optional overrides supplied by :func:`send`. When `None`, the
-        corresponding `conf` default is used.
+    Note:
+        For extension and directory sets, `None` means "use the default"
+        while an empty frozenset means "no restrictions". To distinguish,
+        pass an explicit empty frozenset to override the default.
 
-    Note
-    ----
-    For extension and directory sets, `None` means "use the default" while an
-    empty frozenset means "no restrictions". To distinguish, pass an explicit
-    empty frozenset to override the default.
+    Args:
+        settings: The `ConfMail` whose values fill in anything not passed explicitly.
+        explicit_allowed_extensions: Optional override supplied by `send`.
+            When `None`, the corresponding `conf` default is used.
+        explicit_blocked_extensions: Optional override supplied by `send`.
+            When `None`, the corresponding `conf` default is used.
+        explicit_allowed_directories: Optional override supplied by `send`.
+            When `None`, the corresponding `conf` default is used.
+        explicit_blocked_directories: Optional override supplied by `send`.
+            When `None`, the corresponding `conf` default is used.
+        explicit_max_size_bytes: Optional override supplied by `send`. When
+            `None`, the corresponding `conf` default is used.
+        explicit_allow_symlinks: Optional override supplied by `send`. When
+            `None`, the corresponding `conf` default is used.
+        explicit_raise_on_violation: Optional override supplied by `send`.
+            When `None`, the corresponding `conf` default is used.
 
-    Outputs
-    -------
-    AttachmentSecurityOptions
+    Returns:
         Frozen options object consumed by security validation.
-
-    Side Effects
-    ------------
-    None; pure function.
     """
     # Use sentinel pattern: None means "use default", explicit value overrides
     # A keyword set is normalised like the ConfMail field, so {".EXE"} blocks x.exe here too.
@@ -410,22 +396,26 @@ _FAILURE_TEXT_LIMIT: Final[int] = 200
 def _describe_failure(error: BaseException) -> str:
     """Return a one-line, credential-free description of a delivery failure.
 
-    Why
-        The per-host failure log used to attach the whole exception. An
-        exception raised while encoding SMTP AUTH quotes the AUTH string,
-        password included, in its repr, and structured loggers serialise that
-        repr. Only the text of an ``OSError`` is kept (every
-        ``smtplib.SMTPException`` is one): for the stdlib transport it comes
-        from the OS, the TLS layer or the server reply. A custom ``Transport``
-        can raise an ``OSError`` with any text, and that text is logged as
-        given. Anything else is logged by type name only.
+    The per-host failure log used to attach the whole exception. An
+    exception raised while encoding SMTP AUTH quotes the AUTH string,
+    password included, in its repr, and structured loggers serialise that
+    repr. Only the text of an `OSError` is kept (every
+    `smtplib.SMTPException` is one): for the stdlib transport it comes from
+    the OS, the TLS layer or the server reply. A custom `Transport` can raise
+    an `OSError` with any text, and that text is logged as given. Anything
+    else is logged by type name only.
 
-    Examples
-    --------
-    >>> _describe_failure(ValueError("anything"))
-    'ValueError'
-    >>> _describe_failure(smtplib.SMTPAuthenticationError(535, b"5.7.8 invalid"))
-    'SMTPAuthenticationError 535 5.7.8 invalid'
+    Args:
+        error: The exception raised while delivering to one host.
+
+    Returns:
+        A one-line, credential-free description, truncated to `_FAILURE_TEXT_LIMIT` characters.
+
+    Examples:
+        >>> _describe_failure(ValueError("anything"))
+        'ValueError'
+        >>> _describe_failure(smtplib.SMTPAuthenticationError(535, b"5.7.8 invalid"))
+        'SMTPAuthenticationError 535 5.7.8 invalid'
     """
     name = type(error).__name__
     if isinstance(error, smtplib.SMTPResponseException):
@@ -440,30 +430,20 @@ def _describe_failure(error: BaseException) -> str:
 def _deliver_to_any_host(*, sender: str, recipient: str, message: IO[bytes], plan: _DeliveryPlan) -> bool:
     """Attempt delivery of one composed message across hosts until one succeeds.
 
-    Why
-        Encapsulates failover logic to keep orchestration linear. The same
-        message stream is rewound and reused for every host attempt.
-
-    Inputs
-    ------
-    sender, recipient:
-        Envelope addresses.
-    message:
-        The complete message for this recipient (headers and body).
-    plan:
-        Hosts to try in order, resolved delivery options, and the transport.
-
-    Outputs
-    -------
-    bool
-        ``True`` if any host accepts the message; ``False`` otherwise.
-
-    Side Effects
-    ------------
-    Performs network I/O, logs one credential-free WARNING per failed host (no
+    Encapsulates failover logic to keep orchestration linear. The same
+    message stream is rewound and reused for every host attempt. Performs
+    network I/O, and logs one credential-free WARNING per failed host (no
     traceback attached).
-    """
 
+    Args:
+        sender: Envelope sender address.
+        recipient: Envelope recipient address.
+        message: The complete message for this recipient (headers and body).
+        plan: Hosts to try in order, resolved delivery options, and the transport.
+
+    Returns:
+        `True` if any host accepts the message; `False` otherwise.
+    """
     for host in plan.hosts:
         try:
             # A host that read part of the message and failed leaves the stream mid-way;
@@ -516,7 +496,18 @@ def _deliver_to_any_host(*, sender: str, recipient: str, message: IO[bytes], pla
 
 
 def _deliver_composed(*, sender: str, recipient: str, header_lines: bytes, body: IO[bytes], plan: _DeliveryPlan) -> bool:
-    """Build *recipient*'s message from its header block and the shared body, deliver it, and close it."""
+    """Build recipient's message from its header block and the shared body, deliver it, and close it.
+
+    Args:
+        sender: Envelope sender address.
+        recipient: Envelope recipient address.
+        header_lines: This recipient's header block.
+        body: The shared, already-composed message body.
+        plan: Hosts to try in order, resolved delivery options, and the transport.
+
+    Returns:
+        `True` if any host accepts the message; `False` otherwise.
+    """
     message = message_for(header_lines, body)
     try:
         return _deliver_to_any_host(sender=sender, recipient=recipient, message=message, plan=plan)

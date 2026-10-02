@@ -26,14 +26,15 @@ CLICK_CONTEXT_SETTINGS = {"help_option_names": ["-h", "--help"]}
 def _record_context(ctx: click.Context, *, traceback: bool, json_output: bool, json_bare: bool) -> None:
     """Store the group's options in the typed ``ctx.obj``, keeping a transport an embedding caller put there.
 
-    Why
-        Downstream commands read the output mode and traceback choice without
-        re-parsing flags, and the transport seam must survive the group callback.
+    Downstream commands read the output mode and traceback choice without
+    re-parsing flags, and the transport seam must survive the group callback.
 
-    Side Effects
-        Replaces ``ctx.obj``.
+    Args:
+        ctx: Click context whose ``ctx.obj`` is replaced.
+        traceback: ``True`` when verbose tracebacks were requested.
+        json_output: ``True`` to print the JSON envelope.
+        json_bare: ``True`` to print the JSON payload alone.
     """
-
     previous = ctx.obj if isinstance(ctx.obj, CliContext) else CliContext()
     ctx.obj = CliContext(traceback=traceback, json_output=json_output, json_bare=json_bare, transport=previous.transport)
 
@@ -41,65 +42,50 @@ def _record_context(ctx: click.Context, *, traceback: bool, json_output: bool, j
 def _announce_traceback_choice(*, enabled: bool) -> None:
     """Keep ``lib_cli_exit_tools`` in sync with the selected traceback mode.
 
-    Why
-        ``lib_cli_exit_tools`` reads global configuration to decide how to print
-        tracebacks; we mirror the user's choice into that configuration.
+    ``lib_cli_exit_tools`` reads global configuration to decide how to print
+    tracebacks; this mirrors the user's choice into that configuration.
 
-    Inputs
-        enabled:
-            ``True`` when verbose tracebacks should be shown; ``False`` when the
+    Args:
+        enabled: ``True`` when verbose tracebacks should be shown; ``False`` when the
             summary view is desired.
-
-    Side Effects
-        Mutates ``lib_cli_exit_tools.config``.
     """
-
     apply_traceback_preferences(enabled)
 
 
 def _no_subcommand_requested(ctx: click.Context) -> bool:
     """Return ``True`` when the invocation did not name a subcommand.
 
-    Why
-        The CLI defaults to calling ``noop_main`` when no subcommand appears; we
-        need a readable predicate to capture that intent.
+    The CLI defaults to calling ``noop_main`` when no subcommand appears; this
+    gives a readable predicate to capture that intent.
 
-    Inputs
-        ctx:
-            Click context describing the current CLI invocation.
+    Args:
+        ctx: Click context describing the current CLI invocation.
 
-    Outputs
-        bool:
-            ``True`` when no subcommand was invoked; ``False`` otherwise.
+    Returns:
+        ``True`` when no subcommand was invoked; ``False`` otherwise.
     """
-
     return ctx.invoked_subcommand is None
 
 
 def _traceback_option_requested(ctx: click.Context) -> bool:
     """Return ``True`` when the user explicitly requested ``--traceback``.
 
-    Why
-        Determines whether a no-command invocation should run the default
-        behaviour or display the help screen.
+    Determines whether a no-command invocation should run the default
+    behaviour or display the help screen.
 
-    Inputs
-        ctx:
-            Click context associated with the current invocation.
+    Args:
+        ctx: Click context associated with the current invocation.
 
-    Outputs
-        bool:
-            ``True`` when the user provided ``--traceback`` or ``--no-traceback``;
-            ``False`` when the default value is in effect.
+    Returns:
+        ``True`` when the user provided ``--traceback`` or ``--no-traceback``;
+        ``False`` when the default value is in effect.
     """
-
     source = ctx.get_parameter_source("traceback")
     return source not in (ParameterSource.DEFAULT, None)
 
 
 def _show_help(ctx: click.Context) -> None:
     """Render the command help to stdout."""
-
     click.echo(ctx.get_help())
 
 
@@ -123,35 +109,30 @@ def _show_help(ctx: click.Context) -> None:
 @option("--json-bare", "json_bare", is_flag=True, default=False, help="Print the JSON payload (or error) alone, without the envelope.")
 @click.pass_context
 def cli(ctx: click.Context, *, traceback: bool, json_output: bool, json_bare: bool) -> None:
-    """### cli(traceback: bool = False, json_output: bool = False, json_bare: bool = False) -> None {#cli-root}
+    r"""Register the global CLI options and dispatch to subcommands.
 
-    **Purpose:** Register global CLI options (`--traceback`, `--json`,
-    `--json-bare`) and ensure `lib_cli_exit_tools` reflects the caller's
-    preference before dispatching to subcommands.
+    Registers `--traceback`, `--json`, `--json-bare` and ensures `lib_cli_exit_tools` reflects the
+    caller's preference before dispatching to subcommands.
 
-    **Parameters:**
-    - `ctx: click.Context` - Click context initialised by Click.
-    - `traceback: bool = False` - `True` to enable verbose tracebacks.
-    - `json_output: bool = False` - `True` to print the JSON envelope.
-    - `json_bare: bool = False` - `True` to print the JSON payload alone.
+    Stores a `CliContext` in `ctx.obj` (keeping a transport an embedding caller put there) and
+    mirrors the traceback choice into `lib_cli_exit_tools.config`. When invoked without a
+    subcommand and without explicitly setting the traceback flag, the command prints help instead
+    of executing the placeholder domain entry.
 
-    **Returns:** `None`.
+    Args:
+        ctx: Click context initialised by Click.
+        traceback: `True` to enable verbose tracebacks.
+        json_output: `True` to print the JSON envelope.
+        json_bare: `True` to print the JSON payload alone.
 
-    **Side Effects:** Stores a `CliContext` in `ctx.obj` (keeping a transport
-    an embedding caller put there) and mirrors the traceback choice into
-    `lib_cli_exit_tools.config`. When invoked without a subcommand and without
-    explicitly setting the traceback flag, the command prints help instead of
-    executing the placeholder domain entry.
-
-    **Example:**
-    >>> from click.testing import CliRunner
-    >>> runner = CliRunner()
-    >>> runner.invoke(cli, ["hello"]).exit_code
-    0
-    >>> runner.invoke(cli, ["--json", "hello"]).output
-    '{"ok": true, "command": "hello", "data": {"greeting": "Hello World"}, "skipped": []}\\n'
+    Examples:
+        >>> from click.testing import CliRunner
+        >>> runner = CliRunner()
+        >>> runner.invoke(cli, ["hello"]).exit_code
+        0
+        >>> runner.invoke(cli, ["--json", "hello"]).output
+        '{"ok": true, "command": "hello", "data": {"greeting": "Hello World"}, "skipped": []}\n'
     """
-
     if json_output and json_bare:
         raise click.UsageError("--json and --json-bare are mutually exclusive; pick one output shape")
     _record_context(ctx, traceback=traceback, json_output=json_output, json_bare=json_bare)
@@ -164,36 +145,27 @@ def cli(ctx: click.Context, *, traceback: bool, json_output: bool, json_bare: bo
 
 
 def cli_main() -> None:
-    """### cli_main() -> None {#cli-main}
+    """Run the placeholder domain action.
 
-    **Purpose:** Preserve the scaffold behaviour where the CLI performs the
-    placeholder domain action when users opt into execution (e.g. `--traceback`
-    without subcommands).
+    Preserves the scaffold behaviour where the CLI performs the placeholder domain action when
+    users opt into execution (e.g. `--traceback` without subcommands). Delegates to `noop_main()`.
 
-    **Returns:** `None`.
-
-    **Side Effects:** Delegates to `noop_main()`.
-
-    **Example:**
-    >>> cli_main()  # returns None
+    Examples:
+        >>> cli_main()  # returns None
     """
-
     noop_main()
 
 
 @cli.command("info", context_settings=CLICK_CONTEXT_SETTINGS, help="Show the package name, version, homepage and author.")
 @click.pass_context
 def cli_info(ctx: click.Context) -> None:
-    """### cli_info() -> None {#cli-info}
+    """Surface the package metadata so operators can confirm version, homepage, and authorship information.
 
-    **Purpose:** Surface the package metadata so operators can confirm version,
-    homepage, and authorship information.
+    Writes metadata to standard output.
 
-    **Returns:** `None`.
-
-    **Side Effects:** Writes metadata to standard output.
+    Args:
+        ctx: Click context carrying the output mode.
     """
-
     if not cli_context(ctx).machine_readable:
         __init__conf__.print_info()
         return
@@ -212,16 +184,13 @@ def cli_info(ctx: click.Context) -> None:
 @cli.command("hello", context_settings=CLICK_CONTEXT_SETTINGS, help="Print the greeting (a smoke test of the CLI).")
 @click.pass_context
 def cli_hello(ctx: click.Context) -> None:
-    """### cli_hello() -> None {#cli-hello}
+    """Demonstrate the happy-path behaviour by emitting the canonical greeting used throughout the scaffold.
 
-    **Purpose:** Demonstrate the happy-path behaviour by emitting the canonical
-    greeting used throughout the scaffold.
+    Writes `Hello World` plus a newline to standard output.
 
-    **Returns:** `None`.
-
-    **Side Effects:** Writes `Hello World` plus newline to standard output.
+    Args:
+        ctx: Click context carrying the output mode.
     """
-
     if not cli_context(ctx).machine_readable:
         emit_greeting()
         return
@@ -232,19 +201,15 @@ def cli_hello(ctx: click.Context) -> None:
 @argument("address")
 @click.pass_context
 def cli_validate_email(ctx: click.Context, address: str) -> None:
-    """### cli_validate_email(address: str) -> None {#cli-validate-email}
+    """Validate that address is a syntactically correct email address.
 
-    **Purpose:** Validate that *address* is a syntactically correct email
-    address. Exits successfully when the address is valid; raises when invalid.
+    Exits successfully when the address is valid; raises when invalid. Reports the valid address
+    on success.
 
-    **Parameters:**
-    - `address: str` - Email address to validate.
-
-    **Returns:** `None`.
-
-    **Side Effects:** Reports the valid address on success.
+    Args:
+        ctx: Click context carrying the output mode.
+        address: Email address to validate.
     """
-
     validate_email_address(address)
     emit(ctx, "validate-email", {"address": address, "valid": True}, f"Valid email address: {address}")
 
@@ -253,34 +218,25 @@ def cli_validate_email(ctx: click.Context, address: str) -> None:
 @argument("host")
 @click.pass_context
 def cli_validate_smtp_host(ctx: click.Context, host: str) -> None:
-    """### cli_validate_smtp_host(host: str) -> None {#cli-validate-smtp-host}
+    """Validate that host is a syntactically correct SMTP host string, including IPv6 bracketed addresses.
 
-    **Purpose:** Validate that *host* is a syntactically correct SMTP host
-    string, including IPv6 bracketed addresses. Exits successfully when valid;
-    raises when invalid.
+    Exits successfully when valid; raises when invalid. Reports the valid host on success.
 
-    **Parameters:**
-    - `host: str` - SMTP host string to validate.
-
-    **Returns:** `None`.
-
-    **Side Effects:** Reports the valid host on success.
+    Args:
+        ctx: Click context carrying the output mode.
+        host: SMTP host string to validate.
     """
-
     validate_smtp_host(host)
     emit(ctx, "validate-smtp-host", {"host": host, "valid": True}, f"Valid SMTP host: {host}")
 
 
 @cli.command("fail", context_settings=CLICK_CONTEXT_SETTINGS, help="Raise an intentional error (to check traceback and exit-code handling).")
 def cli_fail() -> None:
-    """### cli_fail() -> None {#cli-fail}
+    """Trigger the intentional failure helper so developers can verify traceback and exit-code handling.
 
-    **Purpose:** Trigger the intentional failure helper so developers can verify
-    traceback and exit-code handling.
+    This command never returns; it raises instead.
 
-    **Returns:** This command never returns; it raises instead.
-
-    **Raises:** `RuntimeError` propagated from `raise_intentional_failure()`.
+    Raises:
+        RuntimeError: Propagated from `raise_intentional_failure()`.
     """
-
     raise_intentional_failure()

@@ -513,6 +513,11 @@ class SecretSafeModel(BaseModel, metaclass=_SecretSafeMeta):
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+        """Check the subclass's credential_fields as soon as it is defined.
+
+        Args:
+            **kwargs: Forwarded to pydantic's own subclass hook.
+        """
         super().__pydantic_init_subclass__(**kwargs)
         _check_credential_fields(cls, cls.credential_fields)
 
@@ -542,6 +547,16 @@ class SecretSafeModel(BaseModel, metaclass=_SecretSafeMeta):
 
     @classmethod
     def __get_pydantic_core_schema__(cls, source: type[BaseModel], handler: GetCoreSchemaHandler) -> CoreSchema:
+        """Wrap the model's core schema so every validation error it raises is redacted.
+
+        Args:
+            source: The model class pydantic is building a schema for.
+            handler: Builds the schema source would otherwise get.
+
+        Returns:
+            source's schema wrapped by a validator that redacts a
+            ValidationError before re-raising it.
+        """
         schema = handler(source)
 
         def redact(value: Any, validate: core_schema.ValidatorFunctionWrapHandler) -> Any:
@@ -565,6 +580,16 @@ class SecretSafeModel(BaseModel, metaclass=_SecretSafeMeta):
     if not TYPE_CHECKING:
 
         def __setattr__(self, name: str, value: Any) -> None:
+            """Assign name, redacting and rolling back on a failed validated assignment.
+
+            Args:
+                name: Field (or extra key) being assigned.
+                value: New value to validate and assign.
+
+            Raises:
+                ValidationError: The assignment failed; the model's prior
+                    state is restored first and the error is redacted.
+            """
             # pydantic writes the new value before a mode="after" model
             # validator runs and leaves it there when that validator raises
             # (whatever it raises), so the state is saved here and put back on
@@ -596,6 +621,18 @@ class SecretSafeModel(BaseModel, metaclass=_SecretSafeMeta):
 
         @classmethod
         def model_validate_json(cls, *args: Any, **kwargs: Any) -> Any:
+            """Validate JSON into an instance, redacting any validation error.
+
+            Args:
+                *args: Forwarded to pydantic's model_validate_json.
+                **kwargs: Forwarded to pydantic's model_validate_json.
+
+            Returns:
+                The validated model instance.
+
+            Raises:
+                ValidationError: Validation failed; the error is redacted.
+            """
             try:
                 return super().model_validate_json(*args, **kwargs)
             except ValidationError as exc:
@@ -610,6 +647,19 @@ class SecretSafeModel(BaseModel, metaclass=_SecretSafeMeta):
         # the configured class.
         @classmethod
         def model_validate(cls, *args: Any, **kwargs: Any) -> Any:
+            """Validate a Python object into an instance, redacting any validation error.
+
+            Args:
+                *args: Forwarded to pydantic's model_validate.
+                **kwargs: Forwarded to pydantic's model_validate.
+
+            Returns:
+                The validated model instance.
+
+            Raises:
+                ValidationError: Validation failed; the error is redacted
+                    and rebuilt as validation_error_class.
+            """
             try:
                 return super().model_validate(*args, **kwargs)
             except ValidationError as exc:
@@ -618,6 +668,19 @@ class SecretSafeModel(BaseModel, metaclass=_SecretSafeMeta):
 
         @classmethod
         def model_validate_strings(cls, *args: Any, **kwargs: Any) -> Any:
+            """Validate a mapping of strings into an instance, redacting any validation error.
+
+            Args:
+                *args: Forwarded to pydantic's model_validate_strings.
+                **kwargs: Forwarded to pydantic's model_validate_strings.
+
+            Returns:
+                The validated model instance.
+
+            Raises:
+                ValidationError: Validation failed; the error is redacted
+                    and rebuilt as validation_error_class.
+            """
             try:
                 return super().model_validate_strings(*args, **kwargs)
             except ValidationError as exc:

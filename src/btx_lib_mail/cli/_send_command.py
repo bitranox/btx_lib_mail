@@ -193,51 +193,59 @@ def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per sett
     attachment_allow_symlinks: bool | None,
     attachment_raise_on_security: bool | None,
 ) -> None:
-    """### cli_send_mail(...) -> None {#cli-send-mail}
+    """Provide a convenient SMTP smoke test built from CLI options, the environment and an env file.
 
-    **Purpose:** Provide a convenient SMTP smoke test that resolves CLI options,
-    the environment and an optional `--env-file` into one validated `ConfMail`
-    (a copy of the global `conf`, so settings without an option keep their
-    value) and hands it to `btx_lib_mail.lib_mail.send` as `config=`. A value the
-    model refuses is raised as `InvalidInputError` before any delivery.
+    Resolves CLI options, the environment and an optional `--env-file` into one validated
+    `ConfMail` (a copy of the global `conf`, so settings without an option keep their value) and
+    hands it to `btx_lib_mail.lib_mail.send` as `config=`. A value the model refuses is raised as
+    `InvalidInputError` before any delivery. Calls `send()` and reports the result on standard
+    output (a summary line, or the JSON envelope with the recipients, hosts and the attachments
+    and recipients skipped in warn mode). Exceptions from `send()` propagate to the shared error
+    handlers.
 
-    **Parameters:**
-    - `hosts: Sequence[str]` - One or more `host[:port]` entries; defaults to
-      `BTX_MAIL_SMTP_HOSTS` when omitted.
-    - `recipients: Sequence[str]` - Recipient addresses; defaults to
-      `BTX_MAIL_RECIPIENTS`.
-    - `sender: str | None` - Optional envelope sender. Falls back to
-      `BTX_MAIL_SENDER` or the first recipient.
-    - `subject: str` - Required subject line.
-    - `body: str` - Required plain-text body.
-    - `html_body: str | None` - Optional HTML body.
-    - `attachments: Sequence[Path]` - Zero or more filesystem paths to attach.
-    - `env_file: Path | None` - `KEY=value` file read for settings neither an
-      option nor the environment gave; also `BTX_MAIL_ENV_FILE`. When it is not
-      given, `./.env` is read if it is a regular file.
-    - `starttls: bool | None` - Override for STARTTLS preference. When `None`,
-      falls back to the sources, then `conf`.
-    - `starttls_verify: bool | None` - Override for STARTTLS certificate
-      verification. When `None`, falls back to `BTX_MAIL_SMTP_STARTTLS_VERIFY`
-      or `conf.smtp_starttls_verify`. `--no-starttls-verify` keeps encryption
-      but skips certificate validation for internal self-signed relays.
-    - `username: str | None`, `password: str | None`, `password_file` -
-      Optional credentials; both a username and a password are required to
-      authenticate. `--password` and `--password-file` exclude each other.
-    - `timeout: float | None` - Optional socket timeout override in seconds.
-    - `delivery_deadline: float | None` - Optional bound in seconds for one
-      SMTP session; also `BTX_MAIL_SMTP_DELIVERY_DEADLINE`.
-    - `local_hostname: str | None` - Name announced in EHLO. Falls back to
-      `BTX_MAIL_SMTP_LOCAL_HOSTNAME`, then `conf.smtp_local_hostname`.
-
-    **Returns:** `None`.
-
-    **Side Effects:** Calls `send()` and reports the result on standard output
-    (a summary line, or the JSON envelope with the recipients, hosts and the
-    attachments and recipients skipped in warn mode). Exceptions from `send()`
-    propagate to the shared error handlers.
+    Args:
+        ctx: Click context carrying the output mode and the transport seam.
+        hosts: One or more `host[:port]` entries; defaults to `BTX_MAIL_SMTP_HOSTS`
+            when omitted.
+        recipients: Recipient addresses; defaults to `BTX_MAIL_RECIPIENTS`.
+        sender: Optional envelope sender. Falls back to `BTX_MAIL_SENDER` or the
+            first recipient.
+        subject: Required subject line.
+        body: Required plain-text body.
+        html_body: Optional HTML body.
+        attachments: Zero or more filesystem paths to attach.
+        env_file: `KEY=value` file read for settings neither an option nor the
+            environment gave; also `BTX_MAIL_ENV_FILE`. When it is not given,
+            `./.env` is read if it is a regular file.
+        starttls: Override for STARTTLS preference. When `None`, falls back to the
+            sources, then `conf`.
+        starttls_verify: Override for STARTTLS certificate verification. When
+            `None`, falls back to `BTX_MAIL_SMTP_STARTTLS_VERIFY` or
+            `conf.smtp_starttls_verify`. `--no-starttls-verify` keeps encryption but
+            skips certificate validation for internal self-signed relays.
+        username: Optional SMTP username; both a username and a password are
+            required to authenticate.
+        password: Optional SMTP password; `--password` and `--password-file`
+            exclude each other.
+        password_file: Optional file handle to read the password from; excludes
+            `password`.
+        timeout: Optional socket timeout override in seconds.
+        delivery_deadline: Optional bound in seconds for one SMTP session; also
+            `BTX_MAIL_SMTP_DELIVERY_DEADLINE`.
+        local_hostname: Name announced in EHLO. Falls back to
+            `BTX_MAIL_SMTP_LOCAL_HOSTNAME`, then `conf.smtp_local_hostname`.
+        attachment_allowed_ext: Comma-separated allowed extensions, enabling
+            whitelist mode.
+        attachment_blocked_ext: Comma-separated blocked extensions, overriding the
+            default dangerous extensions.
+        attachment_allowed_dirs: Allowed directories, enabling whitelist mode.
+        attachment_blocked_dirs: Blocked directories, overriding the default
+            sensitive directories.
+        attachment_max_size: Max attachment size in bytes.
+        attachment_allow_symlinks: Allow or reject symlinked attachments.
+        attachment_raise_on_security: Raise on a security violation (strict) or log
+            a warning and skip (warn).
     """
-
     sources = Sources(environ=os.environ, env_file=read_env_file(env_file_to_read(env_file)))
     requested_hosts = resolve_list(hosts, "BTX_MAIL_SMTP_HOSTS", label="SMTP host", sources=sources)
     resolved_recipients = resolve_list(recipients, "BTX_MAIL_RECIPIENTS", label="recipient", sources=sources)

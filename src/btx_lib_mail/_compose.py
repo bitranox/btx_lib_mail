@@ -1,5 +1,4 @@
-"""Message assembly: the recipient-independent body encoded once into a spool, each recipient's
-header lines, and the copy that joins them.
+"""Message assembly: the recipient-independent body encoded once into a spool, each recipient's header lines, and the copy that joins them.
 
 Private to btx_lib_mail: import the public names from `btx_lib_mail` or `btx_lib_mail.lib_mail`.
 """
@@ -34,10 +33,15 @@ _SPOOL_MAX_SIZE: Final[int] = 1024 * 1024  # 1 MiB
 def _guess_attachment_mimetype(filename: str) -> tuple[str, str]:
     """Return the ``(maintype, subtype)`` Content-Type for an attachment name.
 
-    Why
-        A specific Content-Type helps the receiving client render the
-        attachment; an unrecognised extension falls back to the generic binary
-        type so delivery never fails on an unknown name.
+    A specific Content-Type helps the receiving client render the attachment;
+    an unrecognised extension falls back to the generic binary type so
+    delivery never fails on an unknown name.
+
+    Args:
+        filename: The attachment's file name.
+
+    Returns:
+        The guessed ``(maintype, subtype)`` pair.
     """
     guessed, _encoding = mimetypes.guess_type(filename)
     if guessed is None:
@@ -65,17 +69,17 @@ def _new_spool() -> IO[bytes]:
 def _compose_body(content: MessageContent) -> IO[bytes]:
     """Encode everything below the per-recipient headers into a rewound spool, once.
 
-    Why
-        The body and every attachment are the same for each recipient, so they
-        are base64-encoded once per ``send()`` and each recipient's message is
-        its own header block plus a copy of this spool. Serialising into a
-        ``SpooledTemporaryFile`` keeps a large message off the heap, and
-        ``email.policy.SMTP`` yields RFC 5321 CRLF line endings, so the DATA and
-        BDAT senders only add transfer framing.
+    The body and every attachment are the same for each recipient, so they are
+    base64-encoded once per ``send()`` and each recipient's message is its own
+    header block plus a copy of this spool. Serialising into a
+    ``SpooledTemporaryFile`` keeps a large message off the heap, and
+    ``email.policy.SMTP`` yields RFC 5321 CRLF line endings, so the DATA and
+    BDAT senders only add transfer framing.
 
-    Outputs
-    -------
-    IO[bytes]
+    Args:
+        content: The recipient-independent body and attachments to encode.
+
+    Returns:
         Spool positioned at offset 0: the MIME headers of the message body
         (``MIME-Version``, ``Content-Type``, ...), a blank line, and the body.
         Closed on any failure.
@@ -120,6 +124,14 @@ def compose_body_once(content: MessageContent, *, raise_on_violation: bool) -> I
 
     A file that grows past the size limit while it is read is refused like an
     oversized file: raised in strict mode, logged and left out in warn mode.
+
+    Args:
+        content: The recipient-independent body and attachments to encode.
+        raise_on_violation: Raise on a security violation instead of dropping
+            the offending attachment and retrying.
+
+    Returns:
+        Spool positioned at offset 0, as returned by :func:`_compose_body`.
     """
     while True:
         try:
@@ -137,7 +149,16 @@ def compose_body_once(content: MessageContent, *, raise_on_violation: bool) -> I
 
 
 def envelope_header_lines(*, sender: str, recipient: str, subject: str) -> bytes:
-    """Return the per-recipient header lines (Subject, From, To, Date), CRLF-terminated, no blank line."""
+    """Return the per-recipient header lines (Subject, From, To, Date), CRLF-terminated, no blank line.
+
+    Args:
+        sender: The From address.
+        recipient: The To address.
+        subject: The message subject.
+
+    Returns:
+        The CRLF-terminated header lines, with no trailing blank line.
+    """
     envelope = EmailMessage()
     envelope["Subject"] = subject
     envelope["From"] = sender
@@ -153,6 +174,13 @@ def message_for(header_lines: bytes, body: IO[bytes]) -> IO[bytes]:
     attachment needs is its encoded size once however many recipients there
     are. The stream is read-only and seekable; closing it leaves the shared body
     open for the next recipient.
+
+    Args:
+        header_lines: The recipient's own header lines.
+        body: The shared, already-composed body spool.
+
+    Returns:
+        A read-only, seekable stream of the header lines followed by the body.
     """
     return io.BufferedReader(_JoinedMessage(header_lines, body), buffer_size=STREAM_CHUNK_SIZE)
 
@@ -208,6 +236,13 @@ def check_subject(subject: str) -> None:
 
     CR and LF keep the email package's own message, which ``send()`` raised for
     them before.
+
+    Args:
+        subject: The message subject to check.
+
+    Raises:
+        InvalidInputError: If subject contains CR, LF, or another control
+            character other than TAB.
     """
     if "\r" in subject or "\n" in subject:
         raise InvalidInputError("Header values may not contain linefeed or carriage return characters")
@@ -216,7 +251,15 @@ def check_subject(subject: str) -> None:
 
 
 def _build_body_message(plain_body: str, html_body: str) -> EmailMessage:
-    """Build the text/alternative body part (no envelope headers, no attachments)."""
+    """Build the text/alternative body part (no envelope headers, no attachments).
+
+    Args:
+        plain_body: The plain-text body.
+        html_body: The HTML body.
+
+    Returns:
+        The assembled text/alternative (or single-part) message.
+    """
     message = EmailMessage()
     if plain_body and html_body:
         message.set_content(plain_body)
@@ -229,7 +272,14 @@ def _build_body_message(plain_body: str, html_body: str) -> EmailMessage:
 
 
 def _header_lines(message: EmailMessage) -> bytes:
-    """Serialise a message's headers to CRLF bytes, without the terminating blank line."""
+    """Serialise a message's headers to CRLF bytes, without the terminating blank line.
+
+    Args:
+        message: The message whose headers are serialised.
+
+    Returns:
+        The CRLF-terminated header lines, with no trailing blank line.
+    """
     out = bytearray()
     for name, value in message.items():
         out += email_policy.SMTP.fold_binary(name, value)
@@ -237,12 +287,26 @@ def _header_lines(message: EmailMessage) -> bytes:
 
 
 def _header_block(message: EmailMessage) -> bytes:
-    """Serialise a message's headers to CRLF bytes, terminated by a blank line."""
+    """Serialise a message's headers to CRLF bytes, terminated by a blank line.
+
+    Args:
+        message: The message whose headers are serialised.
+
+    Returns:
+        The CRLF-terminated header lines, followed by a blank line.
+    """
     return _header_lines(message) + b"\r\n"
 
 
 def _flatten_message(message: EmailMessage) -> bytes:
-    """Serialise a whole (small) message to CRLF bytes via the SMTP policy."""
+    """Serialise a whole (small) message to CRLF bytes via the SMTP policy.
+
+    Args:
+        message: The message to serialise.
+
+    Returns:
+        The CRLF-encoded message bytes.
+    """
     buffer = io.BytesIO()
     BytesGenerator(buffer, policy=email_policy.SMTP).flatten(message)
     return buffer.getvalue()
@@ -251,13 +315,20 @@ def _flatten_message(message: EmailMessage) -> bytes:
 def _write_attachment_part(spool: IO[bytes], attachment: AttachmentPayload) -> None:
     """Write one base64 attachment part, streaming the checked file's bytes in chunks.
 
-    Why
-        Encoding the file incrementally (57 raw bytes per 76-char base64 line,
-        read in a large multiple so whole lines are emitted per chunk) keeps peak
-        memory at roughly one chunk instead of the full attachment plus its
-        base64 expansion. The bytes are counted as they are read, so a file that
-        grows past the size limit after it was checked is refused, having been
-        read at most one chunk past the limit.
+    Encoding the file incrementally (57 raw bytes per 76-char base64 line, read
+    in a large multiple so whole lines are emitted per chunk) keeps peak memory
+    at roughly one chunk instead of the full attachment plus its base64
+    expansion. The bytes are counted as they are read, so a file that grows
+    past the size limit after it was checked is refused, having been read at
+    most one chunk past the limit.
+
+    Args:
+        spool: The spool to append the attachment part to.
+        attachment: The checked attachment to stream from.
+
+    Raises:
+        AttachmentSecurityError: If the file grows past its size limit while
+            it is being read.
     """
     maintype, subtype = _guess_attachment_mimetype(attachment.filename)
     part_headers = EmailMessage()

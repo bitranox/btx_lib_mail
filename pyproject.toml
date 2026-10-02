@@ -127,6 +127,7 @@ select = [
   "FBT",         # boolean trap (boolean positional args)
   "PLR",         # pylint refactor
   "PLW",         # pylint warnings
+  "D",           # pydocstyle, Google convention (below); tests and notebooks are exempt
 ]
 
 [tool.ruff.lint.pydocstyle]
@@ -141,11 +142,12 @@ runtime-evaluated-base-classes = ["pydantic.BaseModel", "btx_lib_mail.secret_saf
 
 [tool.ruff.lint.per-file-ignores]
 # ignore the "unused import sys" in the jupyter notebook - which we need (it is a linter hickup)
-"notebooks/*.ipynb" = ["F401"]
+"notebooks/*.ipynb" = ["F401", "D"]
 # Tests: assert is standard, test fixtures have passwords, magic values are clearer inline, temp
 # paths are fine. PLC0415: local/deferred imports are a deliberate test idiom - several tests
 # import inside the test body to exercise import-time and cache behaviour.
-"tests/*.py" = ["S101", "S105", "S106", "S108", "T20", "PLR2004", "PLR0913", "FBT001", "FBT003", "PLC0415"]
+# D: test docstrings narrate a scenario; the Google convention is for the package API.
+"tests/*.py" = ["D", "S101", "S105", "S106", "S108", "T20", "PLR2004", "PLR0913", "FBT001", "FBT003", "PLC0415"]
 # aiosmtpd dispatches by exact method name (handle_<VERB>, smtp_<VERB> matching the
 # uppercase SMTP command), so these e2e test handlers cannot be lowercased.
 "tests/test_streaming.py" = ["N802"]

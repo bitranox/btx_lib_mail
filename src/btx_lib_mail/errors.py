@@ -1,23 +1,21 @@
-"""## btx_lib_mail.errors {#module-btx-lib-mail-errors}
+"""Give every failure the library raises one common base, `BtxMailError`.
 
-**Purpose:** Give every failure the library raises one common base,
-`BtxMailError`, so a caller can catch "anything btx_lib_mail refused" in one
-clause.
+A caller can catch "anything btx_lib_mail refused" in one clause.
 
 Each concrete class also keeps the builtin a caller caught before as a second
 base (`InvalidInputError` is a `ValueError`, `DeliveryError` a `RuntimeError`,
 and so on), so an existing `except ValueError:` keeps working, and so does a
 CLI exit code derived from the builtin type.
 
-**Contents:**
-- `BtxMailError` - the common base.
-- `InvalidInputError` - a refused argument value (also a `ValueError`).
-- `ConfigurationError` - a refused `ConfMail` setting (also a pydantic
-  `ValidationError`, so also a `ValueError`).
-- `AttachmentNotFoundError` - a required attachment is missing (also a
-  `FileNotFoundError`).
-- `DeliveryError` - every host failed for at least one recipient (also a
-  `RuntimeError`).
+Contents:
+    - `BtxMailError` - the common base.
+    - `InvalidInputError` - a refused argument value (also a `ValueError`).
+    - `ConfigurationError` - a refused `ConfMail` setting (also a pydantic
+      `ValidationError`, so also a `ValueError`).
+    - `AttachmentNotFoundError` - a required attachment is missing (also a
+      `FileNotFoundError`).
+    - `DeliveryError` - every host failed for at least one recipient (also a
+      `RuntimeError`).
 
 `AttachmentSecurityError` is a `BtxMailError` too; it is defined with the
 attachment checks and importable from `btx_lib_mail`.
@@ -29,63 +27,66 @@ from pydantic import ValidationError
 
 
 class BtxMailError(Exception):
-    """### BtxMailError {#errors-btxmailerror}
+    """Serve as the common base of every exception btx_lib_mail raises on purpose.
 
-    **Purpose:** Common base of every exception btx_lib_mail raises on purpose.
     Catch it to handle any refusal or delivery failure of the library.
 
-    **Example:**
-    >>> from btx_lib_mail import validate_email_address
-    >>> try:
-    ...     validate_email_address("not-an-address")
-    ... except BtxMailError as error:
-    ...     print(type(error).__name__)
-    InvalidInputError
+    Examples:
+        >>> from btx_lib_mail import validate_email_address
+        >>> try:
+        ...     validate_email_address("not-an-address")
+        ... except BtxMailError as error:
+        ...     print(type(error).__name__)
+        InvalidInputError
     """
 
 
 class InvalidInputError(BtxMailError, ValueError):
-    """### InvalidInputError {#errors-invalidinputerror}
+    """Signal that an argument value was refused.
 
-    **Purpose:** An argument value was refused: a sender, recipient, host,
-    subject, EHLO name or timeout that cannot be used. Also a `ValueError`.
+    Raised for a sender, recipient, host, subject, EHLO name or timeout that
+    cannot be used. Also a `ValueError`.
     """
 
 
 class ConfigurationError(BtxMailError, ValidationError):
-    """### ConfigurationError {#errors-configurationerror}
+    """Signal that a `ConfMail` setting was refused.
 
-    **Purpose:** A `ConfMail` setting was refused, at construction, in
-    `model_validate`/`model_validate_json`, or on assignment. It is a pydantic
-    `ValidationError` (so also a `ValueError`): `errors()`, title and redaction
-    are pydantic's, and the class adds the common base.
+    Raised at construction, in `model_validate`/`model_validate_json`, or on
+    assignment. It is a pydantic `ValidationError` (so also a `ValueError`):
+    `errors()`, title and redaction are pydantic's, and the class adds the
+    common base.
     """
 
 
 class AttachmentNotFoundError(BtxMailError, FileNotFoundError):
-    """### AttachmentNotFoundError {#errors-attachmentnotfounderror}
+    """Signal that a required attachment does not exist or is not a regular file.
 
-    **Purpose:** A required attachment does not exist or is not a regular
-    file. Also a `FileNotFoundError`.
+    Also a `FileNotFoundError`.
     """
 
 
 class DeliveryError(BtxMailError, RuntimeError):
-    """### DeliveryError {#errors-deliveryerror}
+    """Signal that every SMTP host failed for at least one recipient.
 
-    **Purpose:** Every SMTP host failed for at least one recipient. Also a
-    `RuntimeError`.
+    Also a `RuntimeError`. Recipients not listed in `failed_recipients` were
+    delivered. The per-host reasons were logged as WARNING records while
+    delivery ran.
 
-    **Fields:**
-    - `failed_recipients: tuple[str, ...]` - Recipients no host accepted.
-    - `hosts: tuple[str, ...]` - The hosts that were tried, in order.
-
-    Recipients not listed were delivered. The per-host reasons were logged as
-    WARNING records while delivery ran.
+    Attributes:
+        failed_recipients: Recipients no host accepted.
+        hosts: The hosts that were tried, in order.
     """
 
     # Defaulted so pickle, which rebuilds an exception from its args alone, can recreate it.
     def __init__(self, message: str, *, failed_recipients: tuple[str, ...] = (), hosts: tuple[str, ...] = ()) -> None:
+        """Build the error with the message plus the recipients and hosts it concerns.
+
+        Args:
+            message: Human-readable description of the failure.
+            failed_recipients: Recipients no host accepted. Defaults to an empty tuple.
+            hosts: The hosts that were tried, in order. Defaults to an empty tuple.
+        """
         super().__init__(message)
         self.failed_recipients = failed_recipients
         self.hosts = hosts

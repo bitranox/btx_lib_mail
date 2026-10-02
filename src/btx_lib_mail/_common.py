@@ -11,15 +11,19 @@ logger = logging.getLogger("btx_lib_mail")
 
 
 def printable(text: str) -> str:
-    """Return *text* with every control character (CR, LF, ESC, NUL, ...) replaced by a space.
+    """Return text with every control character (CR, LF, ESC, NUL, ...) replaced by a space.
 
-    Why
-        A multi-line or escape-laden server reply must not forge extra log
-        lines or terminal sequences in whatever renders the record.
+    A multi-line or escape-laden server reply must not forge extra log lines or
+    terminal sequences in whatever renders the record.
 
-    Examples
-    --------
-    >>> printable("535 denied" + chr(10) + "forged")
-    '535 denied forged'
+    Args:
+        text: The raw text to clean.
+
+    Returns:
+        A copy of text with every non-printable character replaced by a space.
+
+    Examples:
+        >>> printable("535 denied" + chr(10) + "forged")
+        '535 denied forged'
     """
     return "".join(character if character.isprintable() else " " for character in text)

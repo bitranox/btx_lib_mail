@@ -33,42 +33,34 @@ TracebackState = tuple[bool, bool]
 
 
 def apply_traceback_preferences(enabled: bool) -> None:  # noqa: FBT001 - public API (docs/systemdesign/module_reference.md), positional call sites exist
-    """### apply_traceback_preferences(enabled: bool) -> None {#cli-apply-traceback-preferences}
+    """Align the `lib_cli_exit_tools` configuration with the `--traceback/--no-traceback` flag.
 
-    **Purpose:** Keep `lib_cli_exit_tools` configuration aligned with the CLI's
-    `--traceback/--no-traceback` flag so console scripts and `python -m` runs
-    present identical diagnostics.
+    Console scripts and `python -m` runs then present identical diagnostics.
 
-    **Parameters:**
-    - `enabled: bool` - `True` enables verbose, colourised tracebacks;
-      `False` restores compact summaries.
+    Args:
+        enabled: `True` enables verbose, colourised tracebacks; `False` restores compact summaries.
 
-    **Returns:** `None`.
-
-    **Example:**
-    >>> apply_traceback_preferences(True)
-    >>> (lib_cli_exit_tools.config.traceback, lib_cli_exit_tools.config.traceback_force_color)
-    (True, True)
+    Examples:
+        >>> apply_traceback_preferences(True)
+        >>> (lib_cli_exit_tools.config.traceback, lib_cli_exit_tools.config.traceback_force_color)
+        (True, True)
     """
-
     lib_cli_exit_tools.config.traceback = bool(enabled)
     lib_cli_exit_tools.config.traceback_force_color = bool(enabled)
 
 
 def snapshot_traceback_state() -> TracebackState:
-    """### snapshot_traceback_state() -> TracebackState {#cli-snapshot-traceback-state}
+    """Capture the current verbose/colour traceback settings.
 
-    **Purpose:** Capture the current verbose/colour traceback settings so they
-    can be restored after a CLI run modifies them.
+    They can then be restored after a CLI run modifies them.
 
-    **Returns:** `TracebackState` - Tuple `(traceback_enabled, force_color)`
-    describing the current configuration.
+    Returns:
+        The tuple `(traceback_enabled, force_color)` describing the current configuration.
 
-    **Example:**
-    >>> snapshot_traceback_state() in [(False, False), (True, True)]
-    True
+    Examples:
+        >>> snapshot_traceback_state() in [(False, False), (True, True)]
+        True
     """
-
     return (
         bool(getattr(lib_cli_exit_tools.config, "traceback", False)),
         bool(getattr(lib_cli_exit_tools.config, "traceback_force_color", False)),
@@ -76,24 +68,19 @@ def snapshot_traceback_state() -> TracebackState:
 
 
 def restore_traceback_state(state: TracebackState) -> None:
-    """### restore_traceback_state(state: TracebackState) -> None {#cli-restore-traceback-state}
+    """Reapply a previously captured traceback configuration.
 
-    **Purpose:** Reapply a previously captured traceback configuration so global
-    state looks untouched to callers after CLI execution.
+    Global state then looks untouched to callers after CLI execution.
 
-    **Parameters:**
-    - `state: TracebackState` - Tuple produced by
-      `snapshot_traceback_state()`.
+    Args:
+        state: The tuple produced by `snapshot_traceback_state()`.
 
-    **Returns:** `None`.
-
-    **Example:**
-    >>> saved = snapshot_traceback_state()
-    >>> apply_traceback_preferences(True)
-    >>> restore_traceback_state(saved)
-    >>> snapshot_traceback_state() == saved
-    True
+    Examples:
+        >>> saved = snapshot_traceback_state()
+        >>> apply_traceback_preferences(True)
+        >>> restore_traceback_state(saved)
+        >>> snapshot_traceback_state() == saved
+        True
     """
-
     lib_cli_exit_tools.config.traceback = bool(state[0])
     lib_cli_exit_tools.config.traceback_force_color = bool(state[1])
