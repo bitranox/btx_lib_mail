@@ -5,6 +5,8 @@ Private to btx_lib_mail.cli: import the public names from `btx_lib_mail.cli`.
 
 from __future__ import annotations
 
+import os
+import stat
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -100,6 +102,35 @@ def _env_file_refusal(path: Path, problem: str) -> click.UsageError:
     return click.BadParameter(f"{path} {problem}", param_hint="--env-file")
 
 
+def _read_bounded_text_file(path: Path) -> bytes:
+    """Read a regular file of at most ``_ENV_FILE_MAX_BYTES`` bytes, refusing anything else.
+
+    A device or FIFO reports size 0, so a size check before reading would let
+    ``/dev/zero`` be read until memory runs out and a FIFO block for a writer.
+    The file is opened without blocking, its type checked on the open handle,
+    and at most one byte past the limit is read, so a file that grows after the
+    check is refused too.
+
+    Args:
+        path: The env file.
+
+    Returns:
+        The file's bytes.
+
+    Raises:
+        click.UsageError: The file is not a regular file or is too large.
+    """
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
+    with os.fdopen(descriptor, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise _env_file_refusal(path, "is not a regular file")
+        data = handle.read(_ENV_FILE_MAX_BYTES + 1)
+        if len(data) > _ENV_FILE_MAX_BYTES:
+            size = max(os.fstat(handle.fileno()).st_size, len(data))
+            raise _env_file_refusal(path, f"is {size} bytes; an env file may be at most {_ENV_FILE_MAX_BYTES} bytes")
+    return data
+
+
 def read_env_file(path: Path | None) -> dict[str, str]:
     """Parse the env file once into ``KEY -> value`` (first occurrence wins).
 
@@ -113,15 +144,13 @@ def read_env_file(path: Path | None) -> dict[str, str]:
         Mapping of ``KEY`` to value for every parsed line.
 
     Raises:
-        click.UsageError: The file is larger than ``_ENV_FILE_MAX_BYTES`` or not UTF-8.
+        click.UsageError: The file is not a regular file, is larger than
+            ``_ENV_FILE_MAX_BYTES``, or is not UTF-8.
     """
     if path is None:
         return {}
-    size = path.stat().st_size
-    if size > _ENV_FILE_MAX_BYTES:
-        raise _env_file_refusal(path, f"is {size} bytes; an env file may be at most {_ENV_FILE_MAX_BYTES} bytes")
     try:
-        text = path.read_text(encoding="utf-8")
+        text = _read_bounded_text_file(path).decode("utf-8")
     except UnicodeDecodeError as exc:
         raise _env_file_refusal(path, "is not UTF-8 text") from exc
     values: dict[str, str] = {}
@@ -255,7 +284,11 @@ def _read_password_file(handle: IO[str] | None) -> str | None:
     """Return the first line of the ``--password-file`` (``-`` reads stdin), without its line break."""
     if handle is None:
         return None
-    content = handle.read(_PASSWORD_FILE_MAX_CHARS + 1)
+    try:
+        content = handle.read(_PASSWORD_FILE_MAX_CHARS + 1)
+    except UnicodeDecodeError:
+        # The decoder's message quotes the offending byte and its offset in the password.
+        raise click.BadParameter("is not UTF-8 text", param_hint="--password-file") from None
     if len(content) > _PASSWORD_FILE_MAX_CHARS:
         raise click.BadParameter(f"a password file holds one line of at most {_PASSWORD_FILE_MAX_CHARS} characters", param_hint="--password-file")
     lines = content.splitlines()

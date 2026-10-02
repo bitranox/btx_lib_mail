@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
+import threading
 from dataclasses import dataclass
 from email import message_from_bytes
 from typing import IO, TYPE_CHECKING, Any
@@ -371,6 +373,49 @@ def test_an_oversized_env_file_is_refused_before_it_is_read(cli_runner: CliRunne
 
 
 @pytest.mark.os_agnostic
+def test_an_env_file_of_exactly_the_maximum_size_is_read(cli_runner: CliRunner, tmp_path: Path) -> None:
+    line = b"BTX_MAIL_SENDER=from-file@example.com\n"
+    env_file = tmp_path / "full.env"
+    env_file.write_bytes(line + b"#" * (_settings_sources._ENV_FILE_MAX_BYTES - len(line)))
+    assert env_file.stat().st_size == _settings_sources._ENV_FILE_MAX_BYTES
+
+    result, transport = _invoke(cli_runner, ["send", "--env-file", str(env_file), *_ROUTE, *_MESSAGE])
+
+    assert result.exit_code == 0, result.output
+    assert transport.only.sender == "from-file@example.com"
+
+
+@pytest.mark.os_posix
+@pytest.mark.skipif(sys.platform == "win32", reason="needs the POSIX character device /dev/null")
+def test_an_env_file_that_is_a_device_is_refused(cli_runner: CliRunner) -> None:
+    # A device reports size 0, so a size check alone would read it to its end: /dev/zero never ends.
+    result, transport = _invoke(cli_runner, ["send", "--env-file", "/dev/null", *_ROUTE, *_MESSAGE])
+
+    assert result.exit_code == 2
+    assert "is not a regular file" in _flat(result.output)
+    assert transport.deliveries == []
+
+
+@pytest.mark.os_posix
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs named pipes")
+def test_an_env_file_that_is_a_fifo_is_refused_without_waiting_for_a_writer(cli_runner: CliRunner, tmp_path: Path) -> None:
+    fifo = tmp_path / "settings.env"
+    os.mkfifo(fifo)
+    outcome: list[tuple[Result, _RecordingTransport]] = []
+    # A plain open() of a FIFO blocks until a writer appears, so the run is bounded by a thread
+    # join: a regression fails here after five seconds instead of hanging the suite.
+    worker = threading.Thread(target=lambda: outcome.append(_invoke(cli_runner, ["send", "--env-file", str(fifo), *_ROUTE, *_MESSAGE])), daemon=True)
+    worker.start()
+    worker.join(timeout=5)
+
+    assert not worker.is_alive(), "reading the env file blocked on the FIFO"
+    [(result, transport)] = outcome
+    assert result.exit_code == 2
+    assert "is not a regular file" in _flat(result.output)
+    assert transport.deliveries == []
+
+
+@pytest.mark.os_agnostic
 def test_an_env_file_that_is_not_utf8_is_refused(cli_runner: CliRunner, tmp_path: Path) -> None:
     env_file = tmp_path / "latin1.env"
     env_file.write_bytes("BTX_MAIL_SENDER=f\xfc@example.com\n".encode("latin-1"))
@@ -435,6 +480,21 @@ def test_an_overlong_password_file_is_refused(cli_runner: CliRunner, tmp_path: P
 
     assert result.exit_code == 2
     assert "a password file holds one line" in _flat(result.output)
+    assert transport.deliveries == []
+
+
+@pytest.mark.os_agnostic
+def test_a_password_file_that_is_not_utf8_is_refused_without_quoting_it(cli_runner: CliRunner, tmp_path: Path) -> None:
+    password_file = tmp_path / "password"
+    password_file.write_bytes(b"S3cretPW\xff\n")
+
+    result, transport = _invoke(cli_runner, ["send", *_ROUTE, *_MESSAGE, "--username", "u", "--password-file", str(password_file)])
+
+    assert result.exit_code == 2
+    flat = _flat(result.output)
+    assert "is not UTF-8 text" in flat
+    assert "S3cretPW" not in result.output
+    assert "0xff" not in flat
     assert transport.deliveries == []
 
 

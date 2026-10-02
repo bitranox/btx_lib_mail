@@ -86,6 +86,14 @@
 
 ### Fixed
 
+- CLI: an env file (`--env-file`, `BTX_MAIL_ENV_FILE`) that is a device or FIFO passed the
+  64 KiB size check (it reports size 0) and was then read without a bound: `/dev/zero` ran out
+  of memory and a FIFO blocked for a writer. The file is now opened without blocking, refused
+  unless it is a regular file (`is not a regular file`, exit 2), and read at most one byte past
+  the limit.
+- CLI: a `--password-file` that is not UTF-8 raised a bare `UnicodeDecodeError` (exit 22) whose
+  message quoted the offending byte and its offset in the password. It is now a usage error,
+  `--password-file: is not UTF-8 text`, exit 2, like an env file that is not UTF-8.
 - An attachment the operating system refuses to open (no read permission, the open-file
   limit, an I/O error) raised the bare `OSError` (`PermissionError: [Errno 13] ...`), and
   `raise_on_missing_attachments=False` could not skip it. It is now reported like a missing
