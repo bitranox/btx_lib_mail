@@ -93,12 +93,14 @@ def _resolve_bool(*, cli_flag: bool | None, env_key: str, default: bool = False)
     if cli_flag is not None:
         return cli_flag
     env_raw = _configured_value(env_key)
-    if env_raw is None:
+    # A blank value is "not set": reading it as False would let a stray space switch
+    # STARTTLS or certificate checks off, while an unset variable keeps them on.
+    if env_raw is None or env_raw.strip() == "":
         return default
     lowered = env_raw.strip().lower()
     if lowered in _TRUE_VALUES:
         return True
-    if lowered in _FALSE_VALUES or lowered == "":
+    if lowered in _FALSE_VALUES:
         return False
     raise click.BadParameter(f"Unrecognised boolean value for {env_key}: {env_raw!r}")
 

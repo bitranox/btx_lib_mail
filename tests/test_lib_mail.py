@@ -755,6 +755,39 @@ def test_validate_smtp_host_rejects_ipv6_port_out_of_range() -> None:
         lib_mail.validate_smtp_host("[::1]:0")
 
 
+# int() accepts these and they land in range, but no SMTP configuration means a port written
+# with a sign, a digit separator or non-ASCII digits.
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    "host",
+    [
+        "host:+25",
+        "host:2_5",
+        "host:" + chr(0x0662) + chr(0x0665),  # Arabic-Indic 25
+        "host:" + chr(0xFF12) + chr(0xFF15),  # fullwidth 25
+        "[::1]:+25",
+    ],
+)
+def test_validate_smtp_host_refuses_a_port_that_is_not_ascii_digits(host: str) -> None:
+    with pytest.raises(ValueError) as caught:
+        lib_mail.validate_smtp_host(host)
+    assert str(caught.value) == f'invalid smtp port in "{host}"'
+
+
+@pytest.mark.os_agnostic
+def test_validate_smtp_host_accepts_a_port_with_leading_zeros() -> None:
+    lib_mail.validate_smtp_host("host:0025")
+
+
+# Odd ports the range check already refused: the ASCII-digit check must not take them over.
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("host", ["host:-25", "host:+0", "host:" + chr(0x0660)])  # chr(0x0660): Arabic-Indic 0
+def test_validate_smtp_host_keeps_the_range_message_for_an_odd_port_out_of_range(host: str) -> None:
+    with pytest.raises(ValueError) as caught:
+        lib_mail.validate_smtp_host(host)
+    assert str(caught.value) == f'port must be 1-65535 in "{host}"'
+
+
 # Every host 2.x refused, with the exact message 2.0.0 gave (recorded from the published 2.0.0).
 # The 3.x checks may only refuse hosts 2.x ACCEPTED; a host 2.x refused keeps its message, so a
 # consumer test written against 2.x stays green. The one deliberate difference: the range message

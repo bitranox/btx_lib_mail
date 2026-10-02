@@ -2330,7 +2330,7 @@ def _validate_host_shape(host: str) -> None:
 
 
 def _validate_port(port_str: str, original: str) -> None:
-    """Validate that *port_str* is a numeric port in the 1-65535 range.
+    """Validate that *port_str* is plain ASCII digits naming a port in the 1-65535 range.
 
     Inputs
     ------
@@ -2358,6 +2358,10 @@ def _validate_port(port_str: str, original: str) -> None:
         # The message names the host and nothing derived from it: a model that scrubs
         # the host as a credential can only remove the whole string, not a re-quoted port.
         raise ValueError(f'port must be {min_port}-{max_port} in "{original}"')
+    # int() also takes a sign, "_" separators and any Unicode digits; checked after the
+    # range so a port the range check already refused keeps that message.
+    if not (port_str.isascii() and port_str.isdigit()):
+        raise ValueError(f'invalid smtp port in "{original}"')
 
 
 def _parse_smtp_host(address: str) -> tuple[str, int | None]:

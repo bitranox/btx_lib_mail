@@ -1,4 +1,4 @@
-# Handover - btx_lib_mail, 2026-10-02 11:40 (CLI data-architecture refactor done, uncommitted)
+# STALE - read 2026-10-02, work continued
 
 Read `OPEN-WORK.md` first: ranks 20 (USER), 22 (USER), 25 (FOUND), 30 (FOUND) are open.
 

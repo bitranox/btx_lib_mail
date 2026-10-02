@@ -98,7 +98,7 @@ stderr. Pass credentials via `--username`/`--password` instead of folding them i
 `--host`. The same check runs for `validate-smtp-host`.
 
 The host syntax is checked the same way, also before any delivery: a port outside 1-65535
-or not a number, an unclosed IPv6 bracket, an IPv6 address without brackets (`fe80::1`) and
+or not plain ASCII digits (`+25`, `2_5`), an unclosed IPv6 bracket, an IPv6 address without brackets (`fe80::1`) and
 a port with no host name (`:25`) are refused with exit code `22`. These messages quote the
 host; a value carrying `@` never reaches them, because the check above refuses it first. `--host
 a.example.com,b.example.com` is two hosts, because the CLI splits each value on commas

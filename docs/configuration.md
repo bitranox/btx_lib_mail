@@ -67,7 +67,7 @@ Key behaviours:
 - `smtphosts` may be a string (single host), list, or tuple; items can include
   an explicit `host:port` override. Each entry is checked with
   `validate_smtp_host` when the model is built or assigned, so a port outside
-  1-65535 or not a number, an unclosed IPv6 bracket, an IPv6 address without
+  1-65535 or not plain ASCII digits (`+25`, `2_5`), an unclosed IPv6 bracket, an IPv6 address without
   brackets (`fe80::1`), a port with no host name (`:25`) or two hosts in one
   entry (`a.example.com,b.example.com`) raises a `ValidationError` at load time
   instead of failing the first delivery. A blank entry (an empty environment
@@ -191,17 +191,17 @@ Environment variables understood by the CLI:
 
 **SMTP Settings:**
 
-| Variable                        | Purpose                                                                         | Example                                   |
-|---------------------------------|---------------------------------------------------------------------------------|-------------------------------------------|
-| `BTX_MAIL_SMTP_HOSTS`           | Comma-separated list of SMTP hosts (each `host[:port]`).                        | `smtp1.example.com:587,smtp2.example.com` |
-| `BTX_MAIL_RECIPIENTS`           | Comma-separated list of recipient emails.                                       | `primary@example.com,backup@example.com`  |
-| `BTX_MAIL_SENDER`               | Envelope sender; defaults to the first recipient when unset.                    | `alerts@example.com`                      |
-| `BTX_MAIL_SMTP_USE_STARTTLS`    | Boolean flag (`1`, `true`, `yes`, `on`) enabling STARTTLS.                      | `true`                                    |
-| `BTX_MAIL_SMTP_STARTTLS_VERIFY` | Boolean flag verifying the server certificate during STARTTLS (default `true`). | `false`                                   |
-| `BTX_MAIL_SMTP_USERNAME`        | Username used when STARTTLS/authentication is required.                         | `smtp-user`                               |
-| `BTX_MAIL_SMTP_PASSWORD`        | Password paired with the SMTP username.                                         | `DUMMY-PLANTED-password`                  |
-| `BTX_MAIL_SMTP_TIMEOUT`         | Socket timeout in seconds (defaults to `30`).                                   | `12.5`                                    |
-| `BTX_MAIL_SMTP_LOCAL_HOSTNAME`  | Name announced in EHLO (defaults to this host's name, looked up once).          | `relay-client.example.com`                |
+| Variable                        | Purpose                                                                                          | Example                                   |
+|---------------------------------|--------------------------------------------------------------------------------------------------|-------------------------------------------|
+| `BTX_MAIL_SMTP_HOSTS`           | Comma-separated list of SMTP hosts (each `host[:port]`).                                         | `smtp1.example.com:587,smtp2.example.com` |
+| `BTX_MAIL_RECIPIENTS`           | Comma-separated list of recipient emails.                                                        | `primary@example.com,backup@example.com`  |
+| `BTX_MAIL_SENDER`               | Envelope sender; defaults to the first recipient when unset.                                     | `alerts@example.com`                      |
+| `BTX_MAIL_SMTP_USE_STARTTLS`    | Boolean flag (`1`, `true`, `yes`, `on`) enabling STARTTLS; blank keeps the default (`true`).     | `true`                                    |
+| `BTX_MAIL_SMTP_STARTTLS_VERIFY` | Boolean flag verifying the server certificate during STARTTLS; blank keeps the default (`true`). | `false`                                   |
+| `BTX_MAIL_SMTP_USERNAME`        | Username used when STARTTLS/authentication is required.                                          | `smtp-user`                               |
+| `BTX_MAIL_SMTP_PASSWORD`        | Password paired with the SMTP username.                                                          | `DUMMY-PLANTED-password`                  |
+| `BTX_MAIL_SMTP_TIMEOUT`         | Socket timeout in seconds (defaults to `30`).                                                    | `12.5`                                    |
+| `BTX_MAIL_SMTP_LOCAL_HOSTNAME`  | Name announced in EHLO (defaults to this host's name, looked up once).                           | `relay-client.example.com`                |
 
 **Attachment Security Settings:**
 

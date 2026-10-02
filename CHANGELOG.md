@@ -14,9 +14,17 @@
 - When one `send` command has several faults, a refused setting (host, timeout, EHLO name,
   attachment size) is now reported before a refused sender, recipient or attachment, because
   settings are checked when they are read.
+- `validate_smtp_host` (and so `ConfMail.smtphosts` and the CLI) refuses a port that is not
+  plain ASCII digits: a sign (`host:+25`), a digit separator (`host:2_5`) or non-ASCII digits
+  (Arabic-Indic or fullwidth) are refused as `invalid smtp port in "<host>"`. Python's `int()`
+  accepted them before. A port the range check already refused (`host:-25`) keeps its
+  `port must be 1-65535` message.
 
 ### Fixed
 
+- A whitespace-only `BTX_MAIL_SMTP_USE_STARTTLS` or `BTX_MAIL_SMTP_STARTTLS_VERIFY` (in the
+  environment, or quoted in `.env`) keeps the default (`true`) instead of switching STARTTLS or
+  certificate verification off. An unset or empty value already kept the default.
 - `--attachment-max-size 0` (or `BTX_MAIL_ATTACHMENT_MAX_SIZE=0`, or a negative size) is
   refused as `ValueError: attachment_max_size_bytes must be positive, got 0` (exit code `22`).
   Before, the CLI passed it straight to `send()`, which refused every attachment as larger than

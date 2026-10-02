@@ -607,6 +607,75 @@ def test_send_mail_command_can_disable_starttls_verification(
     assert _sent_config(calls).smtp_starttls_verify is False
 
 
+_SECURE_BOOL_SETTINGS = [
+    ("BTX_MAIL_SMTP_USE_STARTTLS", "smtp_use_starttls"),
+    ("BTX_MAIL_SMTP_STARTTLS_VERIFY", "smtp_starttls_verify"),
+]
+
+
+def _send_with_env_only(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner) -> ConfMail:
+    """Run ``send`` with every setting from the environment and return the ConfMail it built."""
+    monkeypatch.setenv("BTX_MAIL_SMTP_HOSTS", "smtp.example.com")
+    monkeypatch.setenv("BTX_MAIL_RECIPIENTS", "first@example.com")
+    calls: dict[str, Any] = {}
+
+    def fake_send(**kwargs: Any) -> bool:
+        calls.update(kwargs)
+        return True
+
+    monkeypatch.setattr(cli_mod, "send", fake_send)
+    result = cli_runner.invoke(cli_mod.cli, ["send", "--subject", "Subject", "--body", "Body"])
+    assert result.exit_code == 0, result.output
+    return _sent_config(calls)
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(("env_key", "field"), _SECURE_BOOL_SETTINGS)
+def test_a_blank_environment_value_keeps_the_secure_default(
+    monkeypatch: pytest.MonkeyPatch,
+    cli_runner: CliRunner,
+    tmp_path: Path,
+    env_key: str,
+    field: str,
+) -> None:
+    monkeypatch.setattr(cli_mod, "_DOTENV_PATH", tmp_path / "void.env")
+    monkeypatch.setenv(env_key, "   ")
+
+    assert getattr(_send_with_env_only(monkeypatch, cli_runner), field) is True
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(("env_key", "field"), _SECURE_BOOL_SETTINGS)
+def test_a_quoted_blank_dotenv_value_keeps_the_secure_default(
+    monkeypatch: pytest.MonkeyPatch,
+    cli_runner: CliRunner,
+    tmp_path: Path,
+    env_key: str,
+    field: str,
+) -> None:
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(f'{env_key}="  "\n', encoding="utf-8")
+    monkeypatch.setattr(cli_mod, "_DOTENV_PATH", dotenv)
+    monkeypatch.delenv(env_key, raising=False)
+
+    assert getattr(_send_with_env_only(monkeypatch, cli_runner), field) is True
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(("env_key", "field"), _SECURE_BOOL_SETTINGS)
+def test_an_explicit_false_environment_value_still_turns_the_setting_off(
+    monkeypatch: pytest.MonkeyPatch,
+    cli_runner: CliRunner,
+    tmp_path: Path,
+    env_key: str,
+    field: str,
+) -> None:
+    monkeypatch.setattr(cli_mod, "_DOTENV_PATH", tmp_path / "void.env")
+    monkeypatch.setenv(env_key, "no")
+
+    assert getattr(_send_with_env_only(monkeypatch, cli_runner), field) is False
+
+
 @pytest.mark.os_agnostic
 def test_when_an_unknown_command_is_used_a_helpful_error_appears(cli_runner: CliRunner) -> None:
     result: Result = cli_runner.invoke(cli_mod.cli, ["does-not-exist"])
