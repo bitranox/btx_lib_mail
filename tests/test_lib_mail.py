@@ -16,7 +16,7 @@ from typing import IO, TYPE_CHECKING, Any, ClassVar, cast
 import pytest
 from pydantic import SecretStr, ValidationError
 
-from btx_lib_mail import ConfMail, _transport, _validation, lib_mail
+from btx_lib_mail import ConfMail, InvalidInputError, _transport, _validation, lib_mail
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -315,6 +315,24 @@ def test_when_invalid_recipients_are_tolerated_a_warning_is_emitted(
     assert result is True
     assert "invalid recipient invalid@" in caplog.text
     assert recorder.created[0].sent_messages[0][1] == "valid@example.com"
+
+
+@pytest.mark.os_agnostic
+def test_a_recipient_whose_lower_case_form_would_be_ascii_is_refused_like_the_sender() -> None:
+    # KELVIN SIGN lower-cases to an ASCII "k", so lower-casing before validating turned a
+    # non-ASCII address into a different, valid one; the same text as sender was refused.
+    kelvin = chr(0x212A) + "elvin@example.com"
+    delivered: list[str] = []
+
+    class _Recording:
+        def deliver(self, *, recipient: str, **_: object) -> None:
+            delivered.append(recipient)
+
+    with pytest.raises(InvalidInputError, match="invalid recipient"):
+        lib_mail.send(mail_from="sender@example.com", mail_recipients=kelvin, mail_subject="Subject", smtphosts=["smtp.example.com"], transport=_Recording())
+    with pytest.raises(InvalidInputError, match="invalid sender address"):
+        lib_mail.send(mail_from=kelvin, mail_recipients="one@example.com", mail_subject="Subject", smtphosts=["smtp.example.com"], transport=_Recording())
+    assert delivered == []
 
 
 @pytest.mark.os_agnostic

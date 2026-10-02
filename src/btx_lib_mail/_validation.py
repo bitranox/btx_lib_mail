@@ -215,10 +215,13 @@ def address_length_problem(address: str) -> str | None:
 
 
 def _normalise_email_address(candidate: str) -> str:
-    """Trim whitespace/quotes and lower-case the candidate email.
+    """Trim whitespace/quotes and lower-case the candidate email if it is ASCII.
 
     Email addresses should compare case-insensitively in our context, so this
-    returns a lower-case, trimmed representation that supports deduping.
+    returns a lower-case, trimmed representation that supports deduping. A
+    non-ASCII entry is left as it is: the address pattern is ASCII-only, and
+    lower-casing first would turn KELVIN SIGN into an ASCII "k", so a refused
+    address would become a different, valid one.
 
     Args:
         candidate: Raw string supplied by the caller.
@@ -226,7 +229,8 @@ def _normalise_email_address(candidate: str) -> str:
     Returns:
         Normalised email address (may be empty string).
     """
-    return candidate.strip().strip('"').strip("'").lower()
+    trimmed = candidate.strip().strip('"').strip("'")
+    return trimmed.lower() if trimmed.isascii() else trimmed
 
 
 def _normalise_host(candidate: str) -> str:
