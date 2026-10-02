@@ -12,7 +12,7 @@ Thanks for helping improve **btx_lib_mail**. The sections below summarise the da
 
 ## 2. Commits & Pushes
 
-- Commit messages should be imperative (`Add rich handler`, `Fix CLI exit codes`).
+- Commit messages should be imperative (`Refuse a subject with control characters`, `Fix CLI exit codes`).
 - `make test` runs the full lint/type/test pipeline; it does NOT leave the repository
   untouched (bmk regenerates the Makefile, may raise a dependency floor in
   `pyproject.toml`, and reformats files with the current `ruff`). Review `git status`
@@ -35,7 +35,8 @@ Thanks for helping improve **btx_lib_mail**. The sections below summarise the da
   keep each case laser-focused, and mark OS constraints with the provided markers
   (`os_agnostic`, `os_windows`, `os_macos`, `os_posix`, `os_linux`, `local_only`).
 - Whenever you add a CLI behaviour or change metadata fallbacks, update the relevant
-  story in `tests/test_cli.py` or `tests/test_metadata.py` so the specification remains
+  story in `tests/test_cli.py`, `tests/test_cli_send.py` (the `send` command) or
+  `tests/test_metadata.py` so the specification remains
   complete.
 - A model holding a credential extends `SecretSafeModel` (see the "Secret safety"
   section of `docs/api.md`) rather than a plain `pydantic.BaseModel`, and lists its
@@ -57,8 +58,8 @@ Before opening a PR, confirm the following:
 
 - Never commit secrets. Tokens (Codecov, PyPI) belong in `.env` (ignored by git) or CI secrets.
 - Do not write a caller- or filesystem-supplied value (a host, recipient, sender, or
-  attachment path) into a log line or raised error text unclean; see `_printable` in
-  `src/btx_lib_mail/lib_mail.py` and the "Per-host failure log" section of `docs/api.md`.
+  attachment path) into a log line or raised error text unclean; see `printable` in
+  `src/btx_lib_mail/_common.py` and the "Per-host failure log" section of `docs/api.md`.
 - Do not format a credential into a custom validator's error message; see "Never put a
   secret into a custom validator's error message" in `docs/configuration.md`.
 

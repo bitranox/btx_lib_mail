@@ -25,7 +25,9 @@ What you get:
 - **Send a 100 GB attachment on a box with almost no free memory.** The message is
   streamed to disk and pushed to the server one chunk at a time, so peak memory stays
   flat whether the file is 100 kB or 100 GB. It never holds the whole payload in RAM,
-  because the RAM you do not have is the RAM that kills the job.
+  because the RAM you do not have is the RAM that kills the job. (Attachments are capped
+  at 25 MiB by default; raise `attachment_max_size_bytes` for the big ones. The trade is
+  scratch disk of about 1.37x the attachment, once, however many recipients.)
 - **BDAT when the server supports it, DATA when it does not.** If the far end advertises
   CHUNKING (RFC 3030) the message goes out in length-prefixed chunks; otherwise it falls
   back to a correct, dot-stuffed DATA phase. You do not pick, the library negotiates.
@@ -37,12 +39,16 @@ What you get:
 - **A command-line mailer.** `btx-lib-mail send ...` turns any shell into a mail client,
   with the same streaming and the same checks.
 - **Attachments checked before they leave.** Path traversal, symlinks, `/.ssh/`, system
-  directories, dangerous extensions and a size cap are refused by default, so you do not
-  email your private key by accident.
+  directories, dangerous extensions (Windows and Unix executables alike) and a size cap are
+  refused by default, so you do not email your private key by accident. Each file is opened
+  once, right after its checks, and the bytes sent are the bytes of the file that was
+  checked.
+- **One error type to catch.** Every refusal and delivery failure is a `BtxMailError`, and
+  the CLI has `--json` output and documented exit codes for scripts and agents.
 
 The part that costs us and earns your trust is the unglamorous part: every wire path is
 proven end to end against a real SMTP server, including BDAT, STARTTLS with
-authentication, and a memory bound that a 100 GB attachment cannot breach. That
+authentication, and a memory bound that does not grow with the attachment. That
 confidence is the actual product. Go and try the daft thing: point it at a spare mailbox
 and attach something absurd.
 
@@ -81,7 +87,8 @@ send(
     mail_subject="nightly dump",
     mail_body="Attached.",
     smtphosts=["smtp.example.com:587"],
-    attachment_file_paths=[Path("/data/nightly-dump.tar")],  # gigabytes are fine
+    attachment_file_paths=[Path("/data/nightly-dump.tar")],
+    attachment_max_size_bytes=50 * 1024**3,  # the default cap is 25 MiB; raise it for big files
 )
 ```
 
@@ -126,7 +133,8 @@ send(
 ```
 
 `ConfMail` refuses a name it does not have, and its field names are not the `send()` keyword
-names: `ConfMail(use_starttls=False)` raises `ValidationError`; the field is `smtp_use_starttls`.
+names: `ConfMail(use_starttls=False)` raises `ConfigurationError` (a pydantic `ValidationError`);
+the field is `smtp_use_starttls`.
 
 ## Use it from an AI agent (zero install)
 
@@ -141,7 +149,8 @@ uvx btx-lib-mail send \
 ```
 
 The library also ships a Claude Code skill (`python-send-mail`) that teaches an agent when and how
-to use it: install, `uvx`, the library API, the CLI, streaming and BDAT, and attachment security.
+to use it: install, `uvx`, the library API, testing through the `Transport` seam, the CLI
+(`--json`, `--env-file`, `--password-file`), streaming and BDAT, and attachment security.
 Install it into any project:
 
 ```bash
@@ -159,7 +168,7 @@ marketplace as `coding-python-send-mail`.
 - [Configuration](docs/configuration.md) - `ConfMail`, precedence, and `BTX_MAIL_*` environment variables
 - [Streaming and BDAT](docs/streaming.md) - how bounded-memory delivery and RFC 3030 CHUNKING work
 - [Attachment security](docs/attachment-security.md) - the checks applied before an attachment is sent
-- [Public API reference](docs/api.md) - `send`, `ConfMail`, functions, and exported constants
+- [Public API reference](docs/api.md) - `send`, `ConfMail`, the exceptions, the `Transport` seam, and exported constants
 - [Module reference](docs/systemdesign/module_reference.md) - internal design and delivery path
 
 ### Project docs

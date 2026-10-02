@@ -82,7 +82,7 @@ cli.cli_send_mail   options > environment > --env-file > conf, assigned onto one
        -> _validation.prepare_recipients / prepare_hosts, check_subject
        -> _attachments.prepare_attachments   check each path, open each file once
        -> _compose.compose_body_once         encode body and attachments once into a spool
-       -> per recipient: _compose.message_for (its header lines + a copy of the body)
+       -> per recipient: _compose.message_for (its header lines + the shared body, read in place)
             -> lib_mail._deliver_to_any_host  failover across hosts
                  -> Transport.deliver          SmtplibTransport: connect, STARTTLS, AUTH, BDAT or DATA
 ```
@@ -145,8 +145,8 @@ the first delivery.
 * `_DeliveryPlan` bundles the hosts, the resolved `DeliveryOptions` and the transport for
   one call. `_resolve_delivery_options` and `_resolve_attachment_security_options` merge
   the keywords with the config in use.
-* `_deliver_to_any_host(sender, recipient, message, plan)` tries each host in order until
-  the transport accepts the message; each failed host logs one credential-free `WARNING`
+* `_deliver_to_any_host(sender, recipient, message, plan)` rewinds the message and tries
+  each host in order until the transport accepts it; each failed host logs one credential-free `WARNING`
   built by `_describe_failure` (an SMTP reply: class, code and text; another `OSError`:
   class and text; anything else: class only; control characters cleaned, capped at 200
   characters), the success path one `DEBUG` line. `_deliver_composed` builds a recipient's
@@ -217,8 +217,8 @@ redacted at the credential fields (`smtp_password`, `smtphosts`).
   size limit. In warn mode a file that grew past the limit is left out and the body
   composed again.
 * `envelope_header_lines(...)` - one recipient's `Subject`, `From`, `To`, `Date`.
-* `message_for(header_lines, body)` - those header lines plus a copy of the body spool,
-  copied in `STREAM_CHUNK_SIZE` pieces.
+* `message_for(header_lines, body)` - a read-only, seekable stream of those header lines
+  followed by the shared body spool, read in place (no copy); closing it leaves the body open.
 * `check_subject(subject)` - refuses CR or LF (with the email package's own message) and
   any other control character except TAB.
 
@@ -364,8 +364,8 @@ identifiers) and `print_info()`, which renders them for `info`.
 **Memory:** peak memory while composing is about one 57 KiB read plus the 1 MiB spool
 buffer, and while streaming about one 64 KiB chunk, independent of attachment size
 (pinned by `tests/test_streaming.py` and `tests/test_transfer_memory.py`). The trade is
-temporary disk for a message above 1 MiB, once for the shared body and once per
-recipient's copy.
+temporary disk for a message above 1 MiB: the encoded body, about 1.37x the attachment,
+once per `send()` however many recipients there are.
 
 **Ordering of refusals:** sender, recipients, attachment rules, attachments, hosts,
 delivery options, subject; every one before the first delivery.

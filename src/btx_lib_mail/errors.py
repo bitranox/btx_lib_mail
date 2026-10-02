@@ -19,8 +19,8 @@ CLI exit code derived from the builtin type.
 - `DeliveryError` - every host failed for at least one recipient (also a
   `RuntimeError`).
 
-`AttachmentSecurityError` is a `BtxMailError` too; it lives with the
-attachment checks in `btx_lib_mail.lib_mail`.
+`AttachmentSecurityError` is a `BtxMailError` too; it is defined with the
+attachment checks and importable from `btx_lib_mail`.
 """
 
 from __future__ import annotations
@@ -57,8 +57,8 @@ class ConfigurationError(BtxMailError, ValidationError):
 
     **Purpose:** A `ConfMail` setting was refused, at construction, in
     `model_validate`/`model_validate_json`, or on assignment. It is a pydantic
-    `ValidationError` (so also a `ValueError`) with the same `errors()`, title
-    and redaction as before; the type adds only the common base.
+    `ValidationError` (so also a `ValueError`): `errors()`, title and redaction
+    are pydantic's, and the class adds the common base.
     """
 
 

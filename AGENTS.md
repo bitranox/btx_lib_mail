@@ -72,7 +72,7 @@ current target list; see `DEVELOPMENT.md` for the everyday ones.
 - `.env` is only for local tooling (CodeCov tokens, etc.); do not commit secrets.
 - A caller- or filesystem-supplied value (host, recipient, sender, attachment path) is
   cleaned of control characters before it reaches a log line, a log `extra`, or a raised
-  error text (`_printable` in `src/btx_lib_mail/lib_mail.py`); keep new log/error call
+  error text (`printable` in `src/btx_lib_mail/_common.py`); keep new log/error call
   sites consistent with that.
 - A model holding a credential extends `secret_safety.SecretSafeModel` rather than a
   plain `pydantic.BaseModel`.

@@ -20,9 +20,13 @@ send(
 )
 ```
 
-Per-call overrides can be supplied positionally or via keyword arguments. When a
-value is omitted, the helper falls back to the precedence order documented
-below.
+Per-call overrides are keyword arguments (only the message and `smtphosts` /
+`attachment_file_paths` may be passed positionally). For each setting `send()` uses, in
+order: the keyword, if not `None`; else the field of the `config=` it was given; else the
+field of the global `conf`. When `config=` is passed, `conf` is not read at all, so an
+application can keep its own `ConfMail` (per tenant, per test) without touching the
+global. The environment and env files play no part here; they are the CLI's sources (see
+below).
 
 ```python
 from btx_lib_mail import send
@@ -59,8 +63,8 @@ for field_name in conf_update.model_fields_set:  # copy only the keys the mappin
 
 Key behaviours:
 
-- A key that is not a `ConfMail` field is refused with a `ValidationError` naming
-  the key (never its value). Map your source's names onto the field names before
+- A key that is not a `ConfMail` field is refused with a `ConfigurationError` (a pydantic
+  `ValidationError`, and a `BtxMailError`) naming the key (never its value). Map your source's names onto the field names before
   validating, and leave out keys that belong to something else: the `send()`
   keyword names (`use_starttls`, `timeout`, `credentials`) are not field names,
   so passing them to `ConfMail` fails instead of being dropped.
@@ -69,10 +73,11 @@ Key behaviours:
   `validate_smtp_host` when the model is built or assigned, so a port outside
   1-65535 or not plain ASCII digits (`+25`, `2_5`), an unclosed IPv6 bracket, an IPv6 address without
   brackets (`fe80::1`), a port with no host name (`:25`) or two hosts in one
-  entry (`a.example.com,b.example.com`) raises a `ValidationError` at load time
+  entry (`a.example.com,b.example.com`) raises a `ConfigurationError` at load time
   instead of failing the first delivery. A blank entry (an empty environment
-  value, a trailing comma) is dropped. Hosts are normalised, deduplicated, and
-  tried in order.
+  value, a trailing comma) is dropped, and surrounding whitespace and quotes are
+  stripped; the model keeps duplicates. `send()` drops exact duplicates and tries the
+  hosts in order.
 - STARTTLS is enabled by default (`smtp_use_starttls=True`). The helper performs
   the handshake with the system SSL context before authenticating; set the flag
   to `False` when connecting to servers that do not support STARTTLS.
@@ -134,10 +139,10 @@ Key behaviours:
   string in `smtphosts` must be `host[:port]`; it must not carry `user:password@` or a
   path, and it must not carry an interior whitespace or control character (a newline or
   an escape sequence could forge a log line or a terminal control sequence wherever a
-  failed host is later logged). `ConfMail` refuses such a host at load time (`ValueError`,
-  without echoing the value); pass credentials as `smtp_username` and `smtp_password` (or
-  `credentials=` on `send`) instead of folding them into the host. Outer whitespace is
-  trimmed first, so an ordinary `" smtp.example.com "` from an env file still validates.
+  failed host is later logged). `ConfMail` refuses such a host at load time
+  (`ConfigurationError`, without echoing the value); pass credentials as `smtp_username` and `smtp_password` (or
+  `credentials=` on `send`) instead of folding them into the host. Outer whitespace and
+  quotes are trimmed first, so an ordinary `" smtp.example.com "` from an env file still validates.
 - **Failover repeats the same credential.** For an ASCII password the server rejects,
   `smtplib` still tries CRAM-MD5, PLAIN and LOGIN in turn before giving up, and
   `smtphosts` failover then sends that same credential to every remaining host. A wrong
@@ -183,9 +188,7 @@ that one call and is not checked, while passing `None` uses the value on the con
 
 ## Environment variables and precedence
 
-### Environment Variables and Precedence {#mail-env-variables}
-
-The CLI and library coordinate configuration using the following precedence:
+The `send` command resolves each setting in this order:
 1. **CLI options** passed to `btx_lib_mail send`.
 2. **Environment variables** exported in the shell (`BTX_MAIL_*` keys below).
 3. Entries in the `KEY=value` file named by `--env-file` (or `BTX_MAIL_ENV_FILE`). No file
@@ -196,19 +199,19 @@ Environment variables understood by the CLI:
 
 **SMTP Settings:**
 
-| Variable                          | Purpose                                                                                          | Example                                   |
-|-----------------------------------|--------------------------------------------------------------------------------------------------|-------------------------------------------|
-| `BTX_MAIL_SMTP_HOSTS`             | Comma-separated list of SMTP hosts (each `host[:port]`).                                         | `smtp1.example.com:587,smtp2.example.com` |
-| `BTX_MAIL_RECIPIENTS`             | Comma-separated list of recipient emails.                                                        | `primary@example.com,backup@example.com`  |
-| `BTX_MAIL_SENDER`                 | Envelope sender; defaults to the first recipient when unset.                                     | `alerts@example.com`                      |
-| `BTX_MAIL_SMTP_USE_STARTTLS`      | Boolean flag (`1`, `true`, `yes`, `on`) enabling STARTTLS; blank keeps the default (`true`).     | `true`                                    |
-| `BTX_MAIL_SMTP_STARTTLS_VERIFY`   | Boolean flag verifying the server certificate during STARTTLS; blank keeps the default (`true`). | `false`                                   |
-| `BTX_MAIL_SMTP_USERNAME`          | Username used when STARTTLS/authentication is required.                                          | `smtp-user`                               |
-| `BTX_MAIL_SMTP_PASSWORD`          | Password paired with the SMTP username.                                                          | `DUMMY-PLANTED-password`                  |
-| `BTX_MAIL_SMTP_TIMEOUT`           | Socket timeout in seconds (defaults to `30`).                                                    | `12.5`                                    |
-| `BTX_MAIL_SMTP_LOCAL_HOSTNAME`    | Name announced in EHLO (defaults to this host's name, looked up once).                           | `relay-client.example.com`                |
-| `BTX_MAIL_SMTP_DELIVERY_DEADLINE` | Upper bound in seconds for one SMTP session (default: none).                                     | `300`                                     |
-| `BTX_MAIL_ENV_FILE`               | Path of a `KEY=value` file to read the other settings from (same as `--env-file`).               | `/etc/btx-mail/relay.env`                 |
+| Variable                          | Purpose                                                                                                        | Example                                   |
+|-----------------------------------|----------------------------------------------------------------------------------------------------------------|-------------------------------------------|
+| `BTX_MAIL_SMTP_HOSTS`             | Comma-separated list of SMTP hosts (each `host[:port]`).                                                       | `smtp1.example.com:587,smtp2.example.com` |
+| `BTX_MAIL_RECIPIENTS`             | Comma-separated list of recipient emails.                                                                      | `primary@example.com,backup@example.com`  |
+| `BTX_MAIL_SENDER`                 | Envelope sender; defaults to the first recipient when unset.                                                   | `alerts@example.com`                      |
+| `BTX_MAIL_SMTP_USE_STARTTLS`      | Boolean (`1`/`true`/`yes`/`on` or `0`/`false`/`no`/`off`) enabling STARTTLS; blank keeps the default (`true`). | `true`                                    |
+| `BTX_MAIL_SMTP_STARTTLS_VERIFY`   | Boolean flag verifying the server certificate during STARTTLS; blank keeps the default (`true`).               | `false`                                   |
+| `BTX_MAIL_SMTP_USERNAME`          | Username used when STARTTLS/authentication is required.                                                        | `smtp-user`                               |
+| `BTX_MAIL_SMTP_PASSWORD`          | Password paired with the SMTP username.                                                                        | `DUMMY-PLANTED-password`                  |
+| `BTX_MAIL_SMTP_TIMEOUT`           | Socket timeout in seconds (defaults to `30`).                                                                  | `12.5`                                    |
+| `BTX_MAIL_SMTP_LOCAL_HOSTNAME`    | Name announced in EHLO (defaults to this host's name, looked up once).                                         | `relay-client.example.com`                |
+| `BTX_MAIL_SMTP_DELIVERY_DEADLINE` | Upper bound in seconds for one SMTP session (default: none).                                                   | `300`                                     |
+| `BTX_MAIL_ENV_FILE`               | Path of a `KEY=value` file to read the other settings from (same as `--env-file`).                             | `/etc/btx-mail/relay.env`                 |
 
 **Attachment Security Settings:**
 
@@ -228,7 +231,7 @@ strings as unset; the first occurrence of a key wins, and the file must be UTF-8
 most 64 KiB. Exporting an environment variable always overrides the file; explicit CLI
 flags override both. A `.env` that merely sits in the working directory is never read:
 it could otherwise redirect delivery or relax a security setting (see
-[the CLI reference](cli.md#cli-settings-sources)).
+[the CLI reference](cli.md#where-send-settings-come-from)).
 
 > **Note:** Environment and env-file lookups occur only in the CLI adapter. If you
 > import `btx_lib_mail.send()` directly, configure `btx_lib_mail.conf` yourself

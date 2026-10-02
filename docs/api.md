@@ -1,16 +1,18 @@
 # Public API reference
 
-All public interfaces are documented in
-`docs/systemdesign/module_reference.md#feature-cli-components`. The summary
-below mirrors that source so the README can be used as a quick reference.
+Everything importable from `btx_lib_mail` is described here; the internal design is in
+[the module reference](systemdesign/module_reference.md). Run
+`python -c "import btx_lib_mail as m; help(m)"` for the docstrings of the installed version.
 
-### Configuration Surface {#public-api-config}
+## Configuration Surface {#public-api-config}
 
 #### `btx_lib_mail.conf: ConfMail` {#public-api-conf}
 
 `conf` is the global configuration instance used whenever a `send` caller does
-not supply per-call overrides. Update it directly or replace it wholesale with
-`ConfMail.model_validate()`.
+not supply per-call overrides or a `config=`. Change it field by field
+(`conf.smtp_timeout = 10.0`, validated on assignment); rebinding the name
+(`btx_lib_mail.conf = ConfMail(...)`) has no effect on `send()`, which keeps reading the
+original object. To use a different settings object, pass it as `send(config=...)`.
 
 #### `ConfMail` fields {#public-api-confmail-fields}
 
@@ -36,7 +38,7 @@ not supply per-call overrides. Update it directly or replace it wholesale with
 | `attachment_allowed_extensions`          | `frozenset[str] \| None`  | `None`                    | When set, only these extensions are allowed (whitelist mode). `None` uses blacklist mode.                                                                                                                                           |
 | `attachment_blocked_extensions`          | `frozenset[str]`          | POSIX and Windows dangers | Extensions to reject. Ignored when `attachment_allowed_extensions` is set. Defaults to the dangerous extensions of BOTH families on every platform, because the recipient's system decides what runs.                               |
 | `attachment_allowed_directories`         | `frozenset[Path] \| None` | `None`                    | When set, attachments must reside under one of these directories (whitelist mode).                                                                                                                                                  |
-| `attachment_blocked_directories`         | `frozenset[Path]`         | OS-specific sensitive     | Directories from which attachments cannot be read. Defaults to sensitive system directories.                                                                                                                                        |
+| `attachment_blocked_directories`         | `frozenset[Path]`         | OS-specific sensitive     | Directories from which attachments cannot be read. Ignored when `attachment_allowed_directories` is set. Defaults to the running platform's sensitive system directories.                                                           |
 | `attachment_max_size_bytes`              | `int \| None`             | `26_214_400` (25 MiB)     | Maximum attachment size in bytes. `None` disables size checking.                                                                                                                                                                    |
 | `attachment_allow_symlinks`              | `bool`                    | `False`                   | When `False`, an attachment path whose last component is a symlink is rejected; when `True`, it is resolved and validated. A symlinked directory along the path is followed either way, and every rule runs on the resolved target. |
 | `attachment_raise_on_security_violation` | `bool`                    | `True`                    | When `True`, security violations raise `AttachmentSecurityError`; when `False`, they log a warning and skip the attachment.                                                                                                         |
@@ -61,7 +63,7 @@ Common helpers:
 - `ConfMail.resolved_credentials() -> tuple[str, str] | None`  -  return the
   `(username, password)` pair when both credential fields are populated.
 
-### Functions {#public-api-functions}
+## Functions {#public-api-functions}
 
 #### `emit_greeting(*, stream: TextIO | None = None) -> None` {#public-api-emit-greeting}
 
@@ -84,41 +86,42 @@ subcommand), ensuring the scaffold remains predictable.
 #### `send(...) -> bool` {#public-api-send}
 
 Entry point for SMTP delivery. Returns `True` when all recipients succeed and
-raises when every host fails for at least one recipient.
+raises when every host fails for at least one recipient. The first seven parameters may be
+passed positionally; every other one is keyword-only.
 
 **Core Parameters:**
 
 | Parameter                      | Type                             | Default | Notes                                                                                                                                                                                               |
 |--------------------------------|----------------------------------|---------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `mail_from`                    | `str`                            | -       | Envelope sender address (`local@domain`).                                                                                                                                                           |
-| `mail_recipients`              | `str \| Sequence[str]`           | -       | Deduplicated, validated recipient addresses.                                                                                                                                                        |
+| `mail_recipients`              | `str \| Sequence[str]`           | -       | One address or a sequence. Each is stripped of surrounding whitespace and quotes, lower-cased, deduplicated and validated.                                                                          |
 | `mail_subject`                 | `str`                            | -       | UTF-8 subject line. A control character other than TAB is refused with `InvalidInputError` before any delivery.                                                                                     |
 | `mail_body`                    | `str`                            | `""`    | Optional plain-text body.                                                                                                                                                                           |
 | `mail_body_html`               | `str`                            | `""`    | Optional HTML body (UTF-8).                                                                                                                                                                         |
 | `smtphosts`                    | `Sequence[str] \| None`          | `None`  | Host override. Falls back to `smtphosts` of the config in use (the passed `config`, else the global `conf`).                                                                                        |
 | `attachment_file_paths`        | `Sequence[pathlib.Path] \| None` | `None`  | Iterable of attachment paths. Missing files raise unless `raise_on_missing_attachments` is `False` on the config in use.                                                                            |
-| `credentials`                  | `tuple[str, str] \| None`        | `None`  | `(username, password)` override. Defaults to `resolved_credentials()` of the config in use.                                                                                                         |
+| `credentials`                  | `tuple[str, str] \| None`        | `None`  | Keyword-only, like every parameter below. `(username, password)` override. Defaults to `resolved_credentials()` of the config in use.                                                               |
 | `use_starttls`                 | `bool \| None`                   | `None`  | When `None`, the helper uses `smtp_use_starttls` of the config in use.                                                                                                                              |
 | `starttls_verify`              | `bool \| None`                   | `None`  | When `None`, the helper uses `smtp_starttls_verify` of the config in use. `False` skips certificate verification.                                                                                   |
 | `timeout`                      | `float \| None`                  | `None`  | When `None`, the helper uses `smtp_timeout` of the config in use.                                                                                                                                   |
 | `local_hostname`               | `str \| None`                    | `None`  | Name announced in `EHLO`. When `None`, the helper uses `smtp_local_hostname` of the config in use, else this host's name (looked up once per process). An unusable name raises `InvalidInputError`. |
 | `delivery_deadline`            | `float \| None`                  | `None`  | Upper bound in seconds for one SMTP session. When `None`, the helper uses `smtp_delivery_deadline` of the config in use. A non-positive or non-finite value raises `InvalidInputError`.             |
-| `raise_on_missing_attachments` | `bool \| None`                   | `None`  | Keyword-only. `True` raises `AttachmentNotFoundError` for a missing attachment, `False` logs a warning and sends without it. `None` uses `raise_on_missing_attachments` of the config in use.       |
-| `raise_on_invalid_recipient`   | `bool \| None`                   | `None`  | Keyword-only. `True` raises `InvalidInputError` for an invalid recipient, `False` logs a warning and skips it. `None` uses `raise_on_invalid_recipient` of the config in use.                       |
+| `raise_on_missing_attachments` | `bool \| None`                   | `None`  | `True` raises `AttachmentNotFoundError` for a missing attachment, `False` logs a warning and sends without it. `None` uses `raise_on_missing_attachments` of the config in use.                     |
+| `raise_on_invalid_recipient`   | `bool \| None`                   | `None`  | `True` raises `InvalidInputError` for an invalid recipient, `False` logs a warning and skips it. `None` uses `raise_on_invalid_recipient` of the config in use.                                     |
 | `config`                       | `ConfMail \| None`               | `None`  | Settings used in place of the global `conf` for every value not passed explicitly. When `config` is passed, `conf` is not read at all.                                                              |
-| `transport`                    | `Transport \| None`              | `None`  | Delivery adapter; `None` uses `SmtplibTransport`. Inject a test double or an alternative transport here (see [streaming](streaming.md#custom-transports)).                                          |
+| `transport`                    | `Transport \| None`              | `None`  | Delivery adapter; `None` uses `SmtplibTransport` (importable from `btx_lib_mail.lib_mail`). Inject a test double or an alternative transport here (see [Transport](#public-api-transport)).         |
 
 **Attachment Security Parameters (keyword-only):**
 
-| Parameter                                | Type                      | Default                 | Notes                                                                                                                                                                                          |
-|------------------------------------------|---------------------------|-------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `attachment_allowed_extensions`          | `frozenset[str] \| None`  | `None` (blacklist mode) | Override allowed extensions (whitelist mode). `None` uses blocked list.                                                                                                                        |
-| `attachment_blocked_extensions`          | `frozenset[str] \| None`  | `None`                  | Override blocked extensions. `None` uses the config in use's value (the POSIX and Windows dangerous extensions by default).                                                                    |
-| `attachment_allowed_directories`         | `frozenset[Path] \| None` | `None` (blacklist mode) | Override allowed directories (whitelist mode). `None` uses blocked list.                                                                                                                       |
-| `attachment_blocked_directories`         | `frozenset[Path] \| None` | `None`                  | Override blocked directories. `None` uses the config in use's value (OS-specific sensitive directories by default).                                                                            |
-| `attachment_max_size_bytes`              | `int \| None`             | `None`                  | Override max attachment size. `None` uses the config in use's value (25 MiB by default), so `None` here never disables the check; set `attachment_max_size_bytes=None` on the config for that. |
-| `attachment_allow_symlinks`              | `bool \| None`            | `None`                  | Override symlink policy. `None` uses the config in use's value (`False` by default).                                                                                                           |
-| `attachment_raise_on_security_violation` | `bool \| None`            | `None`                  | Override security violation behaviour. `None` uses the config in use's value (`True` by default).                                                                                              |
+| Parameter                                | Type                      | Default | Notes                                                                                                                                                                                          |
+|------------------------------------------|---------------------------|---------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `attachment_allowed_extensions`          | `frozenset[str] \| None`  | `None`  | Override allowed extensions (whitelist mode). `None` uses the config in use's value (no allowlist by default). Normalised like the config field: `{"PDF"}` and `{".pdf"}` are the same set.    |
+| `attachment_blocked_extensions`          | `frozenset[str] \| None`  | `None`  | Override blocked extensions. `None` uses the config in use's value (the POSIX and Windows dangerous extensions by default). Normalised like the config field (lower case, leading dot).        |
+| `attachment_allowed_directories`         | `frozenset[Path] \| None` | `None`  | Override allowed directories (whitelist mode). `None` uses the config in use's value (no allowlist by default).                                                                                |
+| `attachment_blocked_directories`         | `frozenset[Path] \| None` | `None`  | Override blocked directories. `None` uses the config in use's value (the running platform's sensitive directories by default). Ignored when an allowlist is in force.                          |
+| `attachment_max_size_bytes`              | `int \| None`             | `None`  | Override max attachment size. `None` uses the config in use's value (25 MiB by default), so `None` here never disables the check; set `attachment_max_size_bytes=None` on the config for that. |
+| `attachment_allow_symlinks`              | `bool \| None`            | `None`  | Override symlink policy. `None` uses the config in use's value (`False` by default).                                                                                                           |
+| `attachment_raise_on_security_violation` | `bool \| None`            | `None`  | Override security violation behaviour. `None` uses the config in use's value (`True` by default).                                                                                              |
 
 An empty `attachment_blocked_extensions` or `attachment_blocked_directories` set means
 "block nothing"; it is not a way to ask for the OS defaults. `ConfMail` therefore refuses
@@ -177,10 +180,11 @@ macOS and Windows file systems are case-insensitive:
 
 **Raises:** every exception below is a `BtxMailError` (see [Exceptions](#public-api-exceptions)).
 
-- `InvalidInputError` (a `ValueError`)  -  a refused sender, recipient, host, EHLO name or
-  timeout, or no valid recipient left after validation.
+- `InvalidInputError` (a `ValueError`)  -  a refused sender, recipient, host, subject (a
+  control character other than TAB), EHLO name, timeout or delivery deadline, or no valid
+  recipient left after validation.
 - `AttachmentNotFoundError` (a `FileNotFoundError`)  -  when a required attachment is missing
-  and `raise_on_missing_attachments` is `True`.
+  or is not a regular file (a directory, a FIFO) and `raise_on_missing_attachments` is `True`.
 - `AttachmentSecurityError`  -  when an attachment violates security policies and
   `attachment_raise_on_security_violation` is `True`, including a file that changed or
   grew past the size limit after it was checked (see
@@ -188,6 +192,10 @@ macOS and Windows file systems are case-insensitive:
 - `DeliveryError` (a `RuntimeError`)  -  when every configured host fails for a recipient; its
   message lists recipients and host roster, and `failed_recipients` / `hosts` carry them as
   tuples.
+
+An `OSError` the operating system raises while opening an attachment that exists (for
+example `PermissionError` on an unreadable file) is not a `BtxMailError`; it propagates
+unchanged, before any delivery.
 
 **Per-host failure log:** when a host raises during delivery, `send` logs one
 credential-free `WARNING` for that host and moves on to the next one; no traceback is
@@ -198,7 +206,7 @@ where `<description>` is built by `_describe_failure`: for an `smtplib.SMTPRespo
 logged as given; for anything else it is only the exception class name. The description text
 has its control characters (CR, LF, ESC, NUL, ...) replaced by spaces and is capped at 200
 characters; `<host>` and `<recipient>` are run through the same control-character cleaning
-(`_printable`), but are not capped at 200 characters, since a description text is the one value
+(`printable`), but are not capped at 200 characters, since a description text is the one value
 this log line takes from an untrusted server reply. A host carrying interior whitespace or a
 control character is refused before any delivery is attempted (`ConfMail` construction/assignment
 and `send()`-time host validation both refuse it, without echoing the value), so this cleaning of
@@ -208,7 +216,7 @@ extra log lines or flood the log.
 The log record also carries `extra={"sender": ..., "recipient": ..., "host": ..., "error_type":
 ..., "smtp_code": ...}` (`smtp_code` is `None` when the exception has none; `sender`, `recipient`
 and `host` are the same cleaned values used in the message), so a structured log sink can filter
-or aggregate by any of them without re-parsing the message text. The same cleaning (`_printable`
+or aggregate by any of them without re-parsing the message text. The same cleaning (`printable`
 on every caller- or filesystem-supplied value, in the message and in `extra` alike) also applies
 to the success-path `DEBUG` log line (`mail sent to "<recipient>" via host "<host>"`), the
 `WARNING` logged for a recipient that fails validation in tolerant mode (and the `ValueError` it
@@ -220,8 +228,8 @@ caller in strict mode - none of these log a caller- or filesystem-supplied strin
 
 Every exception the library raises on purpose derives from `BtxMailError`, so
 `except BtxMailError:` catches any refusal or delivery failure. Each concrete class also
-keeps the builtin it replaced as a second base, so an existing `except ValueError:` (and so
-on) still catches it, and the CLI exit code derived from that builtin is unchanged.
+subclasses the builtin in the "Also a" column, so `except ValueError:` (and so on) catches
+it too, and the CLI exit code follows that builtin.
 
 | Class                     | Also a                     | Raised when                                                                              |
 |---------------------------|----------------------------|------------------------------------------------------------------------------------------|
@@ -231,6 +239,68 @@ on) still catches it, and the CLI exit code derived from that builtin is unchang
 | `AttachmentNotFoundError` | `FileNotFoundError`        | A required attachment is missing or not a regular file.                                  |
 | `AttachmentSecurityError` | -                          | An attachment breaks a security rule; see `violation_type`.                              |
 | `DeliveryError`           | `RuntimeError`             | Every host failed for at least one recipient; see `failed_recipients`, `hosts`.          |
+
+`AttachmentSecurityError` carries `path` (the offending path), `reason` (a one-line
+description, control characters replaced) and `violation_type`, an `AttachmentViolation`
+member: `PATH_TRAVERSAL`, `SYMLINK`, `SENSITIVE_PATTERN`, `DIRECTORY`, `EXTENSION`, `SIZE` or
+`CHANGED`. The members are strings (`violation_type == "symlink"` holds). Branch on the
+member, never on the message text.
+
+## Validators {#public-api-validators}
+
+- `validate_email_address(address: str) -> None` raises `InvalidInputError` unless the
+  address matches `EMAIL_PATTERN` (`local@domain.tld`).
+- `validate_smtp_host(host: str) -> None` raises `InvalidInputError` unless `host` is one of
+  `hostname`, `hostname:port`, `[IPv6]`, `[IPv6]:port`, with a port of ASCII digits in
+  1-65535. A host carrying `@` or `/` or an interior whitespace or control character is
+  refused without the value appearing in the message; a comma (two hosts in one string)
+  and an unbracketed IPv6 address are refused too.
+
+## Transport {#public-api-transport}
+
+`send()` hands each recipient's message to a `Transport`, an object with one method:
+
+```python
+def deliver(self, *, host: str, sender: str, recipient: str, message: IO[bytes], delivery: DeliveryOptions) -> None: ...
+```
+
+`message` is a readable, seekable binary stream positioned at its first byte; `send()` rewinds
+it before every host attempt. `deliver` returns on success and raises on any failure, so the
+next host is tried. An `OSError` it raises is logged with its text, anything else by type name
+only; never put a credential into the text of an `OSError`. `DeliveryOptions` is a frozen
+dataclass with `credentials` (`tuple[str, str] | None`, left out of `repr`), `use_starttls`,
+`starttls_verify`, `timeout`, `local_hostname` and `deadline`. The default transport,
+`SmtplibTransport` (importable from `btx_lib_mail.lib_mail`), speaks SMTP; a test passes its
+own transport through `send(transport=...)` and asserts on what it received, with no server
+and no patching:
+
+```python
+from typing import IO
+
+from btx_lib_mail import DeliveryOptions, send
+
+
+class RecordingTransport:
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, bytes]] = []
+
+    def deliver(self, *, host: str, sender: str, recipient: str, message: IO[bytes], delivery: DeliveryOptions) -> None:
+        self.sent.append((recipient, message.read()))
+
+
+transport = RecordingTransport()
+send("alerts@example.com", "oncall@example.com", "build failed", "See CI.", smtphosts=["smtp.example.com"], transport=transport)
+assert transport.sent[0][0] == "oncall@example.com"
+```
+
+## Logging and metadata {#public-api-logging}
+
+- `logger` is the library's `logging.Logger` (`"btx_lib_mail"`). It logs one `WARNING` per
+  failed host, per skipped attachment and per skipped recipient, and a `DEBUG` line per
+  delivery; no record carries a password.
+- `print_info()` prints the package metadata (name, version, homepage, author), as the CLI's
+  `info` command does. `CANONICAL_GREETING` is the `"Hello World"` text `emit_greeting()`
+  writes.
 
 ## Secret safety {#public-api-secret-safety}
 

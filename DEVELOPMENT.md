@@ -11,7 +11,7 @@ it greps the Makefile's own comments, so it never disagrees with what actually r
 The everyday targets:
 
 ```bash
-make test          # ruff lint + format check, pyright strict, bandit, pytest with coverage
+make test          # ruff format + lint, pyright strict, bandit, import-linter, pip-audit, pytest with coverage
 make dev           # editable install with dev extras
 make build         # wheel/sdist artifacts
 make bump-patch    # bump patch version (X.Y.Z -> X.Y.(Z+1)); also bump-minor / bump-major
@@ -38,8 +38,8 @@ ruff/pyright/pytest, since bmk also runs whole-tree Markdown formatting and
 ## Dependency auditing
 
 `make test` runs `pip-audit` against the resolved project environment as part of the
-gate. Check `pyproject.toml` for any `# pip-audit ignore` comments explaining a
-suppressed finding and its re-enable condition; do not add a blanket ignore.
+gate. A suppressed finding goes in `[tool.pip-audit] ignore-vulns` in `pyproject.toml`, with a
+comment naming the package and why it is not reachable; do not add a blanket ignore.
 
 ## CI & publishing
 

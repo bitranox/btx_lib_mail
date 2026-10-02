@@ -23,8 +23,8 @@ call, and own the result.
   standard library; the human decided it was worth building and to advertise it.
 - Every design and architecture decision was the human's: a typed Pydantic configuration surface
   (`ConfMail`) with a global instance and per-call overrides; multi-host failover that tries each
-  configured server in order; the layered split kept honest by `import-linter`, where the CLI
-  adapter depends on the behaviour helpers only; and representing the attachment violation
+  configured server in order; the layered split kept honest by `import-linter`, where each module
+  imports only from the layers below it (the CLI at the top); and representing the attachment violation
   category as a typed enum rather than a bare string. Where there were options, the human picked.
 - The security posture was the human's call: attachments are validated before any bytes are read,
   and rejected for path traversal, symlinks, sensitive path patterns (`/.ssh/`, `/id_rsa`,
@@ -55,8 +55,8 @@ accountability, were the AI's, the human directed and approved every action and 
 
 The suite runs on every commit and in CI across Linux, macOS and Windows: `ruff` for lint and
 format, `pyright` in strict mode, `bandit` for a security scan, and `pytest` with doctests and a
-high coverage bar. `import-linter` enforces the layer contract (the CLI depends on the behaviour
-helpers, not the reverse). Delivery is checked two ways. The orchestration (host failover,
+high coverage bar. `import-linter` enforces the layer contract (each module imports only from the
+layers below it, with the CLI at the top). Delivery is checked two ways. The orchestration (host failover,
 STARTTLS and credentials resolved from config, recipient and host validation, message
 composition, and every attachment-security rule) runs against an injected in-memory transport, so
 no socket is opened. The wire behaviour itself (the streamed DATA phase with dot-stuffing, RFC
@@ -81,13 +81,13 @@ STARTTLS, optional login, then the spool is streamed to the server, as RFC 3030 
 server offers CHUNKING, otherwise the DATA phase with dot-stuffing, so a large attachment is never
 held in memory. The places worth reading closely are the attachment security path,
 `_validate_attachment_security` and its checks; the streaming compose and transport
-(`_compose_body`, `_message_for`, `SmtplibTransport`); and the STARTTLS context builder,
+(`compose_body_once`, `message_for`, `SmtplibTransport`); and the STARTTLS context builder,
 `_build_starttls_context`, which is the only spot that can disable certificate verification and
 does so only when explicitly asked.
 
 The tests need no mail server: run `make test`, or `pytest` directly. The public API is
 re-exported from the package root, and [module_reference](docs/systemdesign/module_reference.md)
-lists every module and component.
+describes every module.
 
 ## What this isn't
 

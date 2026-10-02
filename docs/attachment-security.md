@@ -26,7 +26,8 @@ of sensitive files, dangerous executables, or oversized payloads.
    etc.) are blocked by default on every platform: the default is the union of the
    POSIX and Windows lists, because the RECIPIENT's system decides what an attachment
    runs as. The extension is read after trailing dots and spaces are dropped (Windows
-   saves `x.exe.` as `x.exe`) and compared without case. Use
+   saves `x.exe.` as `x.exe`) and compared without case; an extension set given to `send()` or
+   `ConfMail` is normalised the same way (`{"EXE"}` and `{".exe"}` are one set). Use
    `attachment_allowed_extensions` for whitelist mode or
    `attachment_blocked_extensions` to customize the blacklist.
    `ConfMail` refuses an empty blocked extension or directory set when its
@@ -38,10 +39,10 @@ of sensitive files, dangerous executables, or oversized payloads.
 7. **One Open File**  -  After the checks, each attachment is opened once and
    compared with what was checked (same file, still a regular file); the message
    body is encoded once from that open file and every recipient receives those
-   bytes. A path swapped after the checks (replaced by a symlink to another file,
-   or by another file) is refused as `CHANGED`, and swapping or deleting the file
-   while delivery runs changes nothing that is sent. The files are closed before
-   `send()` returns.
+   bytes. A path swapped after the checks for a symlink or another file is refused
+   as `CHANGED`; swapped for a directory or a FIFO, it is reported like a missing
+   file (`AttachmentNotFoundError`). Swapping or deleting the file while delivery
+   runs changes nothing that is sent. The files are closed before `send()` returns.
 
 A refusal raises `AttachmentSecurityError`, whose `violation_type` is an
 `AttachmentViolation` member: `PATH_TRAVERSAL`, `SYMLINK`, `SENSITIVE_PATTERN`,
@@ -50,7 +51,11 @@ A refusal raises `AttachmentSecurityError`, whose `violation_type` is an
 ### Configuration Example
 
 ```python
+from pathlib import Path
+
 from btx_lib_mail import conf, send, DANGEROUS_EXTENSIONS_POSIX, DANGEROUS_EXTENSIONS_WINDOWS
+
+conf.smtphosts = ["smtp.example.com:587"]
 
 # Global configuration (applies to all send() calls)
 conf.attachment_max_size_bytes = 50_000_000  # 50 MiB

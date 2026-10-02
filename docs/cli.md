@@ -1,6 +1,6 @@
 # Command-line interface
 
-The CLI leverages [rich-click](https://github.com/ewels/rich-click) so prompts render with Rich styling while keeping the familiar click ergonomics.
+The CLI leverages [rich-click](https://github.com/ewels/rich-click) so help and error output render with Rich styling while keeping the familiar click ergonomics.
 
 ```bash
 btx_lib_mail info
@@ -35,7 +35,7 @@ btpc.print_info()
 ```
 
 
-### CLI Commands {#public-api-cli}
+## CLI Commands
 
 The CLI wraps the same behaviour through rich-click. Highlights:
 
@@ -48,19 +48,19 @@ The CLI wraps the same behaviour through rich-click. Highlights:
 | `btx_lib_mail validate-email`     | Validate email address syntax.                               |
 | `btx_lib_mail validate-smtp-host` | Validate SMTP host format (IPv6-aware).                      |
 
-#### Global options
+### Global options
 
 These go BEFORE the subcommand (`btx_lib_mail --json send ...`) and apply to every
 subcommand.
 
-| Option                       | Description                                                                       |
-|------------------------------|-----------------------------------------------------------------------------------|
-| `--traceback/--no-traceback` | Show the full Python traceback on an error (default: one summary line on stderr). |
-| `--json`, `-j`               | Print one JSON envelope on stdout (see [Machine-readable output](#cli-json)).     |
-| `--json-bare`                | Print the JSON payload (or the error object) alone, without the envelope.         |
-| `--version`                  | Print the version.                                                                |
+| Option                       | Description                                                                                  |
+|------------------------------|----------------------------------------------------------------------------------------------|
+| `--traceback/--no-traceback` | Show the full Python traceback on an error (default: one summary line on stderr).            |
+| `--json`, `-j`               | Print one JSON envelope on stdout (see [Machine-readable output](#machine-readable-output)). |
+| `--json-bare`                | Print the JSON payload (or the error object) alone, without the envelope.                    |
+| `--version`                  | Print the version.                                                                           |
 
-#### `send` Command Options
+### `send` Command Options
 
 **Core Options:**
 
@@ -98,7 +98,7 @@ subcommand.
 `python -m btx_lib_mail` delegates to the same entry point, so the examples
 above apply verbatim.
 
-### Where `send` settings come from {#cli-settings-sources}
+## Where `send` settings come from
 
 For each setting, the first of these that sets it wins:
 
@@ -109,8 +109,18 @@ For each setting, the first of these that sets it wins:
 
 An empty value in the environment or the file counts as unset. The env file holds
 `KEY=value` lines; blank lines, `#` comments and lines without `=` are skipped, a value
-loses surrounding whitespace and one layer of quotes, the first occurrence of a key wins,
-and the file must be UTF-8 and at most 64 KiB.
+loses surrounding whitespace and ONE matching pair of quotes (`"x"` or `'x'`; a lone quote
+character stays), the first occurrence of a key wins, and the file must be UTF-8 and at most
+64 KiB. A shell-style `export KEY=value` line is not recognised (its key reads as
+`export KEY`). Booleans accept `1`, `true`, `yes`, `on` and `0`, `false`, `no`, `off` in any
+case; a value that cannot be parsed (`BTX_MAIL_SMTP_TIMEOUT=abc`, `BTX_MAIL_SMTP_USE_STARTTLS=maybe`)
+is a usage error, exit code `2`.
+
+Authentication needs both a username and a password; with only one of them the mail is
+sent without authenticating. `--password-file` reads the first line of a file of at most
+4096 characters; an empty first line counts as no password, so `BTX_MAIL_SMTP_PASSWORD`
+applies. `--attachment-allowed-dir` and `--attachment-blocked-dir` split each value on
+commas, like `--host` and `--recipient`.
 
 No file is read unless it is named. A `.env` in the working directory is ignored: a
 cloned repository or a shared folder could otherwise redirect `BTX_MAIL_SMTP_HOSTS` to a
@@ -121,7 +131,7 @@ the directory the command ran in.
 When credentials are sent with STARTTLS off, the library logs a warning naming the host;
 the delivery is not refused, since an internal relay may offer no TLS.
 
-### Machine-readable output {#cli-json}
+## Machine-readable output
 
 With `--json`, every subcommand prints exactly one JSON document on stdout:
 
@@ -129,18 +139,23 @@ With `--json`, every subcommand prints exactly one JSON document on stdout:
 {"ok": true, "command": "send", "data": {"sender": "a@example.com", "recipients": ["b@example.com"], "hosts": ["relay.example.com"]}, "skipped": []}
 ```
 
-On failure, the document names the error type and its message (never a traceback), and
-the exit code is the one the same failure has without `--json`:
+On failure, the document names the error type and its message (never a traceback, even
+with `--traceback`), and the exit code is the one the same failure has without `--json`.
+`command` is `null` when no subcommand was recognised. A `DeliveryError` also carries
+`failed_recipients` and `hosts`:
 
 ```json
 {"ok": false, "command": "validate-email", "error": {"type": "InvalidInputError", "message": "invalid email address: 'nope'"}, "skipped": []}
+{"ok": false, "command": "send", "error": {"type": "DeliveryError", "message": "...", "failed_recipients": ["b@example.com"], "hosts": ["relay.example.com"]}, "skipped": []}
 ```
 
 `skipped` lists what `send` left out in warn mode (`--attachment-warn`, or
-`raise_on_invalid_recipient=False` on `conf`): `{"kind": "attachment" | "recipient",
-"value": ..., "reason": ...}`, so a partial delivery is distinguishable from a complete
-one. `--json-bare` prints `data` (or the `error` object) alone. Warnings and notes always
-go to stderr, never into the JSON on stdout.
+`raise_on_missing_attachments=False` / `raise_on_invalid_recipient=False` on `conf`), on
+success and on failure alike: `{"kind": "attachment" | "recipient", "value": ..., "reason":
+...}`, so a partial delivery is distinguishable from a complete one. `--json-bare` prints
+`data` (or the `error` object) alone. Warnings and notes always go to stderr, never into the
+JSON on stdout. Only `--json`, `-j` or `--json-bare` given BEFORE the subcommand switch JSON
+on; the same text as an option value (`--body --json`) does not.
 
 | Command              | `data`                                                                            |
 |----------------------|-----------------------------------------------------------------------------------|
@@ -150,7 +165,7 @@ go to stderr, never into the JSON on stdout.
 | `validate-email`     | `address`, `valid`                                                                |
 | `validate-smtp-host` | `host`, `valid`                                                                   |
 
-### Exit codes {#cli-exit-codes}
+## Exit codes
 
 The same in every output mode and for every entry point:
 
@@ -162,7 +177,7 @@ The same in every output mode and for every entry point:
 | `22` (Windows `87`) | A value was refused (`InvalidInputError`): sender, recipient, host, subject, timeout, size, ...                                                     |
 | `130`               | Interrupted (Ctrl+C).                                                                                                                               |
 
-### Invalid `--host` values
+## Invalid `--host` values
 
 `--host` (and `BTX_MAIL_SMTP_HOSTS`) is validated before any delivery is attempted. A
 host carrying `@` or `/` (for example `smtp://user:pw@relay`, which would put a
@@ -187,7 +202,7 @@ host; a value carrying `@` never reaches them, because the check above refuses i
 a.example.com,b.example.com` is two hosts, because the CLI splits each value on commas
 first; `validate-smtp-host` checks one host and refuses a comma.
 
-### Invalid settings
+## Invalid settings
 
 `send` assigns every resolved option and environment value onto one `ConfMail`, so the
 model's own checks run before any delivery. A value it refuses is reported as an
@@ -200,5 +215,5 @@ $ BTX_MAIL_ATTACHMENT_MAX_SIZE=0 btx-lib-mail send --host relay.example.com \
 InvalidInputError: attachment_max_size_bytes must be positive, got 0
 ```
 
-A value that cannot be parsed at all (`BTX_MAIL_SMTP_TIMEOUT=abc`) is still reported as
-`BadParameter`.
+A value that cannot be parsed at all (`BTX_MAIL_SMTP_TIMEOUT=abc`) is a usage error instead:
+`Error: Invalid value: Unrecognised float value for BTX_MAIL_SMTP_TIMEOUT: 'abc'`, exit code `2`.

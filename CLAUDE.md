@@ -9,60 +9,74 @@ authentication, multi-host failover, and comprehensive attachment security.
 ## Quick Commands
 
 ```bash
-make test          # ruff lint + pyright + bandit + pytest (coverage gated at >=85%, see below)
+make test          # ruff format + lint, pyright, bandit, import-linter, pip-audit, pytest (coverage gated)
 make clean         # remove build artifacts
+make help          # every target, read from the generated Makefile
 ```
 
 ## Project Layout
 
 ```
 src/btx_lib_mail/
-  __init__.py          # public re-exports
-  __init__conf__.py    # static metadata (version, author, shell_command)
-  __main__.py          # python -m entry point
+  __init__.py          # public re-exports (__all__)
+  __init__conf__.py    # static metadata (version, author, shell_command) and print_info()
+  __main__.py          # python -m entry point: runs cli.main()
   behaviors.py         # scaffold helpers (greeting, noop, intentional failure)
-  cli.py               # rich-click CLI adapter (send, validate-email, validate-smtp-host, etc.)
-  lib_mail.py          # core SMTP delivery logic, validators, configuration, security
-  errors.py            # BtxMailError and its subclasses (each keeps its old builtin base)
+  cli.py               # rich-click CLI adapter (send, validate-email, validate-smtp-host, info, hello, fail)
+  lib_mail.py          # send() and the public re-exports of the private modules below
+  _config.py           # ConfMail and the global conf
+  _attachments.py      # attachment security: blocklists, path checks, open-once
+  _validation.py       # email and host syntax, EHLO name, durations, recipient and host lists
+  _compose.py          # message assembly: shared body encoded once, per-recipient header lines
+  _transport.py        # Transport protocol, DeliveryOptions, SmtplibTransport (BDAT/DATA), deadline
+  _common.py           # logger and printable()
+  errors.py            # BtxMailError and its subclasses
   secret_safety.py     # SecretSafeModel, redact_validation_error: credential-safe pydantic errors
   typed_click.py       # typed Protocol facade over rich-click's partially-typed decorators
 
 tests/
-  conftest.py          # shared fixtures (cli_runner, traceback isolation)
-  test_behaviors.py    # behavior helper tests
-  test_cli.py          # CLI group, traceback handling, simple commands
-  test_cli_send.py     # send command: settings sources, --env-file, --password-file, --json, real-server security
-  test_attachment_integrity.py # open-once/encode-once attachments, subject and timeout refusals
-  test_deadline.py     # delivery deadline against a dripping server
-  smtp_test_server.py  # shared real aiosmtpd server helpers (DATA and BDAT)
-  test_errors.py       # BtxMailError hierarchy at every raise site
-  test_lib_mail.py     # core mail logic + validator + security tests
-  test_metadata.py     # metadata constant tests
-  test_module_entry.py # python -m entry tests
-  test_secret_safety.py # SecretSafeModel / redact_validation_error tests
-  test_streaming.py    # wire tests (real aiosmtpd): DATA/BDAT, dot-stuffing, STARTTLS+AUTH, EHLO name, memory bound
+  conftest.py                  # shared fixtures (cli_runner, traceback isolation, data_server)
+  smtp_test_server.py          # real in-process aiosmtpd server helpers (DATA and BDAT)
+  test_attachment_integrity.py # open once, encode once, swaps, growth, closed handles, subject/timeout
+  test_behaviors.py            # behavior helper tests
+  test_cli.py                  # CLI group, traceback handling, simple commands
+  test_cli_send.py             # send command: settings sources, --env-file, --password-file, --json, real server
+  test_deadline.py             # delivery deadline against a dripping server
+  test_errors.py               # BtxMailError hierarchy at every raise site
+  test_lib_mail.py             # configuration, validators, attachment rules, orchestration
+  test_metadata.py             # metadata constant tests
+  test_module_entry.py         # python -m entry tests
+  test_secret_safety.py        # SecretSafeModel / redact_validation_error tests
+  test_streaming.py            # wire tests (real aiosmtpd): DATA/BDAT, dot-stuffing, STARTTLS+AUTH, EHLO name
+  test_transfer_memory.py      # tracemalloc bound while streaming (sink server, DATA and BDAT)
 ```
 
 ## Key Architecture
 
-- **Config**: `ConfMail` (Pydantic model) holds SMTP and security settings; global `conf` instance;
-  an unknown key is refused (`extra="forbid"`), never dropped
-- **Delivery**: `send()` -> `_prepare_*` helpers (each attachment checked, then opened ONCE) -> `_compose_body` (shared
-  body + attachments encoded once per call) -> per recipient `_message_for` (its header lines + a copy of the body) ->
-  `_deliver_to_any_host` (failover across hosts) -> injected `Transport` (`SmtplibTransport` streams DATA/BDAT, one
-  connection per recipient)
+- **Config**: `ConfMail` (Pydantic model, `_config.py`) holds SMTP and security settings; global `conf` instance;
+  an unknown key is refused (`extra="forbid"`); every refusal is a `ConfigurationError`
+- **Delivery**: `send()` -> `prepare_recipients` -> `prepare_attachments` (each path checked, then the file opened
+  ONCE) -> `prepare_hosts` -> `check_subject` / `envelope_header_lines` (all refusals before the first delivery) ->
+  `compose_body_once` (shared body + attachments encoded once per call) -> per recipient `message_for` (its header
+  lines + the shared body, read in place) -> `_deliver_to_any_host` (rewinds, failover across hosts) -> injected
+  `Transport` (`SmtplibTransport` streams DATA/BDAT, one connection per recipient)
 - **EHLO name**: `ConfMail.smtp_local_hostname` / `send(local_hostname=)` / `--local-hostname` /
   `BTX_MAIL_SMTP_LOCAL_HOSTNAME`; unset, `_default_local_hostname()` computes smtplib's default once per process
 - **Validation**: `validate_email_address()` and `validate_smtp_host()` are public;
   `validate_smtp_host()` refuses a host carrying `@` or `/`, or an interior whitespace or
   control character, without echoing the value, and a malformed port, bracket, host name
   or a comma (two hosts in one string); `ConfMail.smtphosts` runs it on every non-blank entry
-- **Security**: `AttachmentSecurityOptions` + `_validate_attachment_security()` orchestrate checks
-- **CLI**: `cli.py` uses rich-click groups; `lib_cli_exit_tools` handles exit codes (`docs/cli.md#cli-exit-codes`).
+- **Security**: `AttachmentSecurityOptions` + `_validate_attachment_security()` (path rules) + `_open_attachment()`
+  (same file, regular, size) in `_attachments.py`; extension sets are normalised wherever they are given
+- **Errors**: every on-purpose exception is a `BtxMailError`; each concrete class also subclasses the builtin a caller
+  would catch (`InvalidInputError` ValueError, `ConfigurationError` ValidationError, `AttachmentNotFoundError`
+  FileNotFoundError, `DeliveryError` RuntimeError with `failed_recipients`/`hosts`)
+- **CLI**: `cli.py` uses rich-click groups; `lib_cli_exit_tools` handles exit codes (`docs/cli.md`, "Exit codes").
   `send` builds one `ConfMail` (a copy of `conf`, each resolved option assigned with validation) from options >
   environment > `--env-file` (never an implicit `./.env`) and calls `send(config=)`. `ctx.obj` is a typed
   `CliContext` (output mode, traceback, and a `transport` seam for embedding/tests). `--json`/`--json-bare` on the
-  group; failures become JSON in `main()`'s exception handler. `python -m btx_lib_mail` runs `cli.main()` too
+  group (read from the tokens before the subcommand); failures become JSON in `main()`'s exception handler.
+  `python -m btx_lib_mail` runs `cli.main()` too
 - **Deadline**: `ConfMail.smtp_delivery_deadline` / `send(delivery_deadline=)` / `--delivery-deadline`; a watchdog
   thread shuts the socket down when one SMTP session overruns (`_session_deadline`)
 
@@ -71,23 +85,24 @@ tests/
 - Tests inject a `Transport` double through `send(transport=)` (CLI tests through
   `invoke(..., obj=CliContext(transport=...))`); wire tests use a real in-process `aiosmtpd`
   server (`tests/smtp_test_server.py`, `data_server` fixture in conftest), never a socket-level
-  monkeypatch, and never a patch of the package's own functions
+  monkeypatch. The package's own `send` is never patched; the remaining own-code patches are
+  the `lib_mail.DEFAULT_TRANSPORT` seam and the traceback/entry-point plumbing in `test_cli.py`
 - `_reset_conf_mail` autouse fixture restores global config between tests
 - Markers: `os_agnostic`, `os_windows`, `os_macos`, `os_posix`, `os_linux`, `local_only`
   (real SMTP via `TEST_SMTP_*` env vars)
 - Doctests run via `--doctest-modules` in pytest config
-- Coverage must be ≥85% (`fail_under = 85` in `pyproject.toml`); read the actual figure
-  from `make test`'s coverage summary or `coverage.xml` rather than a number restated
-  here
+- Coverage must be at least 85% (`fail_under = 85` in `pyproject.toml`); read the actual figure
+  from `make test`'s coverage summary or `coverage.xml` rather than a number restated here
 
 ## Style & Tooling
 
-- Python ≥3.10; `from __future__ import annotations` in every module
+- Python 3.10+; `from __future__ import annotations` in every module
 - `ruff` for linting/formatting (line-length 160)
 - `pyright` strict mode
 - `bandit` security scanning
-- `import-linter` enforces one layers contract: `cli` above `lib_mail` above `secret_safety` and `errors`
-  (independent of each other) above `behaviors` (a module may import only from layers below it)
+- `import-linter` enforces one layers contract (a module imports only from layers below it; modules in one layer
+  are independent): `cli` > `lib_mail` > `_compose` > `_config | _transport` > `_attachments | _validation` >
+  `_common | secret_safety | errors` > `behaviors`
 
 ## Public API
 
@@ -96,8 +111,8 @@ from btx_lib_mail import (
     # Core
     ConfMail, conf, send, logger,
     validate_email_address, validate_smtp_host,
-    # Scaffold helpers (behaviors.py)
-    CANONICAL_GREETING, emit_greeting, noop_main, print_info, raise_intentional_failure,
+    # Scaffold helpers (behaviors.py) and metadata (__init__conf__.py)
+    CANONICAL_GREETING, emit_greeting, noop_main, raise_intentional_failure, print_info,
     # Delivery seam
     DeliveryOptions, Transport,
     # Errors (every one is a BtxMailError)
@@ -118,6 +133,8 @@ from btx_lib_mail import (
 )
 ```
 
+`SmtplibTransport` is importable from `btx_lib_mail.lib_mail`.
+
 ## CLI Commands
 
 ```
@@ -134,12 +151,13 @@ btx-lib-mail fail               # trigger intentional failure
 
 Attachments are validated against multiple security checks:
 
-1. **Path Traversal**  -  Paths with `..` are rejected
-2. **Symlinks**  -  Rejected by default (`attachment_allow_symlinks=False`)
-3. **Sensitive Patterns**  -  `/.ssh/`, `/id_rsa`, `/.env`, etc. always blocked
+1. **Path Traversal**  -  a `..` path component is rejected
+2. **Symlinks**  -  a symlink as the last component is rejected by default (`attachment_allow_symlinks=False`)
+3. **Sensitive Patterns**  -  `/.ssh/`, `/id_rsa`, `/.env`, `/.netrc`, etc. always blocked, case-insensitively
 4. **Directory Restrictions**  -  System directories blocked by default
-5. **Extension Filtering**  -  Dangerous extensions (`.sh`, `.exe`, etc.) blocked
-6. **Size Limits**  -  Default 25 MiB (`attachment_max_size_bytes`)
+5. **Extension Filtering**  -  POSIX and Windows dangerous extensions (`.sh`, `.exe`, etc.) blocked on every platform
+6. **Size Limits**  -  Default 25 MiB (`attachment_max_size_bytes`), also enforced while reading
+7. **One open file**  -  each file opened once after its checks; a swapped path is refused as `CHANGED`
 
 ### Configuration Fields (ConfMail)
 
@@ -182,8 +200,7 @@ Attachments are validated against multiple security checks:
 
 ## Version
 
-The version lives in `pyproject.toml` and `__init__conf__.py`; read it there. Restating a number
-here only rots (this line said 1.4.0 while the package was at 1.5.2).
+The version lives in `pyproject.toml` and `__init__conf__.py`; read it there rather than a number restated here.
 
 ## Attachment Streaming
 
@@ -192,19 +209,18 @@ streams SMTP attachments or implements the client side of RFC 3030 BDAT/CHUNKING
 (stdlib `smtplib` and `aiosmtpd` both buffer and lack BDAT), so it is hand-rolled
 on stdlib:
 
-- `_compose_body` serialises the recipient-independent body into a `SpooledTemporaryFile`
-  (in memory below `_SPOOL_MAX_SIZE`, on disk above it) using `EmailMessage` +
-  `email.policy.SMTP` (CRLF), once per `send()`, streaming each attachment's base64 from
-  its already-open file in `57 * 1024`-byte reads so a large attachment is never held
-  whole; `_message_for` prepends a recipient's header lines and copies that spool in
-  `_STREAM_CHUNK_SIZE` pieces.
-- `SmtplibTransport` streams that spool to the socket in `_STREAM_CHUNK_SIZE`
-  chunks: RFC 3030 `BDAT` when the server advertises `CHUNKING`, otherwise the
-  `DATA` phase with `_DotStuffer` incremental dot-stuffing. Peak transfer memory
-  is ~one chunk.
+- `compose_body_once` / `_compose_body` (`_compose.py`) serialise the recipient-independent body into a
+  `SpooledTemporaryFile` (in memory below 1 MiB, on disk above it) using `EmailMessage` + `email.policy.SMTP`
+  (CRLF), once per `send()`, streaming each attachment's base64 from its already-open file in `57 * 1024`-byte
+  reads so a large attachment is never held whole; `message_for` joins a recipient's header lines with that spool,
+  read in place, so scratch disk is the encoded body (about 1.37x the attachment) once.
+- `SmtplibTransport` streams the message to the socket in `STREAM_CHUNK_SIZE` (64 KiB) chunks: RFC 3030 `BDAT`
+  when the server advertises `CHUNKING`, otherwise the `DATA` phase with `_DotStuffer` incremental dot-stuffing.
+  Peak transfer memory is about one chunk.
 - Delivery goes through the `Transport` protocol (injected via `send(transport=)`);
   tests use a real `FakeTransport` (orchestration) and a real in-process `aiosmtpd`
   server (wire behaviour), never a socket-level monkeypatch.
 
-Wire behaviour is proven end to end in `tests/test_streaming.py` (DATA + BDAT
-round-trips, dot-stuffing edge cases, STARTTLS+AUTH, and a `tracemalloc` bound).
+Wire behaviour is proven end to end in `tests/test_streaming.py` (DATA + BDAT round-trips, dot-stuffing edge cases,
+STARTTLS+AUTH), and the memory bounds in `tests/test_streaming.py` (composing) and `tests/test_transfer_memory.py`
+(streaming).

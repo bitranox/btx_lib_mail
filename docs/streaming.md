@@ -13,14 +13,14 @@ either exhausts RAM or forces an arbitrary size cap.
 
 ## How assembly works
 
-`_compose_body` writes everything below the per-recipient headers into a
-`tempfile.SpooledTemporaryFile` (in memory below `_SPOOL_MAX_SIZE`, on disk above it) using
+The library writes everything below the per-recipient headers into one
+`tempfile.SpooledTemporaryFile` (in memory below 1 MiB, on disk above it) using
 `email.message.EmailMessage` and `email.policy.SMTP`, so the serialized bytes already use
-RFC 5321 CRLF line endings. It runs once per `send()` call: the body and the attachments are
-the same for every recipient. Each recipient's message is then its own header lines
-(`Subject`, `From`, `To`, `Date`) followed by a copy of that spool, streamed in
-`_STREAM_CHUNK_SIZE` pieces, so the attachments are read and encoded once however many
-recipients there are.
+RFC 5321 CRLF line endings. This happens once per `send()` call (again only in warn mode,
+when an attachment that grew past the size limit is left out): the body and the attachments
+are the same for every recipient. Each recipient's message is then its own header lines
+(`Subject`, `From`, `To`, `Date`) followed by that spool, read in place rather than copied,
+so the attachments are read and encoded once however many recipients there are.
 
 Each attachment is read in chunks from the file opened when it was checked and base64-encoded incrementally (57 decoded
 bytes per 76-character line, read in a large multiple so whole lines are emitted per
@@ -30,7 +30,7 @@ written by hand so the attachment payloads can be streamed into it.
 
 ## How delivery works
 
-Delivery streams the spooled message to the socket in `_STREAM_CHUNK_SIZE` chunks. The
+Delivery streams the message to the socket in 64 KiB chunks. The
 transport picks the wire format per host, from the server's EHLO response:
 
 - **BDAT (RFC 3030 CHUNKING).** When the server advertises `CHUNKING`, the message is sent
@@ -45,21 +45,26 @@ the TLS upgrade so the `CHUNKING` decision reflects the encrypted session.
 
 ## Memory and disk
 
-Peak heap memory during a send is approximately one chunk plus the spool's in-memory
-buffer (`_SPOOL_MAX_SIZE`, 1 MiB by default), independent of attachment size. A 16 MiB
-attachment composes at under 3 MiB of peak heap; a 100 GB attachment composes at the same
-peak.
+Peak heap memory is about one read chunk plus the spool's 1 MiB in-memory buffer while
+composing, and about one 64 KiB chunk while streaming, independent of attachment size. The
+test suite pins both: a 16 MiB attachment composes under 3 MiB of peak heap, and an 8 MiB
+message streams through DATA and through BDAT under 2 MiB. Nothing in either path grows
+with the attachment, so a larger file uses the same peak.
 
-The trade is disk, not memory: a message larger than `_SPOOL_MAX_SIZE` spills to a
-temporary file, so a very large attachment needs temporary disk space of roughly its
-base64-expanded size (about 1.33x). If you are memory-constrained this is exactly the
-trade you want; if you are also disk-constrained, size your attachments accordingly.
+Attachments are capped at 25 MiB by default (`attachment_max_size_bytes`, or
+`--attachment-max-size` on the CLI); raise the cap to send anything larger.
+
+The trade is disk, not memory: a message larger than 1 MiB spills to a temporary file, so a
+very large attachment needs temporary disk space of its encoded size, about 1.37x the file
+(base64 in 76-character lines with CRLF), once per `send()` however many recipients there
+are. If you are memory-constrained this is exactly the trade you want; if you are also
+disk-constrained, size your attachments accordingly.
 
 ## Failover
 
 Each recipient's message is built once from the shared body and reused across every host
-in `smtphosts`. A failed host is logged and the next is tried without re-rendering the
-message.
+in `smtphosts`: it is rewound to its first byte before every host attempt. A failed host is
+logged and the next is tried without re-rendering the message.
 
 Each recipient gets its own SMTP connection, so any fixed per-connection cost is paid once
 per recipient. The client's `EHLO` name is one such cost when it is not configured: it is
@@ -74,13 +79,15 @@ Delivery goes through a `Transport` protocol. `send()` uses `SmtplibTransport` b
 but accepts a `transport=` override:
 
 ```python
-from btx_lib_mail import send
-from btx_lib_mail.lib_mail import Transport  # protocol for a custom adapter
+from typing import IO
+
+from btx_lib_mail import DeliveryOptions, Transport, send  # Transport: the protocol below
 
 
 class MyTransport:
-    def deliver(self, *, host, sender, recipient, message, delivery):
-        # `message` is a rewindable binary stream (the composed spool)
+    def deliver(self, *, host: str, sender: str, recipient: str, message: IO[bytes], delivery: DeliveryOptions) -> None:
+        # `message` is a read-only, seekable binary stream at its first byte; send()
+        # rewinds it before every host attempt.
         ...
 
 
@@ -106,5 +113,6 @@ CliRunner().invoke(
 
 This is the seam the test suite uses: orchestration tests inject an in-memory transport,
 while wire behaviour is verified end to end against a real in-process SMTP server
-(`tests/test_streaming.py`), covering DATA, BDAT, dot-stuffing edge cases, STARTTLS with
-authentication, and a `tracemalloc` memory bound.
+(`tests/test_streaming.py`, `tests/test_transfer_memory.py`, `tests/test_deadline.py`),
+covering DATA, BDAT, dot-stuffing edge cases, STARTTLS with authentication, `tracemalloc`
+memory bounds for composing and for streaming, and the delivery deadline.
