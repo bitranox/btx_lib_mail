@@ -46,6 +46,7 @@ tests/
   test_lib_mail.py             # configuration, validators, attachment rules, orchestration
   test_metadata.py             # metadata constant tests
   test_module_entry.py         # python -m entry tests
+  test_packaging.py            # builds the sdist and refuses anything outside its include list
   test_secret_safety.py        # SecretSafeModel / redact_validation_error tests
   test_streaming.py            # wire tests (real aiosmtpd): DATA/BDAT, dot-stuffing, STARTTLS+AUTH, EHLO name
   test_transfer_memory.py      # tracemalloc bound while streaming (sink server, DATA and BDAT)

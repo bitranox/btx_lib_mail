@@ -91,6 +91,10 @@
 - `smtp_timeout` (and `send(timeout=)`) refuses NaN and infinity (`smtp_timeout must be a
   finite number of seconds, got nan`) instead of failing later as an unrelated delivery
   error. A non-positive value keeps its `must be positive` message.
+- The source distribution ships only the package, its tests, its docs, `README.md`,
+  `LICENSE`, `CHANGELOG.md` and `pyproject.toml` (an include list). Earlier sdists also
+  carried repository working files such as `handover.md`, `OPEN-WORK.md` and
+  `reset_git_history.sh`.
 
 ## [3.1.0] 2026-10-02 11:58:41
 

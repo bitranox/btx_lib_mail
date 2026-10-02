@@ -1,4 +1,4 @@
-# Handover - btx_lib_mail, 2026-10-02 19:45 (review sweep 2 reviewed, nothing presented yet)
+# STALE - read 2026-10-02, work continued
 
 Read `OPEN-WORK.md` first. Open: rank 20, 21, 22 and 30 (USER), and rank 50 (FOUND).
 
