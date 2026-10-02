@@ -12,8 +12,8 @@ Contents:
     - `InvalidInputError` - a refused argument value (also a `ValueError`).
     - `ConfigurationError` - a refused `ConfMail` setting (also a pydantic
       `ValidationError`, so also a `ValueError`).
-    - `AttachmentNotFoundError` - a required attachment is missing (also a
-      `FileNotFoundError`).
+    - `AttachmentNotFoundError` - a required attachment is missing or cannot
+      be opened (also a `FileNotFoundError`).
     - `DeliveryError` - every host failed for at least one recipient (also a
       `RuntimeError`).
 
@@ -23,7 +23,14 @@ attachment checks and importable from `btx_lib_mail`.
 
 from __future__ import annotations
 
+import re
+from typing import Final
+
 from pydantic import ValidationError
+
+# pydantic ends each error of its report with a link pinned to the installed pydantic
+# version; it describes the library, not the setting the caller got wrong.
+_PYDANTIC_URL_LINE: Final[re.Pattern[str]] = re.compile(r"\n[ \t]*For further information visit https://errors\.pydantic\.dev/\S*")
 
 
 class BtxMailError(Exception):
@@ -55,12 +62,21 @@ class ConfigurationError(BtxMailError, ValidationError):
     Raised at construction, in `model_validate`/`model_validate_json`, or on
     assignment. It is a pydantic `ValidationError` (so also a `ValueError`):
     `errors()`, title and redaction are pydantic's, and the class adds the
-    common base.
+    common base. Its text is pydantic's report without the per-error link to
+    the pydantic documentation, which names the installed pydantic version.
     """
+
+    def __str__(self) -> str:
+        """Return pydantic's report without its documentation links."""
+        return _PYDANTIC_URL_LINE.sub("", super().__str__())
+
+    def __repr__(self) -> str:
+        """Return pydantic's repr without its documentation links."""
+        return _PYDANTIC_URL_LINE.sub("", super().__repr__())
 
 
 class AttachmentNotFoundError(BtxMailError, FileNotFoundError):
-    """Signal that a required attachment does not exist or is not a regular file.
+    """Signal that a required attachment does not exist, is not a regular file, or cannot be opened.
 
     Also a `FileNotFoundError`.
     """

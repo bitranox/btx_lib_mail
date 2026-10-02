@@ -44,6 +44,11 @@
 
 ### Changed
 
+- `str()` and `repr()` of a `ConfigurationError` drop pydantic's per-error
+  `For further information visit https://errors.pydantic.dev/<version>/...` line, which named
+  the installed pydantic version and described pydantic rather than the refused setting. The
+  CLI already left it out; a library caller now gets the same text. `errors()` is pydantic's,
+  unchanged.
 - A subject longer than 4096 characters is refused with `InvalidInputError` before the first
   delivery (`mail_subject has N characters, more than the 4096 allowed`). Folding a subject
   costs more than linear time and ran once per recipient before anything was sent, so an

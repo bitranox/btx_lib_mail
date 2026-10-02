@@ -52,7 +52,8 @@ Common helpers:
   configuration (dicts, strings, iterables) into a typed instance.
 - A refused setting raises `ConfigurationError`, a pydantic `ValidationError` (so also a
   `ValueError`) that is also a `BtxMailError`, from construction, every `model_validate*`
-  method and assignment.
+  method and assignment. Its `str()` and `repr()` are pydantic's report without the
+  per-error `For further information visit https://errors.pydantic.dev/...` line.
 - A key that is not a `ConfMail` field is refused (`extra="forbid"`): construction and
   `model_validate` raise `ConfigurationError` with an `extra_forbidden` error naming the key,
   never its value. The `send()` keyword names are not field names, so

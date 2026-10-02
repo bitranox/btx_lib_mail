@@ -172,6 +172,18 @@ def test_a_refused_conf_mail_setting_is_a_configuration_error_and_a_validation_e
 
 
 @pytest.mark.os_agnostic
+@pytest.mark.parametrize("entry", [_construct, _validate, _validate_json, _validate_strings, _assign, _unknown_key])
+def test_a_configuration_error_names_the_setting_but_not_the_pydantic_version(entry: Any) -> None:
+    with pytest.raises(ConfigurationError) as caught:
+        entry()
+
+    for rendered in (str(caught.value), repr(caught.value)):
+        assert "validation error for ConfMail" in rendered, "positive control: pydantic's report is kept"
+        assert "errors.pydantic.dev" not in rendered
+        assert "For further information" not in rendered
+
+
+@pytest.mark.os_agnostic
 def test_a_configuration_error_keeps_the_password_hidden() -> None:
     with pytest.raises(ConfigurationError) as caught:
         ConfMail(smtp_password=1.5, smtp_timeout=-1)  # pyright: ignore[reportArgumentType]
