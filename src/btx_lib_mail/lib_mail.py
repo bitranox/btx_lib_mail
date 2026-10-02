@@ -46,6 +46,7 @@ from .secret_safety import SecretSafeModel
 logger = logging.getLogger("btx_lib_mail")
 
 EMAIL_PATTERN: Final[re.Pattern[str]] = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+"""Compiled regex used by :func:`validate_email_address`."""
 
 
 # ---------------------------------------------------------------------------
@@ -275,9 +276,6 @@ class AttachmentSecurityError(Exception):
         # .value keeps the message text stable across Python versions, where
         # f-string formatting of a `str, Enum` member is inconsistent.
         return f"Attachment security violation ({self.violation_type.value}): {self.reason} [path={_printable(str(self.path))}]"
-
-
-"""Compiled regex used by :func:`validate_email_address`."""
 
 
 @dataclass(frozen=True)
