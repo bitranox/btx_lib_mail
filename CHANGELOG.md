@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The `send` command builds one validated `ConfMail` (a copy of `conf` with each resolved
+  option assigned) and passes it to `send()` as `config=`, instead of passing each setting as a
+  separate keyword. `ConfMail`'s checks now run on CLI and environment input before any
+  delivery, and settings the CLI has no option for keep their `conf` value.
+- The `send` command names a refused EHLO name `smtp_local_hostname` (the field) rather than
+  `local_hostname` (the `send()` keyword): `ValueError: smtp_local_hostname must be non-empty
+  printable ASCII without spaces`, still exit code `22`.
+- When one `send` command has several faults, a refused setting (host, timeout, EHLO name,
+  attachment size) is now reported before a refused sender, recipient or attachment, because
+  settings are checked when they are read.
+
+### Fixed
+
+- `--attachment-max-size 0` (or `BTX_MAIL_ATTACHMENT_MAX_SIZE=0`, or a negative size) is
+  refused as `ValueError: attachment_max_size_bytes must be positive, got 0` (exit code `22`).
+  Before, the CLI passed it straight to `send()`, which refused every attachment as larger than
+  the limit.
+
 ## [3.0.1] 2026-10-02 00:26:45
 
 ### Fixed

@@ -12,6 +12,7 @@ import pytest
 
 from btx_lib_mail import __init__conf__
 from btx_lib_mail import cli as cli_mod
+from btx_lib_mail.lib_mail import ConfMail
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -22,6 +23,35 @@ if TYPE_CHECKING:
 def _call_cli_private(name: str, *args: Any, **kwargs: Any) -> Any:
     helper = getattr(cli_mod, name)
     return helper(*args, **kwargs)
+
+
+# Settings reach send() only through config=; any of these keywords means the
+# CLI is passing loose, unvalidated values again.
+_LOOSE_SETTING_KEYWORDS = frozenset(
+    {
+        "smtphosts",
+        "credentials",
+        "use_starttls",
+        "starttls_verify",
+        "timeout",
+        "local_hostname",
+        "attachment_allowed_extensions",
+        "attachment_blocked_extensions",
+        "attachment_allowed_directories",
+        "attachment_blocked_directories",
+        "attachment_max_size_bytes",
+        "attachment_allow_symlinks",
+        "attachment_raise_on_security_violation",
+    }
+)
+
+
+def _sent_config(calls: dict[str, Any]) -> ConfMail:
+    """Return the ConfMail the CLI handed to send(), after checking nothing travelled beside it."""
+    assert calls.keys().isdisjoint(_LOOSE_SETTING_KEYWORDS), sorted(calls.keys() & _LOOSE_SETTING_KEYWORDS)
+    config = calls["config"]
+    assert isinstance(config, ConfMail)
+    return config
 
 
 @dataclass(slots=True)
@@ -479,11 +509,12 @@ def test_send_mail_command_uses_env_defaults(monkeypatch: pytest.MonkeyPatch, cl
     assert result.exit_code == 0
     assert calls["mail_from"] == "first@example.com"
     assert calls["mail_recipients"] == ["first@example.com", "second@example.com"]
-    assert calls["smtphosts"] == ["smtp.example.com:2525"]
     assert calls["mail_body_html"] == ""
-    assert calls["credentials"] is None
-    assert calls["use_starttls"] is False
-    assert calls["timeout"] == 12.5
+    config = _sent_config(calls)
+    assert config.smtphosts == ["smtp.example.com:2525"]
+    assert config.resolved_credentials() is None
+    assert config.smtp_use_starttls is False
+    assert config.smtp_timeout == 12.5
 
 
 @pytest.mark.os_agnostic
@@ -534,13 +565,14 @@ def test_send_mail_command_honours_cli_overrides(
     assert result.exit_code == 0
     assert calls["mail_from"] == "sender@example.com"
     assert calls["mail_recipients"] == ["cli@example.com"]
-    assert calls["smtphosts"] == ["cli.smtp.example:587"]
     assert calls["mail_body_html"] == "<p>CLI</p>"
     assert calls["attachment_file_paths"] == [attachment]
-    assert calls["credentials"] == ("user", "pass")
-    assert calls["use_starttls"] is True
-    assert calls["starttls_verify"] is True
-    assert calls["timeout"] == 42.0
+    config = _sent_config(calls)
+    assert config.smtphosts == ["cli.smtp.example:587"]
+    assert config.resolved_credentials() == ("user", "pass")
+    assert config.smtp_use_starttls is True
+    assert config.smtp_starttls_verify is True
+    assert config.smtp_timeout == 42.0
 
 
 @pytest.mark.os_agnostic
@@ -572,7 +604,7 @@ def test_send_mail_command_can_disable_starttls_verification(
     )
 
     assert result.exit_code == 0
-    assert calls["starttls_verify"] is False
+    assert _sent_config(calls).smtp_starttls_verify is False
 
 
 @pytest.mark.os_agnostic
@@ -686,10 +718,11 @@ def test_send_command_passes_security_options_via_cli(monkeypatch: pytest.Monkey
     )
 
     assert result.exit_code == 0
-    assert calls["attachment_allowed_extensions"] == frozenset({".pdf", ".txt"})
-    assert calls["attachment_max_size_bytes"] == 50_000_000
-    assert calls["attachment_allow_symlinks"] is True
-    assert calls["attachment_raise_on_security_violation"] is False
+    config = _sent_config(calls)
+    assert config.attachment_allowed_extensions == frozenset({".pdf", ".txt"})
+    assert config.attachment_max_size_bytes == 50_000_000
+    assert config.attachment_allow_symlinks is True
+    assert config.attachment_raise_on_security_violation is False
 
 
 @pytest.mark.os_agnostic
@@ -720,9 +753,135 @@ def test_send_command_passes_security_options_via_env(monkeypatch: pytest.Monkey
     )
 
     assert result.exit_code == 0
-    assert calls["attachment_allowed_extensions"] == frozenset({".docx", ".xlsx"})
-    assert calls["attachment_max_size_bytes"] == 10_000_000
-    assert calls["attachment_allow_symlinks"] is True
+    config = _sent_config(calls)
+    assert config.attachment_allowed_extensions == frozenset({".docx", ".xlsx"})
+    assert config.attachment_max_size_bytes == 10_000_000
+    assert config.attachment_allow_symlinks is True
+
+
+@pytest.mark.os_agnostic
+def test_send_command_refuses_a_non_positive_attachment_max_size_from_env(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner) -> None:
+    monkeypatch.setenv("BTX_MAIL_SMTP_HOSTS", "smtp.example.com")
+    monkeypatch.setenv("BTX_MAIL_RECIPIENTS", "test@example.com")
+    monkeypatch.setenv("BTX_MAIL_ATTACHMENT_MAX_SIZE", "0")
+    calls: dict[str, Any] = {}
+
+    def fake_send(**kwargs: Any) -> bool:
+        calls.update(kwargs)
+        return True
+
+    monkeypatch.setattr(cli_mod, "send", fake_send)
+
+    result = cli_runner.invoke(cli_mod.cli, ["send", "--subject", "Test", "--body", "Test body"])
+
+    # A plain ValueError: lib_cli_exit_tools maps it to exit code 22, like every other refused value.
+    assert type(result.exception) is ValueError
+    assert str(result.exception) == "attachment_max_size_bytes must be positive, got 0"
+    assert calls == {}
+
+
+@pytest.mark.os_agnostic
+def test_send_command_refuses_a_non_positive_timeout_with_the_message_send_gave(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner) -> None:
+    calls: dict[str, Any] = {}
+
+    def fake_send(**kwargs: Any) -> bool:
+        calls.update(kwargs)
+        return True
+
+    monkeypatch.setattr(cli_mod, "send", fake_send)
+
+    args = ["send", "--host", "smtp.example.com", "--recipient", "test@example.com", "--subject", "S", "--body", "B", "--timeout", "-1"]
+    result = cli_runner.invoke(cli_mod.cli, args)
+
+    assert type(result.exception) is ValueError
+    assert str(result.exception) == "smtp_timeout must be positive, got -1.0"
+    assert calls == {}
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    ("host", "reason"),
+    [
+        ("smtp.example.com:99999", 'port must be 1-65535 in "smtp.example.com:99999"'),
+        (
+            "user:s3cr3t-pw@smtp.example.com",
+            "SMTP host must be host[:port]; it must not contain '@' or '/' (pass credentials as smtp_username and smtp_password)",
+        ),
+    ],
+)
+def test_send_command_refuses_a_host_with_the_message_send_gave(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner, host: str, reason: str) -> None:
+    calls: dict[str, Any] = {}
+
+    def fake_send(**kwargs: Any) -> bool:
+        calls.update(kwargs)
+        return True
+
+    monkeypatch.setattr(cli_mod, "send", fake_send)
+
+    args = ["send", "--host", host, "--recipient", "test@example.com", "--subject", "S", "--body", "B"]
+    result = cli_runner.invoke(cli_mod.cli, args)
+
+    assert type(result.exception) is ValueError
+    assert str(result.exception) == reason
+    assert "s3cr3t-pw" not in result.output
+    assert calls == {}
+
+
+@pytest.mark.os_agnostic
+def test_send_command_accepts_a_quoted_host_as_send_did(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner) -> None:
+    calls: dict[str, Any] = {}
+
+    def fake_send(**kwargs: Any) -> bool:
+        calls.update(kwargs)
+        return True
+
+    monkeypatch.setattr(cli_mod, "send", fake_send)
+
+    result = cli_runner.invoke(cli_mod.cli, ["send", "--host", '"smtp.example.com:587"', "--recipient", "test@example.com", "--subject", "S", "--body", "B"])
+
+    assert result.exit_code == 0
+    assert _sent_config(calls).smtphosts == ["smtp.example.com:587"]
+
+
+@pytest.mark.os_agnostic
+def test_send_command_leaves_the_global_conf_untouched(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner) -> None:
+    before = cli_mod.conf.model_dump()
+    calls: dict[str, Any] = {}
+
+    def fake_send(**kwargs: Any) -> bool:
+        calls.update(kwargs)
+        return True
+
+    monkeypatch.setattr(cli_mod, "send", fake_send)
+
+    result = cli_runner.invoke(
+        cli_mod.cli,
+        ["send", "--host", "smtp.example.com", "--recipient", "test@example.com", "--subject", "S", "--body", "B", "--timeout", "42", "--no-starttls"],
+    )
+
+    assert result.exit_code == 0
+    assert _sent_config(calls) is not cli_mod.conf
+    assert cli_mod.conf.model_dump() == before
+
+
+@pytest.mark.os_agnostic
+def test_send_command_keeps_the_conf_settings_it_has_no_option_for(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner) -> None:
+    monkeypatch.setattr(cli_mod.conf, "raise_on_missing_attachments", False)
+    monkeypatch.setattr(cli_mod.conf, "raise_on_invalid_recipient", False)
+    calls: dict[str, Any] = {}
+
+    def fake_send(**kwargs: Any) -> bool:
+        calls.update(kwargs)
+        return True
+
+    monkeypatch.setattr(cli_mod, "send", fake_send)
+
+    result = cli_runner.invoke(cli_mod.cli, ["send", "--host", "smtp.example.com", "--recipient", "test@example.com", "--subject", "S", "--body", "B"])
+
+    assert result.exit_code == 0
+    config = _sent_config(calls)
+    assert config.raise_on_missing_attachments is False
+    assert config.raise_on_invalid_recipient is False
 
 
 @pytest.mark.os_agnostic

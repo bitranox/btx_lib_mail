@@ -103,3 +103,19 @@ a port with no host name (`:25`) are refused with exit code `22`. These messages
 host; a value carrying `@` never reaches them, because the check above refuses it first. `--host
 a.example.com,b.example.com` is two hosts, because the CLI splits each value on commas
 first; `validate-smtp-host` checks one host and refuses a comma.
+
+### Invalid settings
+
+`send` assigns every resolved option and environment value onto one `ConfMail`, so the
+model's own checks run before any delivery. A value it refuses is reported as a `ValueError`
+carrying the check's message (exit code `22`), for example a timeout or attachment size that
+is not positive:
+
+```console
+$ BTX_MAIL_ATTACHMENT_MAX_SIZE=0 btx-lib-mail send --host relay.example.com \
+    --recipient b@example.com --subject s --body b
+ValueError: attachment_max_size_bytes must be positive, got 0
+```
+
+A value that cannot be parsed at all (`BTX_MAIL_SMTP_TIMEOUT=abc`) is still reported as
+`BadParameter`.

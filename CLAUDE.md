@@ -50,7 +50,8 @@ tests/
   control character, without echoing the value, and a malformed port, bracket, host name
   or a comma (two hosts in one string); `ConfMail.smtphosts` runs it on every non-blank entry
 - **Security**: `AttachmentSecurityOptions` + `_validate_attachment_security()` orchestrate checks
-- **CLI**: `cli.py` uses rich-click groups; `lib_cli_exit_tools` handles exit codes
+- **CLI**: `cli.py` uses rich-click groups; `lib_cli_exit_tools` handles exit codes. `send` builds one
+  `ConfMail` (a copy of `conf`, each resolved option assigned with validation) and calls `send(config=)`
 
 ## Testing Conventions
 

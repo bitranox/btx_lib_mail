@@ -22,12 +22,14 @@ delivery semantics.
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, TypeVar
 
 import lib_cli_exit_tools
 import rich_click as click
 from click.core import ParameterSource
+from pydantic import SecretStr, ValidationError
 
 from . import __init__conf__
 from .behaviors import emit_greeting, noop_main, raise_intentional_failure
@@ -35,11 +37,12 @@ from .lib_mail import conf, send, validate_email_address, validate_smtp_host
 from .typed_click import argument, option, version_option
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Generator, Sequence
 
 _DOTENV_PATH = Path(".env")
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
+_T = TypeVar("_T")
 
 
 def _dotenv_value(key: str) -> str | None:
@@ -54,7 +57,7 @@ def _dotenv_value(key: str) -> str | None:
         candidate_key, candidate_value = stripped.split("=", 1)
         if candidate_key.strip() != key:
             continue
-        return candidate_value.strip().strip('"').strip("'") or None
+        return _unquoted(candidate_value) or None
     return None
 
 
@@ -98,6 +101,50 @@ def _resolve_bool(*, cli_flag: bool | None, env_key: str, default: bool = False)
     if lowered in _FALSE_VALUES or lowered == "":
         return False
     raise click.BadParameter(f"Unrecognised boolean value for {env_key}: {env_raw!r}")
+
+
+def _or_default(value: _T | None, default: _T) -> _T:
+    """Return *value*, or *default* when it is ``None`` (a falsy ``0`` is kept, so the model can refuse it)."""
+    return default if value is None else value
+
+
+def _refusal_message(error: ValidationError) -> str:
+    """Return the validators' own reasons, one line each.
+
+    Every ``ConfMail`` validator names its field in its message, so the text is
+    the one ``send()`` raised for the same value. pydantic's own report adds its
+    error-type tags and a versioned URL, which describe the library rather than
+    the operator's input; ``--traceback`` still shows it through the chain.
+    """
+    return "\n".join(detail["msg"].removeprefix("Value error, ") for detail in error.errors())
+
+
+@contextmanager
+def _refusals_as_value_error() -> Generator[None, None, None]:
+    """Raise a setting the model refuses as a plain ``ValueError`` (exit code 22, as before)."""
+    try:
+        yield
+    except ValidationError as exc:
+        raise ValueError(_refusal_message(exc)) from exc
+
+
+def _unquoted(value: str) -> str:
+    """Strip whitespace and one layer of surrounding quotes, as ``.env`` values and hosts are read."""
+    return value.strip().strip('"').strip("'")
+
+
+def _checked_hosts(values: Sequence[str]) -> list[str]:
+    """Return *values* unquoted, refusing a malformed one with ``validate_smtp_host``'s own message.
+
+    ``ConfMail`` runs the same check, but its refusal hides the host (the field
+    may carry a credential); checking first keeps the message quoting the host
+    that the operator typed.
+    """
+    hosts = [_unquoted(value) for value in values]
+    for host in hosts:
+        if host:
+            validate_smtp_host(host)
+    return hosts
 
 
 def _resolve_credentials(user: str | None, password: str | None) -> tuple[str, str] | None:
@@ -803,8 +850,11 @@ def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per `sen
 ) -> None:
     """### cli_send_mail(...) -> None {#cli-send-mail}
 
-    **Purpose:** Provide a convenient SMTP smoke test that feeds resolved CLI
-    and environment inputs into `btx_lib_mail.lib_mail.send`.
+    **Purpose:** Provide a convenient SMTP smoke test that resolves CLI and
+    environment inputs into one validated `ConfMail` (a copy of the global
+    `conf`, so settings without an option keep their value) and hands it to
+    `btx_lib_mail.lib_mail.send` as `config=`. A value the model refuses is
+    raised as `ValueError` before any delivery.
 
     **Parameters:**
     - `hosts: Sequence[str]` - One or more `host[:port]` entries; defaults to
@@ -835,26 +885,44 @@ def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per `sen
     output. Exceptions from `send()` propagate to the shared error handlers.
     """
 
-    resolved_hosts = _resolve_list(hosts, "BTX_MAIL_SMTP_HOSTS", label="SMTP host")
+    requested_hosts = _resolve_list(hosts, "BTX_MAIL_SMTP_HOSTS", label="SMTP host")
     resolved_recipients = _resolve_list(recipients, "BTX_MAIL_RECIPIENTS", label="recipient")
-
     sender_value = sender or _configured_value("BTX_MAIL_SENDER") or resolved_recipients[0]
-    username_value = username or _configured_value("BTX_MAIL_SMTP_USERNAME")
-    password_value = password or _configured_value("BTX_MAIL_SMTP_PASSWORD")
-    use_starttls = _resolve_bool(cli_flag=starttls, env_key="BTX_MAIL_SMTP_USE_STARTTLS", default=conf.smtp_use_starttls)
-    starttls_verify_value = _resolve_bool(cli_flag=starttls_verify, env_key="BTX_MAIL_SMTP_STARTTLS_VERIFY", default=conf.smtp_starttls_verify)
-    credentials = _resolve_credentials(username_value, password_value)
-    timeout_value = _resolve_float(timeout, "BTX_MAIL_SMTP_TIMEOUT", default=conf.smtp_timeout)
-    local_hostname_value = local_hostname or _configured_value("BTX_MAIL_SMTP_LOCAL_HOSTNAME") or conf.smtp_local_hostname
 
-    # Resolve attachment security options
-    resolved_allowed_ext = _resolve_extensions(attachment_allowed_ext, "BTX_MAIL_ATTACHMENT_ALLOWED_EXT")
-    resolved_blocked_ext = _resolve_extensions(attachment_blocked_ext, "BTX_MAIL_ATTACHMENT_BLOCKED_EXT")
-    resolved_allowed_dirs = _resolve_directories(attachment_allowed_dirs, "BTX_MAIL_ATTACHMENT_ALLOWED_DIRS")
-    resolved_blocked_dirs = _resolve_directories(attachment_blocked_dirs, "BTX_MAIL_ATTACHMENT_BLOCKED_DIRS")
-    resolved_max_size = _resolve_int(attachment_max_size, "BTX_MAIL_ATTACHMENT_MAX_SIZE")
-    resolved_allow_symlinks = _resolve_optional_bool(cli_flag=attachment_allow_symlinks, env_key="BTX_MAIL_ATTACHMENT_ALLOW_SYMLINKS")
-    resolved_raise_on_security = _resolve_optional_bool(cli_flag=attachment_raise_on_security, env_key="BTX_MAIL_ATTACHMENT_RAISE_ON_SECURITY")
+    # One validated ConfMail is the boundary: every assignment below runs the
+    # model's validators, and the copy keeps the global conf untouched while
+    # carrying the settings this command has no option for.
+    settings = conf.model_copy(deep=True)
+    with _refusals_as_value_error():
+        settings.smtphosts = _checked_hosts(requested_hosts)
+        credentials = _resolve_credentials(username or _configured_value("BTX_MAIL_SMTP_USERNAME"), password or _configured_value("BTX_MAIL_SMTP_PASSWORD"))
+        if credentials is not None:
+            settings.smtp_username, settings.smtp_password = credentials[0], SecretStr(credentials[1])
+        settings.smtp_use_starttls = _resolve_bool(cli_flag=starttls, env_key="BTX_MAIL_SMTP_USE_STARTTLS", default=settings.smtp_use_starttls)
+        settings.smtp_starttls_verify = _resolve_bool(cli_flag=starttls_verify, env_key="BTX_MAIL_SMTP_STARTTLS_VERIFY", default=settings.smtp_starttls_verify)
+        settings.smtp_timeout = _resolve_float(timeout, "BTX_MAIL_SMTP_TIMEOUT", default=settings.smtp_timeout)
+        settings.smtp_local_hostname = local_hostname or _configured_value("BTX_MAIL_SMTP_LOCAL_HOSTNAME") or settings.smtp_local_hostname
+
+        settings.attachment_allowed_extensions = _or_default(
+            _resolve_extensions(attachment_allowed_ext, "BTX_MAIL_ATTACHMENT_ALLOWED_EXT"), settings.attachment_allowed_extensions
+        )
+        settings.attachment_blocked_extensions = _or_default(
+            _resolve_extensions(attachment_blocked_ext, "BTX_MAIL_ATTACHMENT_BLOCKED_EXT"), settings.attachment_blocked_extensions
+        )
+        settings.attachment_allowed_directories = _or_default(
+            _resolve_directories(attachment_allowed_dirs, "BTX_MAIL_ATTACHMENT_ALLOWED_DIRS"), settings.attachment_allowed_directories
+        )
+        settings.attachment_blocked_directories = _or_default(
+            _resolve_directories(attachment_blocked_dirs, "BTX_MAIL_ATTACHMENT_BLOCKED_DIRS"), settings.attachment_blocked_directories
+        )
+        settings.attachment_max_size_bytes = _or_default(_resolve_int(attachment_max_size, "BTX_MAIL_ATTACHMENT_MAX_SIZE"), settings.attachment_max_size_bytes)
+        settings.attachment_allow_symlinks = _or_default(
+            _resolve_optional_bool(cli_flag=attachment_allow_symlinks, env_key="BTX_MAIL_ATTACHMENT_ALLOW_SYMLINKS"), settings.attachment_allow_symlinks
+        )
+        settings.attachment_raise_on_security_violation = _or_default(
+            _resolve_optional_bool(cli_flag=attachment_raise_on_security, env_key="BTX_MAIL_ATTACHMENT_RAISE_ON_SECURITY"),
+            settings.attachment_raise_on_security_violation,
+        )
 
     send(
         mail_from=sender_value,
@@ -862,23 +930,11 @@ def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per `sen
         mail_subject=subject,
         mail_body=body,
         mail_body_html=html_body or "",
-        smtphosts=resolved_hosts,
         attachment_file_paths=list(attachments),
-        credentials=credentials,
-        use_starttls=use_starttls,
-        starttls_verify=starttls_verify_value,
-        timeout=timeout_value,
-        local_hostname=local_hostname_value,
-        attachment_allowed_extensions=resolved_allowed_ext,
-        attachment_blocked_extensions=resolved_blocked_ext,
-        attachment_allowed_directories=resolved_allowed_dirs,
-        attachment_blocked_directories=resolved_blocked_dirs,
-        attachment_max_size_bytes=resolved_max_size,
-        attachment_allow_symlinks=resolved_allow_symlinks,
-        attachment_raise_on_security_violation=resolved_raise_on_security,
+        config=settings,
     )
 
-    click.echo(f"Mail sent to {', '.join(resolved_recipients)} via {', '.join(resolved_hosts)}")
+    click.echo(f"Mail sent to {', '.join(resolved_recipients)} via {', '.join(settings.smtphosts)}")
 
 
 @cli.command("validate-email", context_settings=CLICK_CONTEXT_SETTINGS)

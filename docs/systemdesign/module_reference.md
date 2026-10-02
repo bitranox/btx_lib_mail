@@ -349,11 +349,18 @@ consistent across the console script and `python -m`.
   `--timeout`, `--local-hostname`, and the `--attachment-*` security options, falling back to the
   `BTX_MAIL_*` environment variables (or a local `.env`). Precedence: CLI options,
   then environment variables, then `.env` entries, then `btx_lib_mail.lib_mail.conf`.
-  Delegates to `send` and echoes a summary line.
-* **Resolution helpers:** `_configured_value`, `_dotenv_value`, `_resolve_list`,
-  `_resolve_bool`, `_resolve_optional_bool`, `_resolve_float`, `_resolve_int`,
-  `_resolve_extensions`, `_resolve_directories`, `_resolve_credentials` parse
-  boundary input (CLI string / env / `.env`) into typed values.
+  The resolved values are assigned, with validation, onto one copy of `conf`, so
+  `ConfMail`'s validators run on CLI input and settings without an option keep
+  their `conf` value; `send` receives that model as `config=` and the command
+  echoes a summary line. A refused value is raised as `ValueError` carrying the
+  validator's own message (exit code `22`); hosts are checked with
+  `validate_smtp_host` first, so a refused host is quoted in the message.
+* **Resolution helpers:** `_configured_value`, `_dotenv_value`, `_unquoted`,
+  `_resolve_list`, `_checked_hosts`, `_resolve_bool`, `_resolve_optional_bool`,
+  `_resolve_float`, `_resolve_int`, `_resolve_extensions`, `_resolve_directories`,
+  `_resolve_credentials`, `_or_default` parse boundary input (CLI string / env /
+  `.env`) into typed values; `_refusals_as_value_error` and `_refusal_message`
+  turn a `ValidationError` into that `ValueError`.
 * **Traceback helpers:** `apply_traceback_preferences`
   {#cli-apply-traceback-preferences}, `snapshot_traceback_state`
   {#cli-snapshot-traceback-state}, `restore_traceback_state`
