@@ -128,7 +128,8 @@ A `credentials` pair is not a `ConfMail` key either: split it into `smtp_usernam
 From btx_lib_mail 3.0.0 `ConfMail` checks every `smtphosts` entry with `validate_smtp_host` when it
 is built, validated or assigned, so a malformed host raises `pydantic.ValidationError` (`loc`
 `("smtphosts",)`, the host never repeated) at load time instead of at the first `send()`: a port
-outside 1-65535 or not a number (`smtp.example.com:58o7`), an unclosed IPv6 bracket, an IPv6
+outside 1-65535 or not a number (`smtp.example.com:58o7`; from 3.1.0 also a port that is not plain
+ASCII digits, such as `:+25`, `:2_5` or Arabic-Indic digits), an unclosed IPv6 bracket, an IPv6
 address without brackets (`fe80::1`; write `[fe80::1]:25`), a port with no host name (`:25`), and
 two hosts in one entry (`smtphosts="a.example.com:25,b.example.com:25"` is refused; write
 `ConfMail(smtphosts=["a.example.com:25", "b.example.com:25"])`). A blank entry, such as

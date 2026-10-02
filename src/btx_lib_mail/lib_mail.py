@@ -2247,8 +2247,9 @@ def validate_smtp_host(host: str) -> None:
     Never accepted: userinfo (user:password@host) or a URL (smtp://...), for
     which the error does not echo the value; several hosts in one string
     (``a.example.com,b.example.com``); a port with no host name (``:25``);
-    and an IPv6 address without brackets (``fe80::1``), whose last group
-    would otherwise be read as the port.
+    an IPv6 address without brackets (``fe80::1``), whose last group
+    would otherwise be read as the port; and a port that is not plain ASCII
+    digits in 1-65535 (``+25``, ``2_5``, non-ASCII digits).
 
     Why
         Validates SMTP host syntax early so errors surface before delivery.

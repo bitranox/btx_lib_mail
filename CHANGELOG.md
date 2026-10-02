@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [3.1.0] 2026-10-02 11:58:41
+
 ### Changed
 
 - The `send` command builds one validated `ConfMail` (a copy of `conf` with each resolved
