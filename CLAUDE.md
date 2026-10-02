@@ -52,7 +52,8 @@ tests/
   test_errors.py               # BtxMailError hierarchy at every raise site
   test_lib_mail.py             # configuration, validators, attachment rules, orchestration
   test_limits.py               # per-call ceilings: address length, recipient and attachment counts
-  log_capture.py               # everything_logged(): a record's message plus its extra fields
+  log_capture.py               # everything_logged(), assert_never_logged(): a secret in text, bytes or AUTH PLAIN form
+  test_log_capture.py          # the never-logged check finds every planted form
   transport_doubles.py         # RecordingTransport / RefusingTransport, typed against Transport
   test_metadata.py             # metadata constant tests
   test_module_entry.py         # python -m entry tests

@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 from aiosmtpd.controller import Controller
-from log_capture import everything_logged
+from log_capture import assert_never_logged
 from smtp_test_server import BdatController as _BdatController
 from smtp_test_server import ChunkingHandler as _ChunkingHandler
 from smtp_test_server import CollectingHandler as _CollectingHandler
@@ -550,7 +550,7 @@ def test_credentials_sent_without_tls_are_reported_as_a_warning(caplog: pytest.L
     warnings = [record for record in caplog.records if "without TLS" in record.getMessage()]
     assert len(warnings) == 1
     assert f"127.0.0.1:{controller.port}" in warnings[0].getMessage()
-    assert _UTF8_DUMMY not in everything_logged(caplog)
+    assert_never_logged(caplog, _UTF8_DUMMY, user="user")
 
 
 @pytest.mark.os_agnostic
@@ -594,7 +594,7 @@ def test_a_wrong_non_ascii_password_is_refused_without_quoting_it(caplog: pytest
 
     assert seen == [False], "positive control: the server received and judged the attempt"
     assert "SMTPAuthenticationError 535" in caplog.text
-    assert wrong not in everything_logged(caplog)
+    assert_never_logged(caplog, wrong, user="user")
     assert handler.messages == []
 
 
@@ -626,7 +626,7 @@ def test_a_non_ascii_password_without_plain_fails_clearly(caplog: pytest.LogCapt
     assert "SMTPNotSupportedError" in caplog.text, "positive control: the refusal was logged"
     assert "AUTH PLAIN" in caplog.text
     assert seen == []
-    assert _UTF8_DUMMY not in everything_logged(caplog)
+    assert_never_logged(caplog, _UTF8_DUMMY, user="user")
 
 
 @pytest.mark.os_agnostic
@@ -656,7 +656,7 @@ def test_a_non_ascii_password_against_a_server_without_auth_fails_closed(caplog:
     assert "SMTPNotSupportedError" in caplog.text
     assert "AUTH extension not supported" in caplog.text
     assert handler.messages == []
-    assert _UTF8_DUMMY not in everything_logged(caplog)
+    assert_never_logged(caplog, _UTF8_DUMMY, user="user")
 
 
 class _ScriptedSMTP:
