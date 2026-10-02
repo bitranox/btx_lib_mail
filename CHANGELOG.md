@@ -101,9 +101,10 @@
   now; a non-ASCII one is refused like the sender.
 - CLI: an env file (`--env-file`, `BTX_MAIL_ENV_FILE`) that is a device or FIFO passed the
   64 KiB size check (it reports size 0) and was then read without a bound: `/dev/zero` ran out
-  of memory and a FIFO blocked for a writer. The file is now opened without blocking, refused
-  unless it is a regular file (`is not a regular file`, exit 2), and read at most one byte past
-  the limit.
+  of memory and a FIFO blocked for a writer. The file is now opened without blocking and read
+  at most one byte past the limit, so `/dev/zero` is refused (exit 2) and a FIFO with no writer
+  reads as empty; `/dev/null` and process substitution (`--env-file <(...)`) still work, and a
+  path that is not a file, pipe or character device is refused.
 - CLI: a `--password-file` that is not UTF-8 raised a bare `UnicodeDecodeError` (exit 22) whose
   message quoted the offending byte and its offset in the password. It is now a usage error,
   `--password-file: is not UTF-8 text`, exit 2, like an env file that is not UTF-8.

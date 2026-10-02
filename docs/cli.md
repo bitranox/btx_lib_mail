@@ -112,8 +112,9 @@ For each setting, the first of these that sets it wins:
 An empty value in the environment or the file counts as unset. The env file holds
 `KEY=value` lines; blank lines, `#` comments and lines without `=` are skipped, a value
 loses surrounding whitespace and ONE matching pair of quotes (`"x"` or `'x'`; a lone quote
-character stays), the first occurrence of a key wins, and the file must be a regular file (not a
-device or FIFO), UTF-8, and at most 64 KiB. A shell-style `export KEY=value` line is not recognised (its key reads as
+character stays), the first occurrence of a key wins, and the file must be UTF-8 and at most 64 KiB. It may be
+a regular file, a pipe or a character device, so `--env-file /dev/null` ignores `./.env` and
+`--env-file <(...)` reads a process substitution; a FIFO with no writer reads as empty. A shell-style `export KEY=value` line is not recognised (its key reads as
 `export KEY`). Booleans accept `1`, `true`, `yes`, `on` and `0`, `false`, `no`, `off` in any
 case; a value that cannot be parsed (`BTX_MAIL_SMTP_TIMEOUT=abc`, `BTX_MAIL_SMTP_USE_STARTTLS=maybe`)
 is a usage error, exit code `2`.

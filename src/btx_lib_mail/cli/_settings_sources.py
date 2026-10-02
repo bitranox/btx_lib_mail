@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -102,14 +103,16 @@ def _env_file_refusal(path: Path, problem: str) -> click.UsageError:
     return click.BadParameter(f"{path} {problem}", param_hint="--env-file")
 
 
-def _read_bounded_text_file(path: Path) -> bytes:
-    """Read a regular file of at most ``_ENV_FILE_MAX_BYTES`` bytes, refusing anything else.
+def _read_bounded_env_file(path: Path) -> bytes:
+    """Read at most ``_ENV_FILE_MAX_BYTES`` bytes from a regular file, pipe or character device.
 
-    A device or FIFO reports size 0, so a size check before reading would let
-    ``/dev/zero`` be read until memory runs out and a FIFO block for a writer.
-    The file is opened without blocking, its type checked on the open handle,
-    and at most one byte past the limit is read, so a file that grows after the
-    check is refused too.
+    ``/dev/null`` and process substitution (``--env-file <(...)``, a pipe) are
+    ordinary env files, and both report size 0, so the limit is enforced by the
+    read itself: at most one byte past it is read, which refuses ``/dev/zero``
+    and a file that grows after it was opened. The file is opened without
+    blocking, so a FIFO nobody writes to reads as empty instead of waiting for a
+    writer; blocking is restored before the read, so a writer that is still
+    producing is read to its end.
 
     Args:
         path: The env file.
@@ -118,17 +121,27 @@ def _read_bounded_text_file(path: Path) -> bytes:
         The file's bytes.
 
     Raises:
-        click.UsageError: The file is not a regular file or is too large.
+        click.UsageError: The path is not a regular file, pipe or character
+            device, or holds more than ``_ENV_FILE_MAX_BYTES`` bytes.
     """
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
     with os.fdopen(descriptor, "rb") as handle:
-        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-            raise _env_file_refusal(path, "is not a regular file")
+        mode = os.fstat(handle.fileno()).st_mode
+        if not (stat.S_ISREG(mode) or stat.S_ISFIFO(mode) or stat.S_ISCHR(mode)):
+            raise _env_file_refusal(path, "is not a file, pipe or character device")
+        if sys.platform != "win32":
+            os.set_blocking(handle.fileno(), True)
         data = handle.read(_ENV_FILE_MAX_BYTES + 1)
         if len(data) > _ENV_FILE_MAX_BYTES:
-            size = max(os.fstat(handle.fileno()).st_size, len(data))
-            raise _env_file_refusal(path, f"is {size} bytes; an env file may be at most {_ENV_FILE_MAX_BYTES} bytes")
+            raise _env_file_refusal(path, f"{_oversize(handle.fileno(), mode)}; an env file may be at most {_ENV_FILE_MAX_BYTES} bytes")
     return data
+
+
+def _oversize(descriptor: int, mode: int) -> str:
+    """Say how big an oversized env file is: its size if it has one, else only that it is too big."""
+    if stat.S_ISREG(mode):
+        return f"is {max(os.fstat(descriptor).st_size, _ENV_FILE_MAX_BYTES + 1)} bytes"
+    return f"holds more than {_ENV_FILE_MAX_BYTES} bytes"
 
 
 def read_env_file(path: Path | None) -> dict[str, str]:
@@ -144,13 +157,13 @@ def read_env_file(path: Path | None) -> dict[str, str]:
         Mapping of ``KEY`` to value for every parsed line.
 
     Raises:
-        click.UsageError: The file is not a regular file, is larger than
-            ``_ENV_FILE_MAX_BYTES``, or is not UTF-8.
+        click.UsageError: The file is not a regular file, pipe or character
+            device, holds more than ``_ENV_FILE_MAX_BYTES`` bytes, or is not UTF-8.
     """
     if path is None:
         return {}
     try:
-        text = _read_bounded_text_file(path).decode("utf-8")
+        text = _read_bounded_env_file(path).decode("utf-8")
     except UnicodeDecodeError as exc:
         raise _env_file_refusal(path, "is not UTF-8 text") from exc
     values: dict[str, str] = {}

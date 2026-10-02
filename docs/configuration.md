@@ -230,8 +230,8 @@ Environment variables understood by the CLI:
 The env file is optional: `send` reads `.env` in the working directory when it is a
 regular file, and `--env-file PATH` (or `BTX_MAIL_ENV_FILE`) names another file to read
 instead. The CLI trims whitespace, honours quoted values, and treats empty strings as
-unset; the first occurrence of a key wins, and the file must be a regular file, UTF-8, and at
-most 64 KiB.
+unset; the first occurrence of a key wins, and the file must be UTF-8 and at most 64 KiB (a pipe or
+character device counts: `--env-file /dev/null` ignores `.env`).
 Exporting an environment variable always overrides the file; explicit CLI flags override
 both. A `.env` can set the relay and relax security settings, so run `send` only from a
 directory whose `.env` you trust (see

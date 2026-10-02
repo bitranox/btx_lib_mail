@@ -12,7 +12,9 @@ import os
 import re
 import sys
 import threading
+import time
 from email import message_from_bytes
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import click
@@ -26,8 +28,6 @@ from btx_lib_mail.cli import CliContext, _output, _settings_sources
 from btx_lib_mail.errors import InvalidInputError
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from click.testing import CliRunner, Result
     from smtp_test_server import CollectingHandler
 
@@ -362,31 +362,75 @@ def test_an_env_file_of_exactly_the_maximum_size_is_read(cli_runner: CliRunner, 
 
 @pytest.mark.os_posix
 @pytest.mark.skipif(sys.platform == "win32", reason="needs the POSIX character device /dev/null")
-def test_an_env_file_that_is_a_device_is_refused(cli_runner: CliRunner) -> None:
-    # A device reports size 0, so a size check alone would read it to its end: /dev/zero never ends.
-    result, transport = _invoke(cli_runner, ["send", "--env-file", "/dev/null", *_ROUTE, *_MESSAGE])
+def test_dev_null_as_the_env_file_reads_as_no_settings(cli_runner: CliRunner) -> None:
+    # `--env-file /dev/null` is the usual way to say "ignore ./.env"; it must read as empty.
+    result, transport = _invoke(cli_runner, ["send", "--env-file", "/dev/null", "--sender", "from-option@example.com", *_ROUTE, *_MESSAGE])
+
+    assert result.exit_code == 0, result.output
+    assert transport.only.sender == "from-option@example.com"
+
+
+@pytest.mark.os_posix
+@pytest.mark.skipif(not Path("/dev/zero").exists(), reason="needs the POSIX character device /dev/zero")
+def test_an_endless_device_as_the_env_file_is_refused_at_the_size_limit(cli_runner: CliRunner) -> None:
+    # A device reports size 0, so only the bounded read stops /dev/zero from filling memory.
+    result, transport = _invoke(cli_runner, ["send", "--env-file", "/dev/zero", *_ROUTE, *_MESSAGE])
 
     assert result.exit_code == 2
-    assert "is not a regular file" in _flat(result.output)
+    assert "an env file may be at most" in _flat(result.output)
     assert transport.deliveries == []
 
 
 @pytest.mark.os_posix
+@pytest.mark.skipif(not Path("/dev/fd").is_dir() or sys.platform == "win32", reason="needs /dev/fd, as process substitution uses")
+def test_a_pipe_as_the_env_file_is_read_to_its_end_like_process_substitution(cli_runner: CliRunner) -> None:
+    read_end, write_end = os.pipe()
+    os.write(write_end, b"BTX_MAIL_SENDER=")
+
+    def finish_writing() -> None:
+        # The second half arrives after the reader started, so a non-blocking read would stop early.
+        time.sleep(0.3)
+        os.write(write_end, b"from-pipe@example.com\n")
+        os.close(write_end)
+
+    writer = threading.Thread(target=finish_writing, daemon=True)
+    writer.start()
+    try:
+        result, transport = _invoke(cli_runner, ["send", "--env-file", f"/dev/fd/{read_end}", *_ROUTE, *_MESSAGE])
+    finally:
+        writer.join(timeout=5)
+        os.close(read_end)
+
+    assert result.exit_code == 0, result.output
+    assert transport.only.sender == "from-pipe@example.com"
+
+
+@pytest.mark.os_posix
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs named pipes")
-def test_an_env_file_that_is_a_fifo_is_refused_without_waiting_for_a_writer(cli_runner: CliRunner, tmp_path: Path) -> None:
+def test_a_fifo_with_no_writer_as_the_env_file_reads_as_empty_without_waiting(cli_runner: CliRunner, tmp_path: Path) -> None:
     fifo = tmp_path / "settings.env"
     os.mkfifo(fifo)
     outcome: list[tuple[Result, RecordingTransport]] = []
     # A plain open() of a FIFO blocks until a writer appears, so the run is bounded by a thread
     # join: a regression fails here after five seconds instead of hanging the suite.
-    worker = threading.Thread(target=lambda: outcome.append(_invoke(cli_runner, ["send", "--env-file", str(fifo), *_ROUTE, *_MESSAGE])), daemon=True)
+    args = ["send", "--env-file", str(fifo), "--sender", "from-option@example.com", *_ROUTE, *_MESSAGE]
+    worker = threading.Thread(target=lambda: outcome.append(_invoke(cli_runner, args)), daemon=True)
     worker.start()
     worker.join(timeout=5)
 
     assert not worker.is_alive(), "reading the env file blocked on the FIFO"
     [(result, transport)] = outcome
+    assert result.exit_code == 0, result.output
+    assert transport.only.sender == "from-option@example.com"
+
+
+@pytest.mark.os_posix
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows refuses to open a directory as a file")
+def test_a_directory_as_the_env_file_is_refused(cli_runner: CliRunner, tmp_path: Path) -> None:
+    result, transport = _invoke(cli_runner, ["send", "--env-file", str(tmp_path), *_ROUTE, *_MESSAGE])
+
     assert result.exit_code == 2
-    assert "is not a regular file" in _flat(result.output)
+    assert "is a directory" in _flat(result.output)
     assert transport.deliveries == []
 
 
