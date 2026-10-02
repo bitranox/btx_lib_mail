@@ -14,7 +14,7 @@ from typing import IO, TYPE_CHECKING, Any, cast
 import pytest
 from click.testing import CliRunner
 
-from btx_lib_mail import _compose, _transport, lib_mail
+from btx_lib_mail import DeliveryError, _compose, _transport, lib_mail
 from btx_lib_mail import cli as cli_mod
 
 if TYPE_CHECKING:
@@ -600,6 +600,36 @@ def test_a_non_ascii_password_without_plain_fails_clearly(caplog: pytest.LogCapt
     assert "SMTPNotSupportedError" in caplog.text, "positive control: the refusal was logged"
     assert "AUTH PLAIN" in caplog.text
     assert seen == []
+    assert _UTF8_DUMMY not in caplog.text
+
+
+@pytest.mark.os_agnostic
+def test_a_non_ascii_password_against_a_server_without_auth_fails_closed(caplog: pytest.LogCaptureFixture) -> None:
+    """A server offering no AUTH at all gets no message and no credentials.
+
+    Failover turns ANY exception into a failed host, so the logged cause is what tells the
+    deliberate refusal apart from an accident such as a KeyError on the missing feature.
+    """
+    caplog.set_level("WARNING", logger="btx_lib_mail")
+    handler = _CollectingHandler()
+    controller = _run_server(handler)
+    try:
+        with pytest.raises(DeliveryError) as caught:
+            lib_mail.send(
+                mail_from="sender@example.com",
+                mail_recipients="rcpt@example.com",
+                mail_subject="s",
+                smtphosts=[f"127.0.0.1:{controller.port}"],
+                use_starttls=False,
+                credentials=("user", _UTF8_DUMMY),
+            )
+    finally:
+        controller.stop()
+
+    assert caught.value.failed_recipients == ("rcpt@example.com",)
+    assert "SMTPNotSupportedError" in caplog.text
+    assert "AUTH extension not supported" in caplog.text
+    assert handler.messages == []
     assert _UTF8_DUMMY not in caplog.text
 
 
