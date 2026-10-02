@@ -2186,3 +2186,24 @@ def test_the_public_validators_refuse_a_value_of_the_wrong_type(validator: Any, 
         validator(value)
 
     assert str(caught.value) == message
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    ("credentials", "message"),
+    [
+        (("user", "DUMMY-pw-" + chr(0xDCFF)), "the SMTP password must be valid Unicode text"),
+        (("us" + chr(0xDCFF) + "er", "pw"), "the SMTP user name must be valid Unicode text"),
+    ],
+    ids=["password", "user"],
+)
+def test_credentials_that_cannot_be_encoded_are_refused_before_any_connection(credentials: tuple[str, str], message: str) -> None:
+    # An invalid UTF-8 byte from argv or an env file decodes to a lone surrogate; AUTH would
+    # fail on it only after the connection was made, once per host.
+    transport = RecordingTransport()
+
+    with pytest.raises(InvalidInputError) as caught:
+        lib_mail.send(**_with(credentials=credentials, transport=transport))
+
+    assert str(caught.value) == message
+    assert transport.deliveries == []

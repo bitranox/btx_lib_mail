@@ -186,6 +186,10 @@
 - CLI: with `--json`, a failure whose message held a path that is not valid UTF-8 crashed
   while writing the envelope (`UnicodeEncodeError`, exit 22, no JSON). The undecodable byte
   is written as its `\udcff` escape now, and the envelope carries the original exit code.
+- A user name or password that cannot be written as UTF-8 (an invalid byte in `--password`
+  or an env file) was accepted and failed at AUTH on every host, after each connection was
+  made. It is refused before the first connection now, `InvalidInputError: the SMTP
+  password must be valid Unicode text`, without quoting it.
 
 ## [3.1.0] 2026-10-02 11:58:41
 

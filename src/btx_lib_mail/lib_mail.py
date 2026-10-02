@@ -45,6 +45,7 @@ from ._transport import DEFAULT_TRANSPORT, DeliveryOptions, SmtplibTransport, Tr
 from ._validation import (
     EMAIL_PATTERN,
     address_length_problem,
+    check_credentials,
     check_local_hostname,
     check_seconds,
     check_timeout,
@@ -315,9 +316,10 @@ def _resolve_delivery_options(*, settings: ConfMail, overrides: _DeliveryOverrid
         Frozen options object consumed by the delivery helpers.
 
     Raises:
-        InvalidInputError: If the resolved timeout, local_hostname, or deadline is refused.
+        InvalidInputError: If the resolved credentials, timeout, local_hostname, or deadline is refused.
     """
     credentials = overrides.credentials or settings.resolved_credentials()
+    check_credentials(credentials)
     use_starttls = bool(overrides.use_starttls if overrides.use_starttls is not None else settings.smtp_use_starttls)
     starttls_verify = bool(overrides.starttls_verify if overrides.starttls_verify is not None else settings.smtp_starttls_verify)
     timeout = float(overrides.timeout if overrides.timeout is not None else settings.smtp_timeout)

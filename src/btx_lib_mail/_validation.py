@@ -10,7 +10,7 @@ import re
 from collections.abc import Iterable, Sequence
 from typing import Any, Final, cast
 
-from ._common import logger, printable
+from ._common import is_valid_unicode, logger, printable
 from .errors import InvalidInputError
 
 EMAIL_PATTERN: Final[re.Pattern[str]] = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
@@ -68,6 +68,27 @@ def check_local_hostname(value: str, *, label: str) -> None:
     """
     if not value or not all(_EHLO_NAME_FIRST_CHAR <= ord(char) <= _EHLO_NAME_LAST_CHAR for char in value):
         raise InvalidInputError(f"{label} must be non-empty printable ASCII without spaces")
+
+
+def check_credentials(credentials: tuple[str, str] | None) -> None:
+    """Refuse a user name or password that cannot be written as UTF-8, without echoing it.
+
+    A lone surrogate (an invalid UTF-8 byte in argv or an env file) would make
+    AUTH fail only after each host's connection was made.
+
+    Args:
+        credentials: ``(user name, password)``, or ``None`` for no AUTH.
+
+    Raises:
+        InvalidInputError: If either cannot be encoded as UTF-8.
+    """
+    if credentials is None:
+        return
+    user, password = credentials
+    if not is_valid_unicode(user):
+        raise InvalidInputError("the SMTP user name must be valid Unicode text")
+    if not is_valid_unicode(password):
+        raise InvalidInputError("the SMTP password must be valid Unicode text")
 
 
 def check_timeout(value: float) -> None:
