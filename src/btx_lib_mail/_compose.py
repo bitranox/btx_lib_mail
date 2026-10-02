@@ -233,6 +233,11 @@ _SUBJECT_ALLOWED_CONTROLS: Final[frozenset[str]] = frozenset({"\t"})
 
 _LINE_BREAK_MESSAGE: Final[str] = "Header values may not contain linefeed or carriage return characters"
 
+# Folding a subject costs more than linear time in its length and runs once per recipient, so
+# an unbounded subject is CPU and memory a caller can burn before the first delivery. No mail
+# client shows more than a line or two of it.
+SUBJECT_MAX_CHARACTERS: Final[int] = 4096
+
 
 def _check_unicode_text(text: str, *, field_name: str) -> None:
     """Refuse text that cannot be written as UTF-8, without echoing it.
@@ -266,8 +271,9 @@ def check_subject(subject: str) -> None:
         subject: The message subject to check.
 
     Raises:
-        InvalidInputError: If subject contains a line break, a control character
-            other than TAB, or a lone surrogate.
+        InvalidInputError: If subject is longer than SUBJECT_MAX_CHARACTERS, or
+            contains a line break, a control character other than TAB, or a lone
+            surrogate.
     """
     if "\r" in subject or "\n" in subject:
         raise InvalidInputError(_LINE_BREAK_MESSAGE)
@@ -276,6 +282,9 @@ def check_subject(subject: str) -> None:
     if len(subject.splitlines()) > 1:
         raise InvalidInputError(_LINE_BREAK_MESSAGE)
     _check_unicode_text(subject, field_name="mail_subject")
+    # Checked last, so a subject an earlier check refuses keeps the message it always had.
+    if len(subject) > SUBJECT_MAX_CHARACTERS:
+        raise InvalidInputError(f"mail_subject has {len(subject)} characters, more than the {SUBJECT_MAX_CHARACTERS} allowed")
 
 
 def check_body(*, plain_body: str, html_body: str) -> None:

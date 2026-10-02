@@ -97,7 +97,7 @@ passed positionally; every other one is keyword-only.
 |--------------------------------|-----------------------------------------|---------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `mail_from`                    | `str`                                   | -       | Envelope sender address (`local@domain`).                                                                                                                                                           |
 | `mail_recipients`              | `str \| Sequence[str]`                  | -       | One address or a sequence. Each is stripped of surrounding whitespace and quotes, lower-cased, deduplicated and validated.                                                                          |
-| `mail_subject`                 | `str`                                   | -       | UTF-8 subject line. A line break, a control character other than TAB, or invalid Unicode is refused with `InvalidInputError` before any delivery.                                                   |
+| `mail_subject`                 | `str`                                   | -       | UTF-8 subject line of at most 4096 characters. A longer one, a line break, a control character other than TAB, or invalid Unicode is refused with `InvalidInputError` before any delivery.          |
 | `mail_body`                    | `str`                                   | `""`    | Optional plain-text body.                                                                                                                                                                           |
 | `mail_body_html`               | `str`                                   | `""`    | Optional HTML body (UTF-8).                                                                                                                                                                         |
 | `smtphosts`                    | `Sequence[str] \| None`                 | `None`  | Host override. Falls back to `smtphosts` of the config in use (the passed `config`, else the global `conf`).                                                                                        |
@@ -182,8 +182,8 @@ Windows, whose file systems do, and exactly on Linux:
 
 **Raises:** every exception below is a `BtxMailError` (see [Exceptions](#exceptions)).
 
-- `InvalidInputError` (a `ValueError`)  -  a refused sender, recipient, host, subject (a line
-  break, a control character other than TAB, or invalid Unicode), body (invalid Unicode), EHLO name, timeout or delivery deadline, or no valid
+- `InvalidInputError` (a `ValueError`)  -  a refused sender, recipient, host, subject (over
+  4096 characters, a line break, a control character other than TAB, or invalid Unicode), body (invalid Unicode), EHLO name, timeout or delivery deadline, or no valid
   recipient left after validation.
 - `AttachmentNotFoundError` (a `FileNotFoundError`)  -  when a required attachment is missing,
   is not a regular file (a directory, a FIFO), or cannot be opened (`can not be read (EACCES)`,

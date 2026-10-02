@@ -227,7 +227,7 @@ redacted at the credential fields (`smtp_password`, `smtphosts`).
   followed by the shared body spool, read in place (no copy); closing it leaves the body open.
 * `check_subject(subject)` - refuses CR or LF (with the email package's own message), any
   other control character except TAB, the line separators U+2028/U+2029 (with the CR/LF
-  message), and a lone surrogate.
+  message), a lone surrogate, and more than `SUBJECT_MAX_CHARACTERS` (4096), checked last.
 * `check_body(*, plain_body, html_body)` - refuses a body holding a lone surrogate.
 
 **Location:** src/btx_lib_mail/_compose.py

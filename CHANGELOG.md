@@ -44,6 +44,10 @@
 
 ### Changed
 
+- A subject longer than 4096 characters is refused with `InvalidInputError` before the first
+  delivery (`mail_subject has N characters, more than the 4096 allowed`). Folding a subject
+  costs more than linear time and ran once per recipient before anything was sent, so an
+  unbounded subject let a caller spend seconds of CPU per recipient.
 - The default `attachment_blocked_extensions` is the union of `DANGEROUS_EXTENSIONS_POSIX` and
   `DANGEROUS_EXTENSIONS_WINDOWS` on every platform, so a Linux or macOS sender now refuses
   `.exe`, `.bat`, `.ps1`, `.dll`, `.lnk` and the rest of the Windows list by default (and a

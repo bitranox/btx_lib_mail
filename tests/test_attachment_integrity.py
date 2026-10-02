@@ -332,6 +332,19 @@ def test_text_holding_a_lone_surrogate_is_refused_without_echoing_it(field: str,
 
 
 @pytest.mark.os_agnostic
+def test_a_subject_at_the_length_limit_is_sent_and_one_past_it_is_refused() -> None:
+    limit = _compose.SUBJECT_MAX_CHARACTERS
+    transport = _RecordingTransport()
+
+    assert send("sender@example.com", "one@example.com", "s" * limit, smtphosts=["smtp.example.com"], transport=transport) is True
+    with pytest.raises(InvalidInputError) as caught:
+        send("sender@example.com", "two@example.com", "s" * (limit + 1), smtphosts=["smtp.example.com"], transport=transport)
+
+    assert str(caught.value) == f"mail_subject has {limit + 1} characters, more than the {limit} allowed"
+    assert list(transport.messages) == ["one@example.com"]
+
+
+@pytest.mark.os_agnostic
 def test_a_subject_with_a_tab_is_sent() -> None:
     transport = _RecordingTransport()
 

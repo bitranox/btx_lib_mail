@@ -167,8 +167,8 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
 
     Raises:
         InvalidInputError: If the sender, a recipient (in strict mode), a
-            host, the subject (a line break, a control character other than
-            TAB, or invalid Unicode), the body (invalid Unicode),
+            host, the subject (over 4096 characters, a line break, a control
+            character other than TAB, or invalid Unicode), the body (invalid Unicode),
             `local_hostname`, `timeout` or `delivery_deadline` is refused, or
             no valid recipient remains. Raised before the first delivery.
             Also a `ValueError`.
