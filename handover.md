@@ -1,105 +1,82 @@
-# STALE - read 2026-10-02, work continued
+# Handover - btx_lib_mail, 2026-10-02 18:55 (pushed, 3-OS CI green; release held at 4.0.0)
 
-Read `OPEN-WORK.md` first: ranks 21, 22, 20, 30 (USER) and 40, 50, 60 (FOUND) are open.
+Read `OPEN-WORK.md` first. Open: rank 20, 21, 22 and 30 (USER), and rank 50 (FOUND).
 
 ## In flight
 
-All 20 sweep-1 findings of the code-quality review are fixed, plus seven code defects a
-three-agent documentation audit found. Every doc page and the `python-send-mail` skill now
-match the code. Nothing has been pushed: Linux is green locally (`make test`; 548 tests in the last run), but
-macOS and Windows CI have not run on any of it. The only Windows check was a probe on the Windows test machine
-showing that `os.lstat` and `os.fstat` agree on `(st_dev, st_ino)` on Python 3.10, 3.12 and 3.14.
-The attachment open-once check relies on that.
+Nothing is part-done in btx_lib_mail. Master `05d7347` is pushed, and CI plus CodeQL are green on
+all 15 cells (Linux, macOS, Windows x 3.10-3.14). This is the first cross-platform run of the
+review-sweep-1 work.
+
+The only part-done item is in another repo: the bitranox-skills twin commit (rank 22). It is
+prepared but NOT committed, in the worktree
+`../../KI/bitranox-skills/.claude/worktrees/send-mail-skill` (branch `skill/send-mail-current`).
+The repo-gate refuses it because another session's in-progress lib_layered_config skill edit has
+drifted from its twin. That drift is not ours, so the commit waits.
 
 ## Committed, or not
 
-- btx_lib_mail master: 11 commits after `136d752` (the handover commit is the last). All are
-  LOCAL ONLY.
-- `OPEN-WORK.md` and this file are committed with this handover. `EXECUTION-USER-REVIEW.md` and
-  `.private/` are gitignored.
-- bitranox-skills clone: the twin
-  `plugins/bitranox/skills/coding-python-send-mail/SKILL.md` is rewritten on disk and uncommitted
-  (OPEN-WORK rank 22). The btx_lib_mail repo-gate compares the twin on disk, so leave it in place.
+- btx_lib_mail: everything is committed and pushed, `OPEN-WORK.md` and this file included.
+- bitranox-skills worktree: SKILL.md twin, two `.skillwriter` checklists, the regenerated
+  `skill_triggers.json` and `docs/skills.md`, and a bump to 7.38.2 with a CHANGELOG entry. All
+  uncommitted. Origin moves fast there, so expect to re-bump.
+- `EXECUTION-USER-REVIEW.md` (gitignored) records this session's owner decisions and autonomous
+  decisions.
 
 ## Decided, and why
 
-- The version is NOT decided. Everything is under CHANGELOG `[Unreleased]`, and pyproject still says
-  3.1.0. The CLI no longer reads `./.env` implicitly, which breaks callers, so the owner picks
-  3.1.0 or 4.0.0 at release time (rank 30).
-- The full autonomous decision list is in `EXECUTION-USER-REVIEW.md` under "review sweep 1" and
-  "documentation audit follow-up". In short:
-  - extension defaults are POSIX|Windows everywhere;
-  - `.env` is read only via `--env-file`;
-  - plaintext AUTH logs a warning and is not refused;
-  - a symlinked parent directory is followed, and that is documented;
-  - the delivery deadline is opt-in;
-  - exceptions keep their builtin second base.
+- Owner, 2026-10-02:
+  - `./.env` is read again when no `--env-file` is given.
+  - Sensitive-path case-insensitivity applies on macOS and Windows only.
+  - The release version is 4.0.0, merging the unpublished [3.1.0] and [Unreleased] sections.
+  - The release itself stays HELD.
+- A named `--env-file` replaces `./.env` completely: keys it lacks do not fall through. A refusal
+  of the implicit file names `./.env`, not `--env-file`.
+- Tests run from an empty cwd (conftest), because the repo's `.env` holds live relay settings.
+- CLI test messages are compared through `_flat()` in `tests/test_cli_send.py`: Rich wraps the
+  error box, and CI forces colour.
+- The Windows swap and delete tests assert that the OS refused the change (`WinError 32`, the file
+  is held open). They are not skipped.
 
 ## Decided against, and why
 
-- No wrapping of `PermissionError` on an unreadable attachment into a `BtxMailError`: the library
-  does not refuse it on purpose. It is documented as passing through.
-- The 8 sibling repos whose `python -m` bypasses `cli.main()` were not fixed here. Each needs its
-  own gate and release (rank 50).
+- The lib_layered_config twin drift in bitranox-skills was left untouched: it is another live
+  session's work. The symptom is queued against repo-gate in `contrib_queue`.
 
 ## Still open, untouched
 
-- Rank 20 (template ConfMail rollout), rank 40 (stale bitranox-skills branches), rank 50 (sibling
-  `__main__`), rank 60 (`{#id}` anchors in api/module_reference/configuration docs): see
+- Rank 20 (template ConfMail rollout) and rank 50 (sibling `__main__` exit codes): see
   `OPEN-WORK.md`.
 
 ## Lessons for the next nap
 
-- When a test's bound is computed from the constant a mutation changes, the mutation cannot fail
-  it: derive the bound from a fixed number.
-- When a pydantic model overrides `__init__`, pydantic routes validation through it and silently
-  drops `strict=`: wrap construction in a metaclass `__call__` instead.
-- When a pydantic error is raised inside a schema wrap validator, pydantic rebuilds it as a plain
-  `ValidationError` at its boundary: re-raise a subclass outside, in `__call__`/`model_validate*`.
-- When `python -m pkg` runs a separate `lib_cli_exit_tools.cli_session` instead of `cli.main()`,
-  its exit codes diverge from the console script's (a usage error exits 1 instead of 2).
-- When a CLI decides `--json` by scanning all of argv, an option VALUE such as `--body --json`
-  switches it on: read only the tokens before the subcommand.
-- When moving top-level definitions by AST with leading-comment capture, verify that every
-  definition's `ast.dump` is identical before and after: an off-by-one duplicated constants.
-- When editing markdown table rows by regex, an escaped pipe (`\|`) inside a cell ends a non-greedy
-  cell match: split with a lookbehind for the backslash.
-- When a repo-gate compares a skill with its marketplace twin, write the twin in a separate command
-  before the commit: the gate judges the whole command before the write runs.
+- When a commit in a marketplace repo with mirrored skills is refused for drift in a pair you did
+  not touch, check the sibling checkout's `git status` first. A parallel session's staged edit
+  causes it, and the commit has to wait for that session.
+- When an origin is moving fast, prepare the version bump in a worktree off `origin/master` and
+  re-bump at commit time. A bump chosen earlier collides with the parallel session's release.
 
 ## Exact next action
 
-FIRST apply OPEN-WORK rank 16 (owner decisions taken after this handover was written: implicit
-`./.env` is read again; sensitive-path case-insensitivity on macOS/Windows only), so CI runs once on
-the final code. Then:
-
-```bash
-git push   # from the btx_lib_mail checkout
-```
-
-Then run `ci_wait` for `$(git rev-parse HEAD)` (compuse-toolbox) and fix any macOS/Windows red.
-This is rank 21 ahead of rank 20 because 10 commits are unpushed and their cross-platform behaviour
-is unverified: an unpushed fix protects no one, and a Windows failure would invalidate the review's
-security fixes.
+Start rank 21 sweep 2: invoke `/bitranox:process-review-enhance-code-quality` on master (baseline 6.9/10;
+`src/btx_lib_mail/cli.py`, about 1300 lines, is the first split candidate). Rank 20 outranks
+rank 21 by number, but its own next action asks for a fresh session that writes a rollout plan for
+20 repos. Sweep 2 is the step that finishes the review the owner started. Rank 30 waits for the
+owner to lift the hold.
 
 ## Files that matter
 
-- `src/btx_lib_mail/_attachments.py` (`_open_attachment`, `normalise_extensions`),
-  `src/btx_lib_mail/_compose.py` (`message_for` / `_JoinedMessage`),
-  `src/btx_lib_mail/lib_mail.py` (`send`, `_deliver_to_any_host` rewind),
-  `src/btx_lib_mail/_transport.py` (`_session_deadline`),
-  `src/btx_lib_mail/cli.py` (`_Sources`, `_json_mode`, `_json_exception_handler`).
-- `tests/test_attachment_integrity.py`, `tests/test_cli_send.py`, `tests/test_transfer_memory.py`,
-  `tests/test_deadline.py`.
+- `src/btx_lib_mail/cli.py` (`_env_file_to_read`, `_env_file_refusal`, `_read_env_file`).
+- `src/btx_lib_mail/_attachments.py` (`_PATHS_IGNORE_CASE`, `_check_sensitive_patterns`).
+- `tests/conftest.py` (`_empty_working_directory`), `tests/test_cli_send.py` (`_flat`),
+  `tests/test_attachment_integrity.py` (`_attempt`).
 - `.private/review-2026-10-02.md` (the sweep-1 findings).
 
 ## How to verify
 
-- `env -u VIRTUAL_ENV make test` ends `{"result":"pass"}`.
-- `git log --oneline origin/master..master` is empty after the push. Every workflow for that sha
-  ends green on all three OSes.
-- `diff skills/python-send-mail/SKILL.md ../../KI/bitranox-skills/plugins/bitranox/skills/coding-python-send-mail/SKILL.md`
-  differs only in the `name:` line and the install blockquote.
+- `env -u VIRTUAL_ENV make test` ends with `{"result":"pass",...}`.
+- `gh run list --commit $(git rev-parse --verify -q HEAD) --json name,conclusion` shows CI and
+  CodeQL succeeding after the push.
 
 > Read this, then replace the first line with `# STALE - read <date>, work continued`. Do not
 > delete it - if this session ends badly it is the only record of where things stood.
