@@ -166,7 +166,7 @@ the first delivery.
 module-global instance `send()` reads when no `config` is passed.
 
 **Fields:** `smtphosts`, `raise_on_missing_attachments`, `raise_on_invalid_recipient`,
-`smtp_username`, `smtp_password` (`SecretStr`), `smtp_use_starttls`,
+`recipient_max_count`, `smtp_username`, `smtp_password` (`SecretStr`), `smtp_use_starttls`,
 `smtp_starttls_verify`, `smtp_timeout`, `smtp_local_hostname`,
 `smtp_delivery_deadline`, and the `attachment_*` fields. Defaults and meanings are
 tabled in [docs/api.md](../api.md#confmail-fields).
@@ -191,18 +191,23 @@ redacted at the credential fields (`smtp_password`, `smtphosts`).
   set is the default), `SENSITIVE_PATH_PATTERNS` (matched ignoring case on macOS and
   Windows, exactly elsewhere: `_PATHS_IGNORE_CASE`).
 * `AttachmentViolation` - `str` enum: `PATH_TRAVERSAL`, `SYMLINK`, `SENSITIVE_PATTERN`,
-  `DIRECTORY`, `EXTENSION`, `SIZE`, `CHANGED`.
+  `DIRECTORY`, `EXTENSION`, `SIZE`, `CHANGED`, `FILENAME`.
 * `AttachmentSecurityError(BtxMailError)` - `path`, `reason` (control characters
   replaced), `violation_type`.
 * `AttachmentPayload` - `filename`, `source` (the checked, resolved path), `handle` (the
   file opened once), `size_limit`.
 * `AttachmentSecurityOptions` - the resolved rules for one call.
-* `prepare_attachments(paths, security, *, raise_on_missing)` - for each path, the path
-  checks (`_validate_attachment_security`: traversal component, final-component symlink,
-  sensitive pattern, directories and extension, all on the resolved path), then
+* `coerce_attachment_paths(entries)` - each `str` or `pathlib` entry as a `Path`; any
+  other type is an `InvalidInputError`.
+* `prepare_attachments(paths, security, *, raise_on_missing)` - refuses more paths than
+  `security.max_count`, then for each path the path checks (`_validate_attachment_security`:
+  NUL anywhere, traversal component, final-component symlink, then on the resolved path the
+  file name (control character, invalid Unicode), sensitive pattern, directories and
+  extension), then
   `_open_attachment`: `lstat`, open with `O_NOFOLLOW`/`O_NONBLOCK` where the platform
   has them, `fstat` must show the same device and inode and a regular file, size within
-  the limit. A swapped path is `CHANGED`. Warn mode logs and skips via `log_violation`;
+  the limit. A swapped path is `CHANGED`; an open the OS refuses is reported like a missing
+  file (`can not be read (EACCES)`). Warn mode logs and skips via `log_violation`;
   every handle is closed on failure, and by `send()` through `close_attachments`.
 
 **Location:** src/btx_lib_mail/_attachments.py
@@ -220,8 +225,10 @@ redacted at the credential fields (`smtp_password`, `smtphosts`).
 * `envelope_header_lines(...)` - one recipient's `Subject`, `From`, `To`, `Date`.
 * `message_for(header_lines, body)` - a read-only, seekable stream of those header lines
   followed by the shared body spool, read in place (no copy); closing it leaves the body open.
-* `check_subject(subject)` - refuses CR or LF (with the email package's own message) and
-  any other control character except TAB.
+* `check_subject(subject)` - refuses CR or LF (with the email package's own message), any
+  other control character except TAB, the line separators U+2028/U+2029 (with the CR/LF
+  message), and a lone surrogate.
+* `check_body(*, plain_body, html_body)` - refuses a body holding a lone surrogate.
 
 **Location:** src/btx_lib_mail/_compose.py
 
