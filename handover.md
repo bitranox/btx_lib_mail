@@ -1,4 +1,4 @@
-# Handover - btx_lib_mail, 2026-10-02 13:05 (code-quality review sweep 1 done, walkthrough not started)
+# STALE - read 2026-10-02 13:20, work continued
 
 Read `OPEN-WORK.md` first: ranks 20, 21, 30 (USER) and 40 (FOUND) are open.
 
