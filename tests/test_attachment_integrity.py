@@ -538,6 +538,22 @@ def test_an_allowed_symlink_is_judged_by_the_name_of_its_target(tmp_path: Path) 
     assert transport.messages == {}
 
 
+@pytest.mark.os_agnostic
+def test_a_file_of_exactly_the_size_limit_is_sent_and_one_byte_more_is_refused(tmp_path: Path) -> None:
+    at_limit = tmp_path / "at-limit.txt"
+    at_limit.write_bytes(b"x" * 100)
+    over_limit = tmp_path / "over-limit.txt"
+    over_limit.write_bytes(b"x" * 101)
+    transport = _RecordingTransport()
+
+    assert _send(transport, at_limit, attachment_max_size_bytes=100) is True
+    assert _attachment_bytes(transport.messages["one@example.com"]) == b"x" * 100
+
+    with pytest.raises(AttachmentSecurityError) as caught:
+        _send(_RecordingTransport(), over_limit, attachment_max_size_bytes=100)
+    assert caught.value.violation_type is AttachmentViolation.SIZE
+
+
 # root reads a mode-000 file anyway; the condition reads geteuid only where it exists.
 _UNREADABLE_FILE_SKIP = sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0)
 

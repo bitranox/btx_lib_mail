@@ -292,6 +292,27 @@ def test_bdat_path_delivers_and_round_trips(bdat_server: tuple[Any, _ChunkingHan
 
 
 @pytest.mark.os_agnostic
+def test_the_smtplib_transport_sends_the_whole_message_from_a_stream_read_part_way(data_server: tuple[Any, _CollectingHandler]) -> None:
+    # SmtplibTransport is public; a caller that reads the stream (to log or hash it) before
+    # handing it over must not truncate what is sent. send() rewinds too, so only a direct call
+    # reaches the transport's own rewind.
+    controller, handler = data_server
+    raw = b"Subject: direct\r\nFrom: sender@example.com\r\nTo: rcpt@example.com\r\n\r\nwhole body\r\n"
+    stream = io.BytesIO(raw)
+    stream.read(20)
+    delivery = _transport.DeliveryOptions(credentials=None, use_starttls=False, starttls_verify=True, timeout=10.0)
+
+    _transport.SmtplibTransport().deliver(
+        host=f"127.0.0.1:{controller.port}", sender="sender@example.com", recipient="rcpt@example.com", message=stream, delivery=delivery
+    )
+
+    assert len(handler.messages) == 1
+    received = message_from_bytes(handler.messages[0])
+    assert received["Subject"] == "direct"
+    assert "whole body" in _plain_text(received)
+
+
+@pytest.mark.os_agnostic
 def test_data_path_handles_a_body_that_is_only_a_dot(data_server: tuple[Any, _CollectingHandler]) -> None:
     controller, handler = data_server
 

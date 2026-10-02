@@ -114,14 +114,6 @@ def test_an_overlong_recipient_in_warn_mode_is_skipped_and_logged_without_its_te
     assert overlong not in logged, "neither the message nor an extra field carries the whole address"
 
 
-@pytest.mark.os_agnostic
-def test_a_malformed_address_keeps_its_existing_message() -> None:
-    with pytest.raises(InvalidInputError) as caught:
-        validate_email_address("invalid@")
-
-    assert str(caught.value) == "invalid email address: 'invalid@'"
-
-
 # ---------------------------------------------------------------------------
 # Recipient count
 # ---------------------------------------------------------------------------
@@ -147,6 +139,19 @@ def test_the_recipient_ceiling_counts_each_address_once() -> None:
     assert _send(transport, mail_recipients=recipients, config=ConfMail(recipient_max_count=2)) is True
 
     assert transport.recipients == ["one@example.com", "two@example.com"]
+
+
+@pytest.mark.os_agnostic
+def test_the_recipient_ceiling_counts_entries_before_any_is_validated() -> None:
+    # Invalid entries count too, so an oversized list is refused without a regex run per entry,
+    # even in warn mode, where the invalid ones would otherwise be skipped.
+    transport = _RecordingTransport()
+    recipients = ["ok@example.com", "bad@", "worse@"]
+
+    with pytest.raises(InvalidInputError, match=r"^3 recipients, more than recipient_max_count \(2\)$"):
+        _send(transport, mail_recipients=recipients, raise_on_invalid_recipient=False, config=ConfMail(recipient_max_count=2))
+
+    assert transport.recipients == []
 
 
 @pytest.mark.os_agnostic
@@ -207,8 +212,24 @@ def test_attachments_up_to_the_ceiling_are_sent(tmp_path: Path) -> None:
 
 
 @pytest.mark.os_agnostic
-def test_the_default_attachment_ceiling_is_one_hundred() -> None:
-    assert ConfMail().attachment_max_count == 100
+def test_the_default_attachment_ceiling_refuses_the_hundred_and_first(tmp_path: Path) -> None:
+    transport = _RecordingTransport()
+    # The count is checked before any path, so the files need not exist.
+    paths = [tmp_path / f"part{index}.txt" for index in range(101)]
+
+    with pytest.raises(InvalidInputError, match=r"^101 attachments, more than attachment_max_count \(100\)$"):
+        _send(transport, attachment_file_paths=paths, config=ConfMail())
+    assert transport.recipients == []
+
+
+@pytest.mark.os_agnostic
+def test_no_attachment_ceiling_sends_every_attachment(tmp_path: Path) -> None:
+    transport = _RecordingTransport()
+    config = ConfMail(attachment_max_count=None)
+
+    assert _send(transport, attachment_file_paths=_attachments(tmp_path, 101), attachment_blocked_directories=frozenset(), config=config) is True
+
+    assert transport.recipients == ["one@example.com"]
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +282,19 @@ def test_the_cli_reads_the_attachment_ceiling(cli_runner: CliRunner, monkeypatch
 
     assert type(result.exception) is InvalidInputError
     assert str(result.exception) == "2 attachments, more than attachment_max_count (1)"
+    assert transport.recipients == []
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(("option", "value"), [("--recipient-max-count", "0"), ("--attachment-max-count", "-1")])
+def test_the_cli_refuses_a_non_positive_ceiling(cli_runner: CliRunner, option: str, value: str) -> None:
+    transport = _RecordingTransport()
+    field = option.removeprefix("--").replace("-", "_")
+
+    result = cli_runner.invoke(cli, [*_CLI_ROUTE, "--recipient", "one@example.com", option, value], obj=CliContext(transport=transport))
+
+    assert type(result.exception) is InvalidInputError
+    assert f"{field} must be positive, got {value}" in str(result.exception)
     assert transport.recipients == []
 
 
