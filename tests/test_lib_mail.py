@@ -647,7 +647,7 @@ def test_validate_email_address_accepts_valid() -> None:
     lib_mail.validate_email_address("user@example.com")
 
     # Accepted means usable: recipient preparation keeps it as given.
-    assert _validation.prepare_recipients("user@example.com", raise_on_invalid=True) == ("user@example.com",)
+    assert _validation.prepare_recipients("user@example.com", raise_on_invalid=True, max_count=None) == ("user@example.com",)
 
 
 @pytest.mark.os_agnostic

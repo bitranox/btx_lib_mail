@@ -121,6 +121,7 @@ def _prepare(path: Path, *, max_size: int | None) -> tuple[lib_mail.AttachmentPa
         max_size_bytes=max_size,
         allow_symlinks=False,
         raise_on_violation=True,
+        max_count=None,
     )
     return _attachments.prepare_attachments((path,), security, raise_on_missing=True)
 
@@ -157,6 +158,7 @@ def test_in_warn_mode_a_grown_file_is_left_out_and_the_rest_is_sent(tmp_path: Pa
         max_size_bytes=10,
         allow_symlinks=False,
         raise_on_violation=False,
+        max_count=None,
     )
     attachments = _attachments.prepare_attachments((grown, steady), security, raise_on_missing=True)
     try:

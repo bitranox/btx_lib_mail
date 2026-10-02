@@ -61,6 +61,14 @@ __all__ = ["cli_send_mail"]
     metavar="EMAIL",
 )
 @option("--sender", help="Envelope sender address.")
+@option(
+    "--recipient-max-count",
+    "recipient_max_count",
+    type=int,
+    default=None,
+    help="Most recipients one run accepts (default: 1000).",
+    metavar="N",
+)
 @option("--subject", required=True, help="Mail subject line.")
 @option("--body", required=True, help="Plain-text email body.")
 @option("--html-body", help="Optional HTML body content.")
@@ -154,6 +162,14 @@ __all__ = ["cli_send_mail"]
     help="Max attachment size in bytes (default: 25 MiB).",
 )
 @option(
+    "--attachment-max-count",
+    "attachment_max_count",
+    type=int,
+    default=None,
+    help="Most attachments one run accepts (default: 100).",
+    metavar="N",
+)
+@option(
     "--attachment-allow-symlinks/--attachment-no-symlinks",
     "attachment_allow_symlinks",
     default=None,
@@ -172,6 +188,7 @@ def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per sett
     hosts: Sequence[str],
     recipients: Sequence[str],
     sender: str | None,
+    recipient_max_count: int | None,
     subject: str,
     body: str,
     html_body: str | None,
@@ -190,6 +207,7 @@ def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per sett
     attachment_allowed_dirs: Sequence[str],
     attachment_blocked_dirs: Sequence[str],
     attachment_max_size: int | None,
+    attachment_max_count: int | None,
     attachment_allow_symlinks: bool | None,
     attachment_raise_on_security: bool | None,
 ) -> None:
@@ -210,6 +228,8 @@ def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per sett
         recipients: Recipient addresses; defaults to `BTX_MAIL_RECIPIENTS`.
         sender: Optional envelope sender. Falls back to `BTX_MAIL_SENDER` or the
             first recipient.
+        recipient_max_count: Most recipients one run accepts; also
+            `BTX_MAIL_RECIPIENT_MAX_COUNT`.
         subject: Required subject line.
         body: Required plain-text body.
         html_body: Optional HTML body.
@@ -242,6 +262,8 @@ def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per sett
         attachment_blocked_dirs: Blocked directories, overriding the default
             sensitive directories.
         attachment_max_size: Max attachment size in bytes.
+        attachment_max_count: Most attachments one run accepts; also
+            `BTX_MAIL_ATTACHMENT_MAX_COUNT`.
         attachment_allow_symlinks: Allow or reject symlinked attachments.
         attachment_raise_on_security: Raise on a security violation (strict) or log
             a warning and skip (warn).
@@ -264,6 +286,9 @@ def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per sett
         if credentials is not None:
             user, secret = credentials
             settings.smtp_username, settings.smtp_password = user, SecretStr(secret)
+        settings.recipient_max_count = or_default(
+            resolve_int(recipient_max_count, "BTX_MAIL_RECIPIENT_MAX_COUNT", sources=sources), settings.recipient_max_count
+        )
         _apply_connection_settings(
             settings,
             _ConnectionOptions(
@@ -279,6 +304,7 @@ def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per sett
                 allowed_dirs=attachment_allowed_dirs,
                 blocked_dirs=attachment_blocked_dirs,
                 max_size=attachment_max_size,
+                max_count=attachment_max_count,
                 allow_symlinks=attachment_allow_symlinks,
                 raise_on_security=attachment_raise_on_security,
             ),
@@ -337,6 +363,7 @@ class _AttachmentOptions:
     allowed_dirs: Sequence[str]
     blocked_dirs: Sequence[str]
     max_size: int | None
+    max_count: int | None
     allow_symlinks: bool | None
     raise_on_security: bool | None
 
@@ -357,6 +384,7 @@ def _apply_attachment_settings(settings: ConfMail, options: _AttachmentOptions, 
     settings.attachment_max_size_bytes = or_default(
         resolve_int(options.max_size, "BTX_MAIL_ATTACHMENT_MAX_SIZE", sources=sources), settings.attachment_max_size_bytes
     )
+    settings.attachment_max_count = or_default(resolve_int(options.max_count, "BTX_MAIL_ATTACHMENT_MAX_COUNT", sources=sources), settings.attachment_max_count)
     settings.attachment_allow_symlinks = or_default(
         resolve_optional_bool(cli_flag=options.allow_symlinks, env_key="BTX_MAIL_ATTACHMENT_ALLOW_SYMLINKS", sources=sources),
         settings.attachment_allow_symlinks,

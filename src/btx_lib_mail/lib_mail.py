@@ -43,6 +43,7 @@ from ._config import ConfMail, conf
 from ._transport import DEFAULT_TRANSPORT, DeliveryOptions, SmtplibTransport, Transport
 from ._validation import (
     EMAIL_PATTERN,
+    address_length_problem,
     check_local_hostname,
     check_seconds,
     check_timeout,
@@ -195,6 +196,10 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
     """
     settings = config if config is not None else conf
 
+    # An overlong sender is reported by its length; the generic message below quotes the value.
+    sender_problem = address_length_problem(mail_from)
+    if sender_problem is not None:
+        raise InvalidInputError(f"invalid sender address: {sender_problem}")
     try:
         validate_email_address(mail_from)
     except ValueError:
@@ -204,7 +209,7 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
     resolved_raise_on_missing = raise_on_missing_attachments if raise_on_missing_attachments is not None else settings.raise_on_missing_attachments
     resolved_raise_on_invalid = raise_on_invalid_recipient if raise_on_invalid_recipient is not None else settings.raise_on_invalid_recipient
 
-    recipients = prepare_recipients(mail_recipients, raise_on_invalid=resolved_raise_on_invalid)
+    recipients = prepare_recipients(mail_recipients, raise_on_invalid=resolved_raise_on_invalid, max_count=settings.recipient_max_count)
 
     # Resolve security options
     security = _resolve_attachment_security_options(
@@ -385,6 +390,7 @@ def _resolve_attachment_security_options(  # noqa: PLR0913 - one keyword-only ov
         max_size_bytes=max_size,
         allow_symlinks=allow_symlinks,
         raise_on_violation=raise_on_violation,
+        max_count=settings.attachment_max_count,
     )
 
 

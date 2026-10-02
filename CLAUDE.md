@@ -51,6 +51,7 @@ tests/
   test_deadline.py             # delivery deadline against a dripping server
   test_errors.py               # BtxMailError hierarchy at every raise site
   test_lib_mail.py             # configuration, validators, attachment rules, orchestration
+  test_limits.py               # per-call ceilings: address length, recipient and attachment counts
   test_metadata.py             # metadata constant tests
   test_module_entry.py         # python -m entry tests
   test_packaging.py            # builds the sdist and refuses anything outside its include list
@@ -178,6 +179,7 @@ Attachments are validated against multiple security checks:
 | `attachment_allowed_directories`         | `frozenset[Path] \| None` | `None` (blacklist)      |
 | `attachment_blocked_directories`         | `frozenset[Path]`         | OS-specific sensitive   |
 | `attachment_max_size_bytes`              | `int \| None`             | `26_214_400` (25 MiB)   |
+| `attachment_max_count`                   | `int \| None`             | `100`                   |
 | `attachment_allow_symlinks`              | `bool`                    | `False`                 |
 | `attachment_raise_on_security_violation` | `bool`                    | `True`                  |
 | `attachment_allow_empty_blocklists`      | `bool`                    | `False`                 |
@@ -191,6 +193,7 @@ Attachments are validated against multiple security checks:
 | `BTX_MAIL_ATTACHMENT_ALLOWED_DIRS`      | Allowed directories (whitelist) |
 | `BTX_MAIL_ATTACHMENT_BLOCKED_DIRS`      | Blocked directories (override)  |
 | `BTX_MAIL_ATTACHMENT_MAX_SIZE`          | Max size in bytes               |
+| `BTX_MAIL_ATTACHMENT_MAX_COUNT`         | Max attachments per call        |
 | `BTX_MAIL_ATTACHMENT_ALLOW_SYMLINKS`    | Allow symlinks (boolean)        |
 | `BTX_MAIL_ATTACHMENT_RAISE_ON_SECURITY` | Raise on violation (boolean)    |
 
@@ -202,6 +205,7 @@ Attachments are validated against multiple security checks:
 --attachment-allowed-dir /path        # whitelist mode (repeat for multiple)
 --attachment-blocked-dir /path        # override blacklist (repeat for multiple)
 --attachment-max-size 50000000        # 50 MiB
+--attachment-max-count 10             # at most 10 attachments
 --attachment-allow-symlinks           # allow symlinks
 --attachment-no-symlinks              # reject symlinks (default)
 --attachment-strict                   # raise on violation (default)

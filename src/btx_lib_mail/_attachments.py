@@ -336,6 +336,7 @@ class AttachmentSecurityOptions:
         max_size_bytes: Maximum attachment size in bytes.
         allow_symlinks: Whether symlinks are permitted.
         raise_on_violation: Whether violations raise or just warn.
+        max_count: Most attachments one call accepts; None sets no limit.
     """
 
     allowed_extensions: frozenset[str] | None
@@ -345,6 +346,7 @@ class AttachmentSecurityOptions:
     max_size_bytes: int | None
     allow_symlinks: bool
     raise_on_violation: bool
+    max_count: int | None
 
 
 def _check_path_traversal(path: pathlib.Path, original_str: str) -> None:
@@ -707,7 +709,13 @@ def prepare_attachments(
         Payloads holding open files; the caller closes them
         (:func:`close_attachments`). On any failure, those already opened are
         closed before the error propagates.
+
+    Raises:
+        InvalidInputError: If there are more paths than `security.max_count`;
+            no file is checked or opened then.
     """
+    if security.max_count is not None and len(paths) > security.max_count:
+        raise InvalidInputError(f"{len(paths)} attachments, more than attachment_max_count ({security.max_count})")
     prepared: list[AttachmentPayload] = []
     try:
         for path in paths:

@@ -36,6 +36,8 @@ of sensitive files, dangerous executables, or oversized payloads.
 6. **Size Limit**  -  Files larger than 25 MiB (default) are rejected. Override
    via `attachment_max_size_bytes`. The bytes are also counted while the file is
    read, so a file that grows past the limit after the check is refused too.
+   One call accepts at most 100 attachments (`attachment_max_count`; `None` lifts
+   the limit); more is refused with `InvalidInputError` before any file is opened.
 7. **One Open File**  -  After the checks, each attachment is opened once and
    compared with what was checked (same file, still a regular file); the message
    body is encoded once from that open file and every recipient receives those

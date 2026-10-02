@@ -36,6 +36,11 @@
 - `CliContext`, the typed `ctx.obj`; its `transport` lets an application embedding the CLI
   (or a test) deliver through its own `Transport`.
 - A WARNING when credentials are sent with STARTTLS off, naming the host.
+- `ConfMail.recipient_max_count` (default `1000`) and `ConfMail.attachment_max_count` (default
+  `100`), with `--recipient-max-count` / `BTX_MAIL_RECIPIENT_MAX_COUNT` and
+  `--attachment-max-count` / `BTX_MAIL_ATTACHMENT_MAX_COUNT` on the CLI: one `send()` call
+  with more recipients (counted after duplicates are dropped) or more attachments is refused
+  with `InvalidInputError` before any delivery or file check. `None` lifts a limit.
 
 ### Changed
 
@@ -60,6 +65,12 @@
   The private helpers moved into submodules (`_settings_sources`, `_output`, `_traceback`,
   `_commands`, `_send_command`, `_dispatch`); one imported from `btx_lib_mail.cli` now lives
   there, some under a name without the leading underscore.
+- `validate_email_address()`, and with it every sender and recipient check, refuses an address
+  longer than RFC 5321 allows: more than 64 characters before the `@`, or more than 254 in all.
+  The message names the length (`invalid email address: 255 characters, more than the 254 RFC
+  5321 allows`) instead of quoting the address. A malformed address within those lengths keeps
+  its message; one that is malformed AND too long, which was refused before with the address
+  quoted, is now refused with the length message.
 - The path-traversal check refuses a `..` path COMPONENT only: `report..final.txt` is now
   accepted, `a/../b` is still refused with the same message.
 - Each attachment is opened once, right after its checks, and compared with what was

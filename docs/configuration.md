@@ -204,6 +204,7 @@ Environment variables understood by the CLI:
 | `BTX_MAIL_SMTP_HOSTS`             | Comma-separated list of SMTP hosts (each `host[:port]`).                                                       | `smtp1.example.com:587,smtp2.example.com` |
 | `BTX_MAIL_RECIPIENTS`             | Comma-separated list of recipient emails.                                                                      | `primary@example.com,backup@example.com`  |
 | `BTX_MAIL_SENDER`                 | Envelope sender; defaults to the first recipient when unset.                                                   | `alerts@example.com`                      |
+| `BTX_MAIL_RECIPIENT_MAX_COUNT`    | Most recipients one run accepts (defaults to `1000`).                                                          | `5000`                                    |
 | `BTX_MAIL_SMTP_USE_STARTTLS`      | Boolean (`1`/`true`/`yes`/`on` or `0`/`false`/`no`/`off`) enabling STARTTLS; blank keeps the default (`true`). | `true`                                    |
 | `BTX_MAIL_SMTP_STARTTLS_VERIFY`   | Boolean flag verifying the server certificate during STARTTLS; blank keeps the default (`true`).               | `false`                                   |
 | `BTX_MAIL_SMTP_USERNAME`          | Username used when STARTTLS/authentication is required.                                                        | `smtp-user`                               |
@@ -222,6 +223,7 @@ Environment variables understood by the CLI:
 | `BTX_MAIL_ATTACHMENT_ALLOWED_DIRS`      | Comma-separated allowed directories (whitelist mode).     | `/home/user/docs,/tmp` |
 | `BTX_MAIL_ATTACHMENT_BLOCKED_DIRS`      | Comma-separated blocked directories (overrides defaults). | `/etc,/root`           |
 | `BTX_MAIL_ATTACHMENT_MAX_SIZE`          | Max attachment size in bytes.                             | `26214400`             |
+| `BTX_MAIL_ATTACHMENT_MAX_COUNT`         | Most attachments one run accepts (defaults to `100`).     | `10`                   |
 | `BTX_MAIL_ATTACHMENT_ALLOW_SYMLINKS`    | Boolean flag allowing symlinks.                           | `false`                |
 | `BTX_MAIL_ATTACHMENT_RAISE_ON_SECURITY` | Boolean flag to raise on violations (vs. warn and skip).  | `true`                 |
 

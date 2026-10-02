@@ -69,6 +69,7 @@ subcommand.
 | `--host HOST`                            | SMTP host (repeat or comma-separated). Env: `BTX_MAIL_SMTP_HOSTS`.                                                                                                                    |
 | `--recipient EMAIL`                      | Recipient address (repeat or comma-separated). Env: `BTX_MAIL_RECIPIENTS`.                                                                                                            |
 | `--sender EMAIL`                         | Envelope sender. Env: `BTX_MAIL_SENDER`.                                                                                                                                              |
+| `--recipient-max-count N`                | Most recipients one run accepts (default `1000`). Env: `BTX_MAIL_RECIPIENT_MAX_COUNT`.                                                                                                |
 | `--subject TEXT`                         | Mail subject line (required).                                                                                                                                                         |
 | `--body TEXT`                            | Plain-text email body (required).                                                                                                                                                     |
 | `--html-body TEXT`                       | Optional HTML body content.                                                                                                                                                           |
@@ -92,6 +93,7 @@ subcommand.
 | `--attachment-allowed-dir PATH`                        | Allowed directory (repeat for multiple). Enables whitelist mode. Env: `BTX_MAIL_ATTACHMENT_ALLOWED_DIRS`.                |
 | `--attachment-blocked-dir PATH`                        | Blocked directory (repeat for multiple). Overrides defaults. Env: `BTX_MAIL_ATTACHMENT_BLOCKED_DIRS`.                    |
 | `--attachment-max-size BYTES`                          | Max attachment size in bytes. Env: `BTX_MAIL_ATTACHMENT_MAX_SIZE`.                                                       |
+| `--attachment-max-count N`                             | Most attachments one run accepts (default `100`). Env: `BTX_MAIL_ATTACHMENT_MAX_COUNT`.                                  |
 | `--attachment-allow-symlinks/--attachment-no-symlinks` | Allow or reject symlinked attachments. Env: `BTX_MAIL_ATTACHMENT_ALLOW_SYMLINKS`.                                        |
 | `--attachment-strict/--attachment-warn`                | Raise on security violation (strict) or log warning and skip (warn). Env: `BTX_MAIL_ATTACHMENT_RAISE_ON_SECURITY`.       |
 

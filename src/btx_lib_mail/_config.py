@@ -8,7 +8,7 @@ from __future__ import annotations
 import pathlib
 from typing import TYPE_CHECKING, Any, cast
 
-from pydantic import ConfigDict, Field, SecretStr, field_validator, model_validator
+from pydantic import ConfigDict, Field, SecretStr, ValidationInfo, field_validator, model_validator
 
 from ._attachments import (
     default_blocked_directories,
@@ -45,6 +45,10 @@ class ConfMail(SecretSafeModel):
         raise_on_invalid_recipient: When `True`, invalid addresses raise
             `InvalidInputError` (a `ValueError`); otherwise a warning is
             logged and delivery skips the address.
+        recipient_max_count: Most recipients one `send()` call accepts,
+            counted after duplicates are dropped and before any is validated;
+            more is refused with `InvalidInputError` before any delivery
+            (default 1000). `None` sets no limit. Must be positive when set.
         smtp_username: Optional username; must be populated together with
             `smtp_password` to enable authentication.
         smtp_password: Optional password as a `SecretStr`, masked in `repr()`
@@ -96,6 +100,10 @@ class ConfMail(SecretSafeModel):
             `attachment_allow_empty_blocklists` is `True`.
         attachment_max_size_bytes: Maximum attachment size in bytes (default
             25 MiB). `None` disables size checking.
+        attachment_max_count: Most attachments one `send()` call accepts;
+            more is refused with `InvalidInputError` before any file is
+            checked or opened (default 100). `None` sets no limit. Must be
+            positive when set.
         attachment_allow_symlinks: When `False`, a path whose last component
             is a symlink is rejected; when `True`, it is resolved and
             validated. A symlinked directory along the path is followed
@@ -117,6 +125,7 @@ class ConfMail(SecretSafeModel):
     smtphosts: list[str] = Field(default_factory=list)
     raise_on_missing_attachments: bool = True
     raise_on_invalid_recipient: bool = True
+    recipient_max_count: int | None = 1000
     smtp_username: str | None = None
     smtp_password: SecretStr | None = None
     smtp_use_starttls: bool = True
@@ -131,6 +140,7 @@ class ConfMail(SecretSafeModel):
     attachment_allowed_directories: frozenset[pathlib.Path] | None = None
     attachment_blocked_directories: frozenset[pathlib.Path] = Field(default_factory=default_blocked_directories)
     attachment_max_size_bytes: int | None = 26_214_400  # 25 MiB
+    attachment_max_count: int | None = 100
     attachment_allow_symlinks: bool = False
     attachment_raise_on_security_violation: bool = True
     attachment_allow_empty_blocklists: bool = False
@@ -305,24 +315,25 @@ class ConfMail(SecretSafeModel):
                 raise InvalidInputError(f"directory must be a string or Path, got {type(directory).__name__}")
         return frozenset(normalised)
 
-    @field_validator("attachment_max_size_bytes", mode="after")
+    @field_validator("attachment_max_size_bytes", "attachment_max_count", "recipient_max_count", mode="after")
     @classmethod
-    def _validate_max_size(cls, value: int | None) -> int | None:
-        """Validate that max size is positive when set.
+    def _validate_ceiling(cls, value: int | None, info: ValidationInfo) -> int | None:
+        """Validate that a size or count ceiling is positive when set.
 
-        A zero or negative size limit would reject all attachments.
+        A zero or negative ceiling would refuse every message.
 
         Args:
-            value: Max size in bytes (None to disable checking).
+            value: The ceiling (None to disable it).
+            info: Names the field, for the message.
 
         Returns:
-            The validated size limit.
+            The validated ceiling.
 
         Raises:
             InvalidInputError: If value is set but not positive.
         """
         if value is not None and value <= 0:
-            raise InvalidInputError(f"attachment_max_size_bytes must be positive, got {value}")
+            raise InvalidInputError(f"{info.field_name} must be positive, got {value}")
         return value
 
     @model_validator(mode="after")

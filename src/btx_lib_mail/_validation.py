@@ -16,6 +16,12 @@ from .errors import InvalidInputError
 EMAIL_PATTERN: Final[re.Pattern[str]] = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
 """Compiled regex used by :func:`validate_email_address`."""
 
+# RFC 5321 section 4.5.3.1: 64 octets before the @, and 254 for the whole address.
+_MAX_LOCAL_PART: Final[int] = 64
+_MAX_ADDRESS: Final[int] = 254
+# How much of an overlong address a skipped-recipient log line shows.
+_SHOWN_PREFIX: Final[int] = 40
+
 
 # EHLO takes one argument: printable ASCII, no space (RFC 5321 section 4.1.1.1).
 _EHLO_NAME_FIRST_CHAR: Final[int] = 0x21
@@ -101,6 +107,7 @@ def prepare_recipients(
     recipients: str | Sequence[str],
     *,
     raise_on_invalid: bool,
+    max_count: int | None,
 ) -> tuple[str, ...]:
     """Return a deduplicated tuple of valid, lower-cased recipient addresses.
 
@@ -111,14 +118,17 @@ def prepare_recipients(
         recipients: Single email or sequence of emails supplied by callers.
         raise_on_invalid: When `True`, invalid recipients raise `ValueError`;
             when `False`, a warning is logged and the address is skipped.
+        max_count: Most distinct recipients accepted, counted before any is
+            validated; `None` sets no limit.
 
     Returns:
         Validated, deduplicated, lower-cased emails.
 
     Raises:
-        InvalidInputError: If recipients is not a string or sequence, an
-            entry fails validation and raise_on_invalid is True, or no valid
-            recipient remains.
+        InvalidInputError: If recipients is not a string or sequence, there
+            are more distinct recipients than max_count, an entry fails
+            validation and raise_on_invalid is True, or no valid recipient
+            remains.
     """
     if isinstance(recipients, str):
         raw_items: Iterable[str] = (recipients,)
@@ -130,26 +140,78 @@ def prepare_recipients(
     cleaned = [_normalise_email_address(item) for item in raw_items]
     filtered = [value for value in cleaned if value]
     unique = tuple(dict.fromkeys(filtered))
+    # Counted before validation, so an oversized list costs no regex run per entry.
+    if max_count is not None and len(unique) > max_count:
+        raise InvalidInputError(f"{len(unique)} recipients, more than recipient_max_count ({max_count})")
 
-    valid: list[str] = []
-    for entry in unique:
-        try:
-            validate_email_address(entry)
-        except ValueError:
-            # `entry` is exactly the value that FAILED validation, so unlike
-            # `recipients`/`failed_recipients` elsewhere in this module it is
-            # not provably free of control characters; clean it before it
-            # reaches a log line or an exception message a caller may log.
-            clean_entry = printable(entry)
-            if raise_on_invalid:
-                raise InvalidInputError(f"invalid recipient {clean_entry}") from None
-            logger.warning("invalid recipient %s", clean_entry, extra={"recipient": clean_entry, "skipped": "recipient"})
-            continue
-        valid.append(entry)
+    valid = [entry for entry in unique if _accept_recipient(entry, raise_on_invalid=raise_on_invalid)]
 
     if not valid:
         raise InvalidInputError("no valid recipients")
     return tuple(valid)
+
+
+def _accept_recipient(entry: str, *, raise_on_invalid: bool) -> bool:
+    """Return whether entry is a valid address; refuse or skip it otherwise.
+
+    An overlong entry is reported by its length, never by its text: a
+    megabyte address would otherwise land whole in the exception and the log.
+
+    Args:
+        entry: One normalised recipient address.
+        raise_on_invalid: Raise for an invalid entry instead of logging and skipping it.
+
+    Returns:
+        True when entry is valid, False when it was logged and skipped.
+
+    Raises:
+        InvalidInputError: If entry is invalid and raise_on_invalid is True.
+    """
+    problem = address_length_problem(entry)
+    if problem is None and EMAIL_PATTERN.fullmatch(entry):
+        return True
+    # `entry` is exactly the value that FAILED validation, so unlike
+    # `recipients`/`failed_recipients` elsewhere in this module it is not
+    # provably free of control characters; clean it before it reaches a log
+    # line or an exception message a caller may log.
+    if problem is not None:
+        template, detail = "invalid recipient: %s", problem
+        shown = f"{printable(entry[:_SHOWN_PREFIX])}... ({len(entry)} characters)"
+    else:
+        template, detail = "invalid recipient %s", printable(entry)
+        shown = detail
+    if raise_on_invalid:
+        raise InvalidInputError(template % detail)
+    logger.warning(template, detail, extra={"recipient": shown, "skipped": "recipient"})
+    return False
+
+
+def address_length_problem(address: str) -> str | None:
+    """Describe how address exceeds the RFC 5321 lengths, or return None.
+
+    RFC 5321 section 4.5.3.1 allows 64 octets before the `@` and a 256-octet
+    path, which leaves 254 for the address between the angle brackets. The
+    description names the length, so a caller can report it without quoting
+    the address.
+
+    Args:
+        address: Candidate email string.
+
+    Returns:
+        The problem as a sentence fragment, or None when both lengths fit.
+
+    Examples:
+        >>> address_length_problem("user@example.com") is None
+        True
+        >>> address_length_problem("a" * 65 + "@example.com")
+        'the local part has 65 characters, more than the 64 RFC 5321 allows'
+    """
+    local_part, at_sign, _domain = address.rpartition("@")
+    if at_sign and len(local_part) > _MAX_LOCAL_PART:
+        return f"the local part has {len(local_part)} characters, more than the {_MAX_LOCAL_PART} RFC 5321 allows"
+    if len(address) > _MAX_ADDRESS:
+        return f"{len(address)} characters, more than the {_MAX_ADDRESS} RFC 5321 allows"
+    return None
 
 
 def _normalise_email_address(candidate: str) -> str:
@@ -246,7 +308,9 @@ def validate_email_address(address: str) -> None:
         address: Candidate email string.
 
     Raises:
-        InvalidInputError: If address does not match `EMAIL_PATTERN`.
+        InvalidInputError: If address is longer than RFC 5321 allows (the
+            message names the length, not the address) or does not match
+            `EMAIL_PATTERN`.
 
     Examples:
         >>> validate_email_address("user@example.com")
@@ -255,6 +319,9 @@ def validate_email_address(address: str) -> None:
             ...
         btx_lib_mail.errors.InvalidInputError: invalid email address: 'invalid@'
     """
+    problem = address_length_problem(address)
+    if problem is not None:
+        raise InvalidInputError(f"invalid email address: {problem}")
     if not EMAIL_PATTERN.fullmatch(address):
         raise InvalidInputError(f"invalid email address: {address!r}")
 
