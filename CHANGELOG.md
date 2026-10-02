@@ -54,6 +54,12 @@
   and re-exports the public names (`__all__`). Importing from `btx_lib_mail` or
   `btx_lib_mail.lib_mail` is unchanged; a private helper imported from `lib_mail` now lives
   in its own module.
+- `btx_lib_mail.cli` is a package: the public names (`cli`, `main`, `CliContext`, the
+  commands, `CLICK_CONTEXT_SETTINGS`, the traceback limits and helpers) are importable from
+  `btx_lib_mail.cli` as before, and the console scripts still run `btx_lib_mail.cli:main`.
+  The private helpers moved into submodules (`_settings_sources`, `_output`, `_traceback`,
+  `_commands`, `_send_command`, `_dispatch`); one imported from `btx_lib_mail.cli` now lives
+  there, some under a name without the leading underscore.
 - The path-traversal check refuses a `..` path COMPONENT only: `report..final.txt` is now
   accepted, `a/../b` is still refused with the same message.
 - Each attachment is opened once, right after its checks, and compared with what was

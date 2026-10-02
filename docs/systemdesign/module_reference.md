@@ -19,7 +19,7 @@ docs/attachment-security.md, docs/streaming.md, docs/installation.md, CHANGELOG.
   _transport.py, _common.py (private modules behind `lib_mail`)
 * src/btx_lib_mail/errors.py (`BtxMailError` and its subclasses)
 * src/btx_lib_mail/secret_safety.py (credential-safe pydantic validation errors)
-* src/btx_lib_mail/cli.py, typed_click.py, __main__.py (command-line adapter)
+* src/btx_lib_mail/cli/ (package), typed_click.py, __main__.py (command-line adapter)
 * src/btx_lib_mail/behaviors.py, __init__conf__.py (scaffold helpers, static metadata)
 
 ---
@@ -309,19 +309,21 @@ outer model's `model_validate_json`, where the JSON parser fails before the mode
   stores a `CliContext` (`traceback`, `json_output`, `json_bare`, `transport`) in
   `ctx.obj`, keeping a transport an embedding caller passed through `obj=`.
 * **Commands:** `info`, `hello`, `send`, `validate-email`, `validate-smtp-host`, `fail`.
-  Each prints through `_emit`, which writes the human line or the JSON envelope.
-* **`send`:** `_Sources` reads the environment, then the env file `_env_file_to_read`
+  Each prints through `emit` (`_output`), which writes the human line or the JSON envelope.
+* **`send`:** `Sources` (`_settings_sources`) reads the environment, then the env file `env_file_to_read`
   picks: the one named by `--env-file` / `BTX_MAIL_ENV_FILE`, else `./.env` when it is a
-  regular file (parsed once by `_read_env_file`, UTF-8, at most 64 KiB). Resolved values are assigned onto one copy of `conf`, so
+  regular file (parsed once by `read_env_file`, UTF-8, at most 64 KiB). Resolved values are assigned onto one copy of `conf`, so
   `ConfMail`'s checks run before delivery; a refusal is re-raised as `InvalidInputError`
-  with the validator's message (`_refusals_as_value_error`). `--password-file` reads one
-  line (`-` is stdin). `_collect_skipped` (a logger filter) gathers the warn-mode skips for
+  with the validator's message (`refusals_as_value_error`). `--password-file` reads one
+  line (`-` is stdin). `collect_skipped` (a logger filter) gathers the warn-mode skips for
   the envelope's `skipped`.
 * **`main(argv)`:** runs the group through `lib_cli_exit_tools.run_cli`; with `--json` or
   `--json-bare` in argv, `_json_exception_handler` prints a failure as JSON on stdout and
   returns the exit code the plain run would give. Traceback state is restored afterwards.
 
-**Location:** src/btx_lib_mail/cli.py
+**Location:** src/btx_lib_mail/cli/ - `__init__.py` is the public surface (`cli`, `main`,
+`CliContext`, the commands, the traceback helpers); the private submodules hold one concern
+each: `_settings_sources`, `_output`, `_traceback`, `_commands`, `_send_command`, `_dispatch`.
 
 ### `typed_click` Module (Type Boundary)
 

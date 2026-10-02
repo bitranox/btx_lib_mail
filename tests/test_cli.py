@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+# Tests reach the dispatch and traceback internals (and the seams main() calls through) on purpose.
+# pyright: reportPrivateUsage=false
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -10,6 +12,7 @@ import pytest
 
 from btx_lib_mail import __init__conf__
 from btx_lib_mail import cli as cli_mod
+from btx_lib_mail.cli import _commands, _dispatch, _settings_sources
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -18,7 +21,9 @@ if TYPE_CHECKING:
 
 
 def _call_cli_private(name: str, *args: Any, **kwargs: Any) -> Any:
-    helper = getattr(cli_mod, name)
+    """Call a private helper by name from the submodule that defines it."""
+    owner = _settings_sources if hasattr(_settings_sources, name) else _dispatch
+    helper = getattr(owner, name)
     return helper(*args, **kwargs)
 
 
@@ -160,8 +165,8 @@ def test_when_cli_invocation_explodes_the_exception_story_is_told(
         captured["length_limit"] = length_limit
         return 99
 
-    monkeypatch.setattr(cli_mod, "_invoke_cli", explode)
-    monkeypatch.setattr(cli_mod, "_print_exception", record_print)
+    monkeypatch.setattr(_dispatch, "_invoke_cli", explode)
+    monkeypatch.setattr(_dispatch, "_print_exception", record_print)
 
     result = _call_cli_private(
         "_run_cli_via_exit_tools",
@@ -216,7 +221,7 @@ def test_when_info_runs_with_traceback_the_choice_is_shared(
             )
         )
 
-    monkeypatch.setattr(cli_mod.__init__conf__, "print_info", record)
+    monkeypatch.setattr(__init__conf__, "print_info", record)
 
     exit_code = cli_mod.main(["--traceback", "info"])
 
@@ -255,7 +260,7 @@ def test_when_cli_runs_without_arguments_help_is_printed(
     def remember() -> None:
         calls.append("called")
 
-    monkeypatch.setattr(cli_mod, "noop_main", remember)
+    monkeypatch.setattr(_commands, "noop_main", remember)
 
     result = cli_runner.invoke(cli_mod.cli, [])
 
@@ -276,7 +281,7 @@ def test_when_main_receives_no_arguments_cli_main_is_exercised(
     def remember() -> None:
         calls.append("called")
 
-    monkeypatch.setattr(cli_mod, "noop_main", remember)
+    monkeypatch.setattr(_commands, "noop_main", remember)
 
     def fake_run_cli(
         command: Any,
@@ -312,7 +317,7 @@ def test_when_traceback_is_requested_without_command_the_domain_runs(
     def remember() -> None:
         calls.append("called")
 
-    monkeypatch.setattr(cli_mod, "noop_main", remember)
+    monkeypatch.setattr(_commands, "noop_main", remember)
 
     result = cli_runner.invoke(cli_mod.cli, ["--traceback"])
 

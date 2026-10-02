@@ -18,8 +18,9 @@ import click
 import lib_cli_exit_tools
 import pytest
 
+from btx_lib_mail import __init__conf__, conf
 from btx_lib_mail import cli as cli_mod
-from btx_lib_mail.cli import CliContext
+from btx_lib_mail.cli import CliContext, _output, _settings_sources
 from btx_lib_mail.errors import InvalidInputError
 
 if TYPE_CHECKING:
@@ -293,13 +294,13 @@ def test_a_dotenv_that_is_not_a_file_is_ignored(monkeypatch: pytest.MonkeyPatch,
 
 @pytest.mark.os_agnostic
 def test_an_oversized_dotenv_in_the_working_directory_is_refused(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner, tmp_path: Path) -> None:
-    (tmp_path / ".env").write_bytes(b"#" * (cli_mod._ENV_FILE_MAX_BYTES + 1))
+    (tmp_path / ".env").write_bytes(b"#" * (_settings_sources._ENV_FILE_MAX_BYTES + 1))
     monkeypatch.chdir(tmp_path)
 
     result, transport = _invoke(cli_runner, ["send", *_ROUTE, *_MESSAGE])
 
     assert result.exit_code == 2
-    assert f"./.env in the working directory is {cli_mod._ENV_FILE_MAX_BYTES + 1} bytes; an env file may be at most" in _flat(result.output)
+    assert f"./.env in the working directory is {_settings_sources._ENV_FILE_MAX_BYTES + 1} bytes; an env file may be at most" in _flat(result.output)
     assert "--env-file" not in _flat(result.output)
     assert transport.deliveries == []
 
@@ -360,7 +361,7 @@ def test_a_quoted_blank_env_file_value_keeps_the_secure_default(cli_runner: CliR
 @pytest.mark.os_agnostic
 def test_an_oversized_env_file_is_refused_before_it_is_read(cli_runner: CliRunner, tmp_path: Path) -> None:
     env_file = tmp_path / "huge.env"
-    env_file.write_bytes(b"#" * (cli_mod._ENV_FILE_MAX_BYTES + 1))
+    env_file.write_bytes(b"#" * (_settings_sources._ENV_FILE_MAX_BYTES + 1))
 
     result, transport = _invoke(cli_runner, ["send", "--env-file", str(env_file), *_ROUTE, *_MESSAGE])
 
@@ -428,7 +429,7 @@ def test_password_and_password_file_exclude_each_other(cli_runner: CliRunner, tm
 @pytest.mark.os_agnostic
 def test_an_overlong_password_file_is_refused(cli_runner: CliRunner, tmp_path: Path) -> None:
     password_file = tmp_path / "password"
-    password_file.write_text("x" * (cli_mod._PASSWORD_FILE_MAX_CHARS + 1), encoding="utf-8")
+    password_file.write_text("x" * (_settings_sources._PASSWORD_FILE_MAX_CHARS + 1), encoding="utf-8")
 
     result, transport = _invoke(cli_runner, ["send", *_ROUTE, *_MESSAGE, "--username", "u", "--password-file", str(password_file)])
 
@@ -511,18 +512,18 @@ def test_a_quoted_host_is_accepted(cli_runner: CliRunner) -> None:
 
 @pytest.mark.os_agnostic
 def test_the_global_conf_is_left_untouched(cli_runner: CliRunner) -> None:
-    before = cli_mod.conf.model_dump()
+    before = conf.model_dump()
 
     result, transport = _invoke(cli_runner, ["send", *_ROUTE, *_MESSAGE, "--timeout", "42", "--no-starttls"])
 
     assert result.exit_code == 0, result.output
     assert transport.only.options.timeout == 42.0
-    assert cli_mod.conf.model_dump() == before
+    assert conf.model_dump() == before
 
 
 @pytest.mark.os_agnostic
 def test_conf_settings_without_an_option_still_apply(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner, tmp_path: Path) -> None:
-    monkeypatch.setattr(cli_mod.conf, "raise_on_missing_attachments", False)
+    monkeypatch.setattr(conf, "raise_on_missing_attachments", False)
 
     result, transport = _invoke(cli_runner, ["send", *_ROUTE, *_MESSAGE, "--attachment", str(tmp_path / "missing.txt"), *_no_blocked_dirs(tmp_path)])
 
@@ -632,7 +633,7 @@ def test_send_prints_a_json_envelope_naming_what_was_skipped(cli_runner: CliRunn
 
     transport = _RecordingTransport()
     with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(cli_mod.conf, "raise_on_invalid_recipient", False)
+        patch.setattr(conf, "raise_on_invalid_recipient", False)
         result = cli_runner.invoke(cli_mod.cli, args, obj=CliContext(transport=transport))
 
     assert result.exit_code == 0, result.output
@@ -672,8 +673,8 @@ def test_info_has_a_json_envelope(cli_runner: CliRunner) -> None:
     result = cli_runner.invoke(cli_mod.cli, ["--json", "info"])
 
     envelope = json.loads(result.stdout)
-    assert envelope["data"]["version"] == cli_mod.__init__conf__.version
-    assert envelope["data"]["name"] == cli_mod.__init__conf__.name
+    assert envelope["data"]["version"] == __init__conf__.version
+    assert envelope["data"]["name"] == __init__conf__.name
 
 
 @pytest.mark.os_agnostic
@@ -753,7 +754,7 @@ def test_a_command_run_on_its_own_gets_a_default_context() -> None:
     @click.command()
     @click.pass_context
     def probe(ctx: click.Context) -> None:
-        click.echo(repr(cli_mod._context(ctx)))
+        click.echo(repr(_output.cli_context(ctx)))
 
     from click.testing import CliRunner as Runner
 

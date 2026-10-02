@@ -22,7 +22,14 @@ src/btx_lib_mail/
   __init__conf__.py    # static metadata (version, author, shell_command) and print_info()
   __main__.py          # python -m entry point: runs cli.main()
   behaviors.py         # scaffold helpers (greeting, noop, intentional failure)
-  cli.py               # rich-click CLI adapter (send, validate-email, validate-smtp-host, info, hello, fail)
+  cli/                 # rich-click CLI adapter (send, validate-email, validate-smtp-host, info, hello, fail)
+    __init__.py        #   public surface: cli, main, CliContext, the commands, traceback helpers
+    _settings_sources.py #   options > environment > env file: Sources, resolve_*, env/password files
+    _output.py         #   CliContext, emit (human or JSON), error_payload, collect_skipped
+    _traceback.py      #   traceback limits and the lib_cli_exit_tools state helpers
+    _commands.py       #   the cli group and info, hello, validate-email, validate-smtp-host, fail
+    _send_command.py   #   send: one ConfMail from options > environment > env file > conf
+    _dispatch.py       #   main(): run_cli, the JSON failure handler, traceback restore
   lib_mail.py          # send() and the public re-exports of the private modules below
   _config.py           # ConfMail and the global conf
   _attachments.py      # attachment security: blocklists, path checks, open-once
@@ -72,7 +79,7 @@ tests/
 - **Errors**: every on-purpose exception is a `BtxMailError`; each concrete class also subclasses the builtin a caller
   would catch (`InvalidInputError` ValueError, `ConfigurationError` ValidationError, `AttachmentNotFoundError`
   FileNotFoundError, `DeliveryError` RuntimeError with `failed_recipients`/`hosts`)
-- **CLI**: `cli.py` uses rich-click groups; `lib_cli_exit_tools` handles exit codes (`docs/cli.md`, "Exit codes").
+- **CLI**: the `cli` package uses rich-click groups; `lib_cli_exit_tools` handles exit codes (`docs/cli.md`, "Exit codes").
   `send` builds one `ConfMail` (a copy of `conf`, each resolved option assigned with validation) from options >
   environment > the env file (`--env-file`, else `./.env`) and calls `send(config=)`. `ctx.obj` is a typed
   `CliContext` (output mode, traceback, and a `transport` seam for embedding/tests). `--json`/`--json-bare` on the
