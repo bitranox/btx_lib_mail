@@ -8,6 +8,7 @@ therefore built from an allowlist, and this test builds one from the real tree a
 
 from __future__ import annotations
 
+import shutil
 import tarfile
 from pathlib import Path
 
@@ -22,8 +23,8 @@ ALLOWED_TOP_LEVEL = frozenset({"PKG-INFO", "pyproject.toml", "README.md", "LICEN
 REQUIRED_TOP_LEVEL = frozenset({"PKG-INFO", "pyproject.toml", "src", "tests"})
 
 
-def _build_sdist(directory: Path) -> Path:
-    builder = SdistBuilder(str(PROJECT_ROOT))
+def _build_sdist(directory: Path, root: Path = PROJECT_ROOT) -> Path:
+    builder = SdistBuilder(str(root))
     built = list(builder.build(directory=str(directory), versions=["standard"]))
     assert len(built) == 1, f"expected one sdist, got {built}"
     return Path(built[0])
@@ -107,3 +108,81 @@ def test_the_sdist_carries_no_compiled_bytecode(sdist_members: list[str]) -> Non
     compiled = [member for member in sdist_members if "__pycache__" in member or member.endswith(".pyc")]
 
     assert not compiled, f"the sdist ships bytecode: {compiled[:5]}"
+
+
+# ---------------------------------------------------------------------------
+# Built from a copy of the tree with strays planted, so the allowlist is judged even on a clean
+# tree, and checked for completeness against a rule stated here independently of the include list.
+# ---------------------------------------------------------------------------
+
+PLANTED_STRAYS = (
+    "handover.md",
+    ".private/review.md",
+    "docs/.private/session.md",
+    "docs/notes.txt",
+    "src/btx_lib_mail/NOTES.md",
+    "src/btx_lib_mail/.hidden/scratch.py",
+    "tests/.scratch.py",
+    "tests/fixtures/notes.txt",
+)
+_COPIED_DIRECTORIES = ("src", "tests", "docs")
+
+
+def _copy_of_the_tree(destination: Path) -> Path:
+    """Copy the root files and the src, tests and docs trees: everything an sdist could pick up."""
+    destination.mkdir()
+    for entry in PROJECT_ROOT.iterdir():
+        if entry.is_file():
+            shutil.copyfile(entry, destination / entry.name)
+    for directory in _COPIED_DIRECTORIES:
+        shutil.copytree(PROJECT_ROOT / directory, destination / directory, ignore=shutil.ignore_patterns("__pycache__"))
+    return destination
+
+
+def _hidden(relative: Path) -> bool:
+    return any(part.startswith(".") or part == "__pycache__" for part in relative.parts)
+
+
+def _expected_in_sdist(root: Path) -> set[str]:
+    """What the sdist must carry: every package module, top-level test, doc page, and the root metadata."""
+    wanted = [
+        *(root / "src" / "btx_lib_mail").rglob("*.py"),
+        root / "src" / "btx_lib_mail" / "py.typed",
+        *(root / "tests").glob("*.py"),
+        *(root / "docs").rglob("*.md"),
+        *(root / name for name in ("README.md", "LICENSE", "CHANGELOG.md", "pyproject.toml")),
+    ]
+    relatives = [path.relative_to(root) for path in wanted]
+    return {relative.as_posix() for relative in relatives if not _hidden(relative)}
+
+
+@pytest.fixture(scope="module")
+def planted_build(tmp_path_factory: pytest.TempPathFactory) -> tuple[list[str], set[str]]:
+    copy = _copy_of_the_tree(tmp_path_factory.mktemp("planted") / "project")
+    expected = _expected_in_sdist(copy)
+    for stray in PLANTED_STRAYS:
+        target = copy / stray
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("not part of the package\n", encoding="utf-8")
+    members = _strip_root(_member_names(_build_sdist(tmp_path_factory.mktemp("planted-sdist"), root=copy)))
+    return members, expected
+
+
+@pytest.mark.os_agnostic
+def test_no_planted_stray_reaches_the_sdist(planted_build: tuple[list[str], set[str]]) -> None:
+    members, _expected = planted_build
+
+    shipped = sorted(set(PLANTED_STRAYS) & set(members))
+
+    assert not shipped, f"the sdist ships files that are not part of the package: {shipped}"
+
+
+@pytest.mark.os_agnostic
+def test_the_sdist_carries_every_package_module_test_and_doc(planted_build: tuple[list[str], set[str]]) -> None:
+    members, expected = planted_build
+    assert "src/btx_lib_mail/cli/_dispatch.py" in expected, "positive control: a nested package module is expected"
+    assert "docs/systemdesign/module_reference.md" in expected, "positive control: a nested doc is expected"
+
+    missing = sorted(expected - set(members))
+
+    assert not missing, f"the sdist lacks tracked files it must carry: {missing}"
