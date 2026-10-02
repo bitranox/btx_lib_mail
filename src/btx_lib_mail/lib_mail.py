@@ -13,7 +13,7 @@ copy per recipient to a `Transport`, failing over across hosts.
   `validate_email_address`, `validate_smtp_host` and `EMAIL_PATTERN`
   (`_validation`), and `logger` (`_common`).
 
-**System Role:** Matches `docs/systemdesign/module_reference.md#feature-cli-components`
+**System Role:** Matches `docs/systemdesign/module_reference.md#core-components`
 by translating intent gathered by the CLI into SMTP side effects while keeping
 configuration flow and delivery flow separated.
 """

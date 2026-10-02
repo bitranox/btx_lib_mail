@@ -10,7 +10,7 @@ lets adapter layers evolve without rewriting domain stubs.
 - `noop_main` - placeholder entry point for transports expecting a `main`.
 
 **System Role:** Described in
-`docs/systemdesign/module_reference.md#feature-cli-behavior-scaffold`; this
+`docs/systemdesign/module_reference.md#behaviour-scaffold`; this
 module represents the current domain surface for the template while richer
 features incubate elsewhere.
 """

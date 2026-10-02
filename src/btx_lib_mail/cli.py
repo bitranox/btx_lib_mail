@@ -24,7 +24,7 @@ it composes with every subcommand) prints one envelope
 stderr in every mode. Exit codes do not depend on the output mode.
 
 **System Role:** Documented in
-`docs/systemdesign/module_reference.md#feature-cli-components`; this module is
+`docs/systemdesign/module_reference.md#core-components`; this module is
 the primary adapter, ensuring every transport shares the same traceback and
 delivery semantics.
 """
