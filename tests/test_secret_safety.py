@@ -9,6 +9,7 @@ from __future__ import annotations
 # Tests reach module internals (the failure describer, the transport seam) on purpose.
 # pyright: reportPrivateUsage=false
 import ast
+import io
 import json
 import logging
 import pickle
@@ -1305,22 +1306,14 @@ def test_the_per_host_warning_cannot_carry_a_forged_log_line_or_escape_sequence(
     caplog.set_level(logging.WARNING, logger="btx_lib_mail")
     delivery = lib_mail.DeliveryOptions(credentials=None, use_starttls=False, starttls_verify=True, timeout=5.0)
 
-    # sender/recipient reach `email.message.EmailMessage["From"/"To"]` inside
-    # `_compose_to_spool` before the WARNING is ever logged, and stdlib's
-    # policy rejects a header value containing an actual newline outright
-    # (ValueError, unrelated to this fix); the ESC sequence alone (no
-    # newline) still exercises `isprintable()` cleaning without tripping
-    # that stdlib guard. `host` is not used as a header, so it keeps CR/LF.
+    # In send(), sender and recipient become email headers, whose policy refuses
+    # an actual newline outright; the ESC sequence alone (no newline) exercises
+    # the `isprintable()` cleaning. `host` is never a header, so it keeps CR/LF.
     ok = lib_mail._deliver_to_any_host(
         sender="sender\x1b[31mFORGED sender@example.com",
         recipient="rcpt@example.com",
-        subject="s",
-        plain_body="b",
-        html_body="",
-        hosts=("evil\nFORGED line\x1b[31m",),
-        attachments=(),
-        delivery=delivery,
-        transport=_RaisingTransport(ValueError("boom")),
+        message=io.BytesIO(b"Subject: s\r\n\r\nb\r\n"),
+        plan=lib_mail._DeliveryPlan(hosts=("evil\nFORGED line\x1b[31m",), delivery=delivery, transport=_RaisingTransport(ValueError("boom"))),
     )
 
     assert ok is False
@@ -1352,19 +1345,13 @@ def test_the_success_path_debug_line_cannot_carry_a_forged_log_line_or_escape_se
     caplog.set_level(logging.DEBUG, logger="btx_lib_mail")
     delivery = lib_mail.DeliveryOptions(credentials=None, use_starttls=False, starttls_verify=True, timeout=5.0)
 
-    # See the ESC-only note above: sender/recipient become email headers
-    # inside `_compose_to_spool`, which rejects an actual newline outright;
-    # `host` does not, so it keeps CR/LF.
+    # See the ESC-only note above: in send(), sender and recipient become email
+    # headers, which refuse an actual newline; `host` does not, so it keeps CR/LF.
     ok = lib_mail._deliver_to_any_host(
         sender="sender\x1b[31mFORGED sender@example.com",
         recipient="rcpt\x1b[31mFORGED recipient@example.com",
-        subject="s",
-        plain_body="b",
-        html_body="",
-        hosts=("evil\nFORGED host\x1b[31m",),
-        attachments=(),
-        delivery=delivery,
-        transport=_SucceedingTransport(),
+        message=io.BytesIO(b"Subject: s\r\n\r\nb\r\n"),
+        plan=lib_mail._DeliveryPlan(hosts=("evil\nFORGED host\x1b[31m",), delivery=delivery, transport=_SucceedingTransport()),
     )
 
     assert ok is True

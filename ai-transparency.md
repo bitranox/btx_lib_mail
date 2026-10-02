@@ -81,7 +81,7 @@ STARTTLS, optional login, then the spool is streamed to the server, as RFC 3030 
 server offers CHUNKING, otherwise the DATA phase with dot-stuffing, so a large attachment is never
 held in memory. The places worth reading closely are the attachment security path,
 `_validate_attachment_security` and its checks; the streaming compose and transport
-(`_compose_to_spool`, `SmtplibTransport`); and the STARTTLS context builder,
+(`_compose_body`, `_message_for`, `SmtplibTransport`); and the STARTTLS context builder,
 `_build_starttls_context`, which is the only spot that can disable certificate verification and
 does so only when explicitly asked.
 

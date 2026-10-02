@@ -13,11 +13,16 @@ either exhausts RAM or forces an arbitrary size cap.
 
 ## How assembly works
 
-`_compose_to_spool` writes the message into a `tempfile.SpooledTemporaryFile` (in memory
-below `_SPOOL_MAX_SIZE`, on disk above it) using `email.message.EmailMessage` and
-`email.policy.SMTP`, so the serialized bytes already use RFC 5321 CRLF line endings.
+`_compose_body` writes everything below the per-recipient headers into a
+`tempfile.SpooledTemporaryFile` (in memory below `_SPOOL_MAX_SIZE`, on disk above it) using
+`email.message.EmailMessage` and `email.policy.SMTP`, so the serialized bytes already use
+RFC 5321 CRLF line endings. It runs once per `send()` call: the body and the attachments are
+the same for every recipient. Each recipient's message is then its own header lines
+(`Subject`, `From`, `To`, `Date`) followed by a copy of that spool, streamed in
+`_STREAM_CHUNK_SIZE` pieces, so the attachments are read and encoded once however many
+recipients there are.
 
-Each attachment is read from disk in chunks and base64-encoded incrementally (57 decoded
+Each attachment is read in chunks from the file opened when it was checked and base64-encoded incrementally (57 decoded
 bytes per 76-character line, read in a large multiple so whole lines are emitted per
 chunk). The attachment is never held whole and its base64 expansion is never materialised
 as one object. For a message with attachments the top-level `multipart/mixed` envelope is
@@ -52,7 +57,7 @@ trade you want; if you are also disk-constrained, size your attachments accordin
 
 ## Failover
 
-The message is composed once per recipient and the same spool is reused across every host
+Each recipient's message is built once from the shared body and reused across every host
 in `smtphosts`. A failed host is logged and the next is tried without re-rendering the
 message.
 

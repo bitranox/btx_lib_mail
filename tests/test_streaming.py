@@ -10,7 +10,7 @@ import contextlib
 import smtplib
 import socket
 from email import message_from_bytes
-from typing import TYPE_CHECKING, Any, cast
+from typing import IO, TYPE_CHECKING, Any, cast
 
 import pytest
 from click.testing import CliRunner
@@ -27,6 +27,23 @@ aiosmtpd_smtp = pytest.importorskip("aiosmtpd.smtp")
 Controller = aiosmtpd_controller.Controller
 AioSMTP = aiosmtpd_smtp.SMTP
 _AIO_MISSING = aiosmtpd_smtp.MISSING
+
+
+def _compose(
+    *,
+    sender: str,
+    recipient: str,
+    subject: str,
+    plain_body: str,
+    html_body: str,
+    attachments: tuple[lib_mail.AttachmentPayload, ...],
+) -> IO[bytes]:
+    """Compose one recipient's whole message the way send() does: shared body plus its header lines."""
+    body = lib_mail._compose_body(lib_mail._MessageContent(plain_body=plain_body, html_body=html_body, attachments=attachments))
+    try:
+        return lib_mail._message_for(lib_mail._envelope_header_lines(sender=sender, recipient=recipient, subject=subject), body)
+    finally:
+        body.close()
 
 
 def _read_spool(spool: object) -> bytes:
@@ -238,19 +255,20 @@ def test_dot_stuffer_tracks_line_start_across_chunk_boundaries() -> None:
 
 
 @pytest.mark.os_agnostic
-def test_compose_to_spool_round_trips_headers_body_and_attachment(tmp_path: Path) -> None:
+def test_compose_round_trips_headers_body_and_attachment(tmp_path: Path) -> None:
     attachment = tmp_path / "report.pdf"
     payload = b"%PDF-1.4\nbinary\x00\xff bytes\n"
     attachment.write_bytes(payload)
 
-    spool = lib_mail._compose_to_spool(
-        sender="sender@example.com",
-        recipient="recipient@example.com",
-        subject="Grüße",
-        plain_body="hello body",
-        html_body="",
-        attachments=(lib_mail.AttachmentPayload(filename="report.pdf", source=attachment),),
-    )
+    with attachment.open("rb") as handle:
+        spool = _compose(
+            sender="sender@example.com",
+            recipient="recipient@example.com",
+            subject="Grüße",
+            plain_body="hello body",
+            html_body="",
+            attachments=(lib_mail.AttachmentPayload(filename="report.pdf", source=attachment, handle=handle),),
+        )
     raw = _read_spool(spool)
     message = message_from_bytes(raw)
 
@@ -270,26 +288,25 @@ def test_compose_to_spool_round_trips_headers_body_and_attachment(tmp_path: Path
 
 
 @pytest.mark.os_agnostic
-def test_compose_to_spool_streams_attachment_without_loading_it(tmp_path: Path) -> None:
+def test_compose_streams_attachment_without_loading_it(tmp_path: Path) -> None:
     import tracemalloc
 
     big = tmp_path / "big.bin"
     size = 16 * 1024 * 1024
     big.write_bytes(b"\xab" * size)
 
-    tracemalloc.start()
-    try:
-        spool = lib_mail._compose_to_spool(
-            sender="s@example.com",
-            recipient="r@example.com",
-            subject="Big",
+    with big.open("rb") as handle:
+        content = lib_mail._MessageContent(
             plain_body="body",
             html_body="",
-            attachments=(lib_mail.AttachmentPayload(filename="big.bin", source=big),),
+            attachments=(lib_mail.AttachmentPayload(filename="big.bin", source=big, handle=handle),),
         )
-        _current, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
+        tracemalloc.start()
+        try:
+            spool = lib_mail._compose_body(content)
+            _current, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
     spool.close()
 
     # The attachment is streamed and base64-encoded in small chunks, never read
@@ -299,8 +316,8 @@ def test_compose_to_spool_streams_attachment_without_loading_it(tmp_path: Path) 
 
 
 @pytest.mark.os_agnostic
-def test_compose_to_spool_uses_crlf_line_endings(tmp_path: Path) -> None:
-    spool = lib_mail._compose_to_spool(
+def test_compose_uses_crlf_line_endings(tmp_path: Path) -> None:
+    spool = _compose(
         sender="s@example.com",
         recipient="r@example.com",
         subject="Subject",

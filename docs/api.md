@@ -25,7 +25,7 @@ not supply per-call overrides. Update it directly or replace it wholesale with
 | `smtp_password`                | `SecretStr \| None` | `None`  | Password paired with `smtp_username`. Ignored when either value is missing. Masked in `repr()` and `model_dump()`; call `.get_secret_value()` for the plaintext. A plain `str` or an `int` is coerced; a validation error of `ConfMail` never carries it. |
 | `smtp_use_starttls`            | `bool`              | `True`  | Enables `STARTTLS` negotiation before authentication. Set to `False` for servers that do not support STARTTLS.                                                                                                                                            |
 | `smtp_starttls_verify`         | `bool`              | `True`  | Verifies the server certificate and hostname during `STARTTLS`. Set to `False` for internal self-signed relays (encrypted, unverified).                                                                                                                   |
-| `smtp_timeout`                 | `float`             | `30.0`  | Socket timeout in seconds applied to SMTP connections.                                                                                                                                                                                                    |
+| `smtp_timeout`                 | `float`             | `30.0`  | Socket timeout in seconds applied to SMTP connections. Must be positive and finite (NaN and infinity are refused).                                                                                                                                        |
 | `smtp_local_hostname`          | `str \| None`       | `None`  | Name announced in `EHLO`. When `None`, this host's name is looked up once per process and reused (an address literal such as `[192.0.2.7]` when it has no dot). Set it where reverse DNS is slow. Must be non-empty printable ASCII without spaces.       |
 
 **Attachment Security Settings:**
@@ -91,7 +91,7 @@ raises when every host fails for at least one recipient.
 |--------------------------------|----------------------------------|---------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `mail_from`                    | `str`                            | -       | Envelope sender address (`local@domain`).                                                                                                                                                           |
 | `mail_recipients`              | `str \| Sequence[str]`           | -       | Deduplicated, validated recipient addresses.                                                                                                                                                        |
-| `mail_subject`                 | `str`                            | -       | UTF-8 subject line.                                                                                                                                                                                 |
+| `mail_subject`                 | `str`                            | -       | UTF-8 subject line. A control character other than TAB is refused with `InvalidInputError` before any delivery.                                                                                     |
 | `mail_body`                    | `str`                            | `""`    | Optional plain-text body.                                                                                                                                                                           |
 | `mail_body_html`               | `str`                            | `""`    | Optional HTML body (UTF-8).                                                                                                                                                                         |
 | `smtphosts`                    | `Sequence[str] \| None`          | `None`  | Host override. Falls back to `smtphosts` of the config in use (the passed `config`, else the global `conf`).                                                                                        |
@@ -180,7 +180,9 @@ macOS and Windows file systems are case-insensitive:
 - `AttachmentNotFoundError` (a `FileNotFoundError`)  -  when a required attachment is missing
   and `raise_on_missing_attachments` is `True`.
 - `AttachmentSecurityError`  -  when an attachment violates security policies and
-  `attachment_raise_on_security_violation` is `True`.
+  `attachment_raise_on_security_violation` is `True`, including a file that changed or
+  grew past the size limit after it was checked (see
+  [attachment security](attachment-security.md)).
 - `DeliveryError` (a `RuntimeError`)  -  when every configured host fails for a recipient; its
   message lists recipients and host roster, and `failed_recipients` / `hosts` carry them as
   tuples.

@@ -33,7 +33,19 @@ of sensitive files, dangerous executables, or oversized payloads.
    allowlist is not set, because it would block nothing; set
    `attachment_allow_empty_blocklists=True` to do that on purpose.
 6. **Size Limit**  -  Files larger than 25 MiB (default) are rejected. Override
-   via `attachment_max_size_bytes`.
+   via `attachment_max_size_bytes`. The bytes are also counted while the file is
+   read, so a file that grows past the limit after the check is refused too.
+7. **One Open File**  -  After the checks, each attachment is opened once and
+   compared with what was checked (same file, still a regular file); the message
+   body is encoded once from that open file and every recipient receives those
+   bytes. A path swapped after the checks (replaced by a symlink to another file,
+   or by another file) is refused as `CHANGED`, and swapping or deleting the file
+   while delivery runs changes nothing that is sent. The files are closed before
+   `send()` returns.
+
+A refusal raises `AttachmentSecurityError`, whose `violation_type` is an
+`AttachmentViolation` member: `PATH_TRAVERSAL`, `SYMLINK`, `SENSITIVE_PATTERN`,
+`DIRECTORY`, `EXTENSION`, `SIZE` or `CHANGED`. Branch on it, not on the message.
 
 ### Configuration Example
 

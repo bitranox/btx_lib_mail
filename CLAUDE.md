@@ -43,8 +43,10 @@ tests/
 
 - **Config**: `ConfMail` (Pydantic model) holds SMTP and security settings; global `conf` instance;
   an unknown key is refused (`extra="forbid"`), never dropped
-- **Delivery**: `send()` -> `_prepare_*` helpers -> per recipient `_deliver_to_any_host` -> `_compose_to_spool` (once per
-  recipient, reused across hosts) -> injected `Transport` (`SmtplibTransport` streams DATA/BDAT, one connection per recipient)
+- **Delivery**: `send()` -> `_prepare_*` helpers (each attachment checked, then opened ONCE) -> `_compose_body` (shared
+  body + attachments encoded once per call) -> per recipient `_message_for` (its header lines + a copy of the body) ->
+  `_deliver_to_any_host` (failover across hosts) -> injected `Transport` (`SmtplibTransport` streams DATA/BDAT, one
+  connection per recipient)
 - **EHLO name**: `ConfMail.smtp_local_hostname` / `send(local_hostname=)` / `--local-hostname` /
   `BTX_MAIL_SMTP_LOCAL_HOSTNAME`; unset, `_default_local_hostname()` computes smtplib's default once per process
 - **Validation**: `validate_email_address()` and `validate_smtp_host()` are public;
@@ -178,10 +180,12 @@ streams SMTP attachments or implements the client side of RFC 3030 BDAT/CHUNKING
 (stdlib `smtplib` and `aiosmtpd` both buffer and lack BDAT), so it is hand-rolled
 on stdlib:
 
-- `_compose_to_spool` serialises the message into a `SpooledTemporaryFile`
+- `_compose_body` serialises the recipient-independent body into a `SpooledTemporaryFile`
   (in memory below `_SPOOL_MAX_SIZE`, on disk above it) using `EmailMessage` +
-  `email.policy.SMTP` (CRLF), and streams each attachment's base64 from disk in
-  `57 * 1024`-byte reads so a large attachment is never held whole.
+  `email.policy.SMTP` (CRLF), once per `send()`, streaming each attachment's base64 from
+  its already-open file in `57 * 1024`-byte reads so a large attachment is never held
+  whole; `_message_for` prepends a recipient's header lines and copies that spool in
+  `_STREAM_CHUNK_SIZE` pieces.
 - `SmtplibTransport` streams that spool to the socket in `_STREAM_CHUNK_SIZE`
   chunks: RFC 3030 `BDAT` when the server advertises `CHUNKING`, otherwise the
   `DATA` phase with `_DotStuffer` incremental dot-stuffing. Peak transfer memory

@@ -16,6 +16,8 @@
   the `ValidationError` subclass a model's errors are raised as.
 - Sensitive-path patterns `/.netrc`, `/.pgpass`, `/.git-credentials`, `/.docker/config.json`,
   `/.pypirc`, `/.npmrc` and `/gh/hosts.yml`.
+- `AttachmentViolation.CHANGED`: an attachment path that became a symlink or another file
+  after it was checked.
 
 ### Changed
 
@@ -30,6 +32,28 @@
   `.AWS/CREDENTIALS` are refused (they are `~/.ssh/config` on macOS and Windows).
 - The path-traversal check refuses a `..` path COMPONENT only: `report..final.txt` is now
   accepted, `a/../b` is still refused with the same message.
+- Each attachment is opened once, right after its checks, and compared with what was
+  checked (same file, still a regular file, size within the limit); the message body is
+  encoded once per `send()` from that open file, and each recipient's message is its own
+  header lines plus a copy of it. Attachments are no longer re-read and re-encoded per
+  recipient, and the files are closed before `send()` returns.
+- A subject containing a control character other than TAB is refused with
+  `InvalidInputError` before the first delivery (`mail_subject must not contain control
+  characters (only TAB is allowed)`); CR and LF keep the email package's message. Before,
+  NUL, ESC and the rest were sent raw.
+
+### Fixed
+
+- An attachment path swapped after the checks (for example replaced by a symlink to
+  `/etc/passwd` while recipient 1 was being delivered) no longer reaches later recipients:
+  every recipient receives the bytes of the file that was checked. A file that grows past
+  `attachment_max_size_bytes` after the check is refused while it is read (`SIZE`), instead
+  of being sent whole.
+- An attachment deleted or changed while delivery runs no longer abandons the remaining
+  recipients, and a message spool is closed when composing it fails (no `ResourceWarning`).
+- `smtp_timeout` (and `send(timeout=)`) refuses NaN and infinity (`smtp_timeout must be a
+  finite number of seconds, got nan`) instead of failing later as an unrelated delivery
+  error. A non-positive value keeps its `must be positive` message.
 
 ## [3.1.0] 2026-10-02 11:58:41
 

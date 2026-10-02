@@ -18,17 +18,23 @@ configuration flow and delivery flow separated.
 from __future__ import annotations
 
 import base64
+import errno
 import functools
 import io
 import logging
+import math
 import mimetypes
+import os
 import pathlib
 import re
+import shutil
 import smtplib
 import socket
 import ssl
+import stat
 import sys
 import tempfile
+import unicodedata
 import uuid
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
@@ -247,6 +253,7 @@ class AttachmentViolation(str, Enum):
     DIRECTORY = "directory"
     EXTENSION = "extension"
     SIZE = "size"
+    CHANGED = "changed"
 
 
 # ---------------------------------------------------------------------------
@@ -295,20 +302,26 @@ class AttachmentSecurityError(BtxMailError):
 class AttachmentPayload:
     """### AttachmentPayload {#lib-mail-attachmentpayload}
 
-    **Purpose:** Name a validated attachment and point at its source file so the
-    bytes are read only while the message is streamed to the transport, not held
-    in memory from preparation onward.
+    **Purpose:** Name a validated attachment and hold the file it was checked
+    as, open, so the bytes encoded into the message are those of the checked
+    file even if the path is swapped afterwards.
 
     **Fields:**
     - `filename: str` - Basename surfaced in the `Content-Disposition` header.
-    - `source: pathlib.Path` - Validated path whose bytes are read at send time.
+    - `source: pathlib.Path` - The resolved path that was checked (for messages).
+    - `handle: IO[bytes]` - The checked file, opened once; read while the
+      message body is encoded and closed when `send()` returns.
+    - `size_limit: int | None` - The size limit in force; a file that grows
+      past it while it is read is refused.
 
-    Instances are immutable (`frozen=True`) so helpers can rely on their
-    stability across retries.
+    Instances are immutable (`frozen=True`); the handle itself is rewound before
+    each read.
     """
 
     filename: str
     source: pathlib.Path
+    handle: IO[bytes] = field(repr=False, compare=False)
+    size_limit: int | None = None
 
 
 class ConfMail(SecretSafeModel):
@@ -322,11 +335,11 @@ class ConfMail(SecretSafeModel):
     - `smtphosts: list[str] = []` - Ordered hosts in `host[:port]` form. Empty
       by default so callers must supply at least one host.
     - `raise_on_missing_attachments: bool = True` - When `True`, missing files
-      raise `FileNotFoundError`; otherwise the module logs a warning and
-      continues.
+      raise `AttachmentNotFoundError` (a `FileNotFoundError`); otherwise the
+      module logs a warning and continues.
     - `raise_on_invalid_recipient: bool = True` - When `True`, invalid addresses
-      raise `ValueError`; otherwise a warning is logged and delivery skips the
-      address.
+      raise `InvalidInputError` (a `ValueError`); otherwise a warning is logged
+      and delivery skips the address.
     - `smtp_username: str | None = None` and `smtp_password: SecretStr | None = None`
       - Optional credentials; both must be populated to enable authentication.
       `smtp_password` is a `SecretStr`, so it is masked in `repr()` and
@@ -343,7 +356,7 @@ class ConfMail(SecretSafeModel):
       hostname mismatch: the traffic stays encrypted but the certificate is not
       validated. Has no effect when `smtp_use_starttls` is `False`.
     - `smtp_timeout: float = 30.0` - Socket timeout in seconds applied to SMTP
-      connections.
+      connections. Must be positive and finite.
     - `smtp_local_hostname: str | None = None` - The name announced in
       `EHLO`/`HELO`. When `None`, the host's fully qualified name is looked up
       once per process and reused (a domain literal such as `[192.0.2.7]` when
@@ -354,9 +367,12 @@ class ConfMail(SecretSafeModel):
       only these extensions are allowed (whitelist mode). When `None`, the
       blocked extensions list applies instead.
     - `attachment_blocked_extensions: frozenset[str]` - Extensions to reject.
-      Ignored when `attachment_allowed_extensions` is set. Defaults to
-      OS-specific dangerous extensions. An empty set with no allowlist is
-      refused unless `attachment_allow_empty_blocklists` is `True`.
+      Ignored when `attachment_allowed_extensions` is set. Defaults to the
+      dangerous extensions of BOTH platform families
+      (`DANGEROUS_EXTENSIONS_POSIX | DANGEROUS_EXTENSIONS_WINDOWS`), since the
+      recipient's system decides what an attachment runs as. An empty set with
+      no allowlist is refused unless `attachment_allow_empty_blocklists` is
+      `True`.
     - `attachment_allowed_directories: frozenset[pathlib.Path] | None = None` -
       When set, attachments must reside under one of these directories.
     - `attachment_blocked_directories: frozenset[pathlib.Path]` - Directories
@@ -366,8 +382,10 @@ class ConfMail(SecretSafeModel):
       `attachment_allow_empty_blocklists` is `True`.
     - `attachment_max_size_bytes: int | None = 26_214_400` - Maximum attachment
       size in bytes (default 25 MiB). `None` disables size checking.
-    - `attachment_allow_symlinks: bool = False` - When `False`, symlinks are
-      rejected; when `True`, symlinks are resolved and validated.
+    - `attachment_allow_symlinks: bool = False` - When `False`, a path whose
+      last component is a symlink is rejected; when `True`, it is resolved and
+      validated. A symlinked directory along the path is followed either way;
+      every rule runs on the resolved target.
     - `attachment_raise_on_security_violation: bool = True` - When `True`,
       security violations raise `AttachmentSecurityError`; when `False`, they
       log a warning and skip the attachment.
@@ -379,8 +397,11 @@ class ConfMail(SecretSafeModel):
       the protection off silently. Set `True` to block nothing on purpose. An
       explicit `send(attachment_blocked_*=frozenset())` keyword is never checked.
 
+    **Refusals:** A refused setting raises `ConfigurationError`, a pydantic
+    `ValidationError` that is also a `BtxMailError`.
+
     **Unknown names:** A name that is not one of the fields above is refused
-    with a `ValidationError` (`extra_forbidden`, naming the key, never its
+    with a `ConfigurationError` (`extra_forbidden`, naming the key, never its
     value), at construction and in `model_validate`. The `send()` keyword
     names are not field names: `ConfMail(use_starttls=False)` is refused, the
     field is `smtp_use_starttls`.
@@ -489,8 +510,7 @@ class ConfMail(SecretSafeModel):
         None.
         """
 
-        if value <= 0:
-            raise InvalidInputError(f"smtp_timeout must be positive, got {value}")
+        _check_timeout(value)
         return value
 
     @field_validator("smtp_local_hostname", mode="after")
@@ -745,16 +765,24 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
     **Returns:** `bool` - Always `True` when all deliveries succeed. A failure
     raises instead of returning `False`.
 
-    **Raises:**
-    - `ValueError` - When no valid recipients remain after validation, or
-      `local_hostname` is not usable as an EHLO name.
-    - `FileNotFoundError` - When required attachments are missing and
-      `raise_on_missing_attachments` is `True` on the config in use (the
-      passed `config`, else the global `conf`).
+    **Raises:** (every one a `BtxMailError`)
+    - `InvalidInputError` (a `ValueError`) - When the sender, a recipient (in
+      strict mode), a host, the subject (a control character other than TAB),
+      `local_hostname` or `timeout` is refused, or no valid recipient remains.
+      Raised before the first delivery.
+    - `AttachmentNotFoundError` (a `FileNotFoundError`) - When required
+      attachments are missing and `raise_on_missing_attachments` is `True` on
+      the config in use (the passed `config`, else the global `conf`).
     - `AttachmentSecurityError` - When an attachment violates security policies
-      and `attachment_raise_on_security_violation` is `True`.
-    - `RuntimeError` - When every SMTP host fails for a recipient; the error
-      lists the affected recipients and host set.
+      and `attachment_raise_on_security_violation` is `True`, including a file
+      that changed or grew past the size limit after it was checked.
+    - `DeliveryError` (a `RuntimeError`) - When every SMTP host fails for a
+      recipient; the error lists the affected recipients and host set, and
+      carries them as `failed_recipients` and `hosts`.
+
+    **Attachments:** each file is checked, opened once, and encoded once; every
+    recipient's message carries the bytes of that open file, and the files are
+    closed before `send()` returns.
 
     **Example:**
     >>> class _NullTransport:  # a stand-in transport that accepts every message
@@ -800,42 +828,45 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
         security,
         raise_on_missing=resolved_raise_on_missing,
     )
-    hosts = _prepare_hosts(tuple(smtphosts or settings.smtphosts))
-
-    delivery = _resolve_delivery_options(
-        settings=settings,
-        overrides=_DeliveryOverrides(
-            credentials=credentials,
-            use_starttls=use_starttls,
-            starttls_verify=starttls_verify,
-            timeout=timeout,
-            local_hostname=local_hostname,
-        ),
-    )
-
-    active_transport = transport if transport is not None else _DEFAULT_TRANSPORT
-
-    failed_recipients: list[str] = [
-        recipient
-        for recipient in recipients
-        if not _deliver_to_any_host(
-            sender=mail_from,
-            recipient=recipient,
-            subject=mail_subject,
-            plain_body=mail_body,
-            html_body=mail_body_html,
-            hosts=hosts,
-            attachments=attachments,
-            delivery=delivery,
-            transport=active_transport,
+    try:
+        plan = _DeliveryPlan(
+            hosts=_prepare_hosts(tuple(smtphosts or settings.smtphosts)),
+            delivery=_resolve_delivery_options(
+                settings=settings,
+                overrides=_DeliveryOverrides(
+                    credentials=credentials,
+                    use_starttls=use_starttls,
+                    starttls_verify=starttls_verify,
+                    timeout=timeout,
+                    local_hostname=local_hostname,
+                ),
+            ),
+            transport=transport if transport is not None else _DEFAULT_TRANSPORT,
         )
-    ]
+        _check_subject(mail_subject)
+        # Every header block is built before the first delivery, so a header the
+        # email package refuses fails the call before any recipient was sent to.
+        envelopes = [(recipient, _envelope_header_lines(sender=mail_from, recipient=recipient, subject=mail_subject)) for recipient in recipients]
+        body = _compose_body_once(
+            _MessageContent(plain_body=mail_body, html_body=mail_body_html, attachments=attachments),
+            raise_on_violation=security.raise_on_violation,
+        )
+        try:
+            failed_recipients = [
+                recipient
+                for recipient, header_lines in envelopes
+                if not _deliver_composed(sender=mail_from, recipient=recipient, header_lines=header_lines, body=body, plan=plan)
+            ]
+        finally:
+            body.close()
+    finally:
+        _close_attachments(attachments)
 
     if failed_recipients:
         raise DeliveryError(
-            f'following recipients failed "{failed_recipients}" on all of following hosts : "{hosts}"',
+            f'following recipients failed "{failed_recipients}" on all of following hosts : "{plan.hosts}"',
             failed_recipients=tuple(failed_recipients),
-            hosts=hosts,
+            hosts=plan.hosts,
         )
 
     return True
@@ -880,6 +911,15 @@ class _DeliveryOverrides:
     local_hostname: str | None
 
 
+@dataclass(frozen=True)
+class _DeliveryPlan:
+    """Where and how every recipient of one `send()` call is delivered."""
+
+    hosts: tuple[str, ...]
+    delivery: DeliveryOptions
+    transport: Transport
+
+
 def _resolve_delivery_options(*, settings: ConfMail, overrides: _DeliveryOverrides) -> DeliveryOptions:
     """Resolve per-call overrides against configuration defaults.
 
@@ -910,8 +950,7 @@ def _resolve_delivery_options(*, settings: ConfMail, overrides: _DeliveryOverrid
     use_starttls = bool(overrides.use_starttls if overrides.use_starttls is not None else settings.smtp_use_starttls)
     starttls_verify = bool(overrides.starttls_verify if overrides.starttls_verify is not None else settings.smtp_starttls_verify)
     timeout = float(overrides.timeout if overrides.timeout is not None else settings.smtp_timeout)
-    if timeout <= 0:
-        raise InvalidInputError(f"smtp_timeout must be positive, got {timeout}")
+    _check_timeout(timeout)
     if overrides.local_hostname is not None:
         _check_local_hostname(overrides.local_hostname, label="local_hostname")
     local_hostname = overrides.local_hostname if overrides.local_hostname is not None else settings.smtp_local_hostname
@@ -936,6 +975,19 @@ def _check_local_hostname(value: str, *, label: str) -> None:
     """
     if not value or not all(_EHLO_NAME_FIRST_CHAR <= ord(char) <= _EHLO_NAME_LAST_CHAR for char in value):
         raise InvalidInputError(f"{label} must be non-empty printable ASCII without spaces")
+
+
+def _check_timeout(value: float) -> None:
+    """Raise unless *value* is a usable socket timeout: positive and finite.
+
+    The non-positive check runs first, so a value refused before keeps its
+    message; NaN and infinity, which ``value <= 0`` let through to fail later as
+    an unrelated delivery error, get their own.
+    """
+    if value <= 0:
+        raise InvalidInputError(f"smtp_timeout must be positive, got {value}")
+    if not math.isfinite(value):
+        raise InvalidInputError(f"smtp_timeout must be a finite number of seconds, got {value}")
 
 
 @functools.cache
@@ -1097,40 +1149,21 @@ def _describe_failure(error: BaseException) -> str:
     return name
 
 
-def _deliver_to_any_host(  # noqa: PLR0913 - one keyword-only param per piece of message/delivery state, all required
-    *,
-    sender: str,
-    recipient: str,
-    subject: str,
-    plain_body: str,
-    html_body: str,
-    hosts: tuple[str, ...],
-    attachments: tuple[AttachmentPayload, ...],
-    delivery: DeliveryOptions,
-    transport: Transport,
-) -> bool:
-    """Attempt delivery across hosts until one succeeds.
+def _deliver_to_any_host(*, sender: str, recipient: str, message: IO[bytes], plan: _DeliveryPlan) -> bool:
+    """Attempt delivery of one composed message across hosts until one succeeds.
 
     Why
-        Encapsulates failover logic to keep orchestration linear. The message is
-        composed once into a spooled temp file and reused across host attempts,
-        so a large payload is neither re-rendered per host nor held on the heap.
+        Encapsulates failover logic to keep orchestration linear. The same
+        message stream is rewound and reused for every host attempt.
 
     Inputs
     ------
-    sender, recipient, subject, plain_body, html_body:
-        Message metadata and content to deliver.
-    hosts:
-        Ordered tuple of host strings to try in sequence.
-    attachments:
-        Attachment payloads prepared earlier.
-    delivery:
-        Resolved delivery options (credentials, STARTTLS, timeout).
-    transport:
-        Delivery adapter that streams the message to a host.
-
-    What
-        Iterates hosts, invoking ``transport.deliver`` until one accepts.
+    sender, recipient:
+        Envelope addresses.
+    message:
+        The complete message for this recipient (headers and body).
+    plan:
+        Hosts to try in order, resolved delivery options, and the transport.
 
     Outputs
     -------
@@ -1139,67 +1172,65 @@ def _deliver_to_any_host(  # noqa: PLR0913 - one keyword-only param per piece of
 
     Side Effects
     ------------
-    Composes a spooled message, performs network I/O, logs one credential-free
-    WARNING per failed host (no traceback attached).
+    Performs network I/O, logs one credential-free WARNING per failed host (no
+    traceback attached).
     """
 
-    spool = _compose_to_spool(
-        sender=sender,
-        recipient=recipient,
-        subject=subject,
-        plain_body=plain_body,
-        html_body=html_body,
-        attachments=attachments,
-    )
+    for host in plan.hosts:
+        try:
+            plan.transport.deliver(
+                host=host,
+                sender=sender,
+                recipient=recipient,
+                message=message,
+                delivery=plan.delivery,
+            )
+            # sender, recipient and host normally reach here already
+            # validated (no control characters), but the log call cleans
+            # them again as defense in depth: nothing upstream of this
+            # call is trusted to be the last guard against a forged log
+            # line, and `_deliver_to_any_host` is reachable directly
+            # (tests do exactly that) without going through `send()`'s
+            # own validation first.
+            logger.debug(
+                'mail sent to "%s" via host "%s"',
+                _printable(recipient),
+                _printable(host),
+                extra={"sender": _printable(sender), "recipient": _printable(recipient), "host": _printable(host)},
+            )
+            return True
+        except Exception as error:
+            clean_recipient = _printable(recipient)
+            clean_host = _printable(host)
+            warning_call = (
+                'can not send mail to "%s" via host "%s": %s',
+                (clean_recipient, clean_host, _describe_failure(error)),
+                {
+                    "sender": _printable(sender),
+                    "recipient": clean_recipient,
+                    "host": clean_host,
+                    "error_type": type(error).__name__,
+                    "smtp_code": getattr(error, "smtp_code", None),
+                },
+            )
+        # Logged OUTSIDE the except block: once that block exits, this
+        # host's failure is no longer the active exception, so a handler
+        # or formatter that itself raises (handleError, a broken sink)
+        # cannot chain it in as __context__ and print it via "During
+        # handling of the above exception ...". Reached only through the
+        # except branch above (the try's success path returns already).
+        message_text, args, extra = warning_call
+        logger.warning(message_text, *args, extra=extra)
+    return False
+
+
+def _deliver_composed(*, sender: str, recipient: str, header_lines: bytes, body: IO[bytes], plan: _DeliveryPlan) -> bool:
+    """Build *recipient*'s message from its header block and the shared body, deliver it, and close it."""
+    message = _message_for(header_lines, body)
     try:
-        for host in hosts:
-            try:
-                transport.deliver(
-                    host=host,
-                    sender=sender,
-                    recipient=recipient,
-                    message=spool,
-                    delivery=delivery,
-                )
-                # sender, recipient and host normally reach here already
-                # validated (no control characters), but the log call cleans
-                # them again as defense in depth: nothing upstream of this
-                # call is trusted to be the last guard against a forged log
-                # line, and `_deliver_to_any_host` is reachable directly
-                # (tests do exactly that) without going through `send()`'s
-                # own validation first.
-                logger.debug(
-                    'mail sent to "%s" via host "%s"',
-                    _printable(recipient),
-                    _printable(host),
-                    extra={"sender": _printable(sender), "recipient": _printable(recipient), "host": _printable(host)},
-                )
-                return True
-            except Exception as error:
-                clean_recipient = _printable(recipient)
-                clean_host = _printable(host)
-                warning_call = (
-                    'can not send mail to "%s" via host "%s": %s',
-                    (clean_recipient, clean_host, _describe_failure(error)),
-                    {
-                        "sender": _printable(sender),
-                        "recipient": clean_recipient,
-                        "host": clean_host,
-                        "error_type": type(error).__name__,
-                        "smtp_code": getattr(error, "smtp_code", None),
-                    },
-                )
-            # Logged OUTSIDE the except block: once that block exits, this
-            # host's failure is no longer the active exception, so a handler
-            # or formatter that itself raises (handleError, a broken sink)
-            # cannot chain it in as __context__ and print it via "During
-            # handling of the above exception ...". Reached only through the
-            # except branch above (the try's success path returns already).
-            message, args, extra = warning_call
-            logger.warning(message, *args, extra=extra)
-        return False
+        return _deliver_to_any_host(sender=sender, recipient=recipient, message=message, plan=plan)
     finally:
-        spool.close()
+        message.close()
 
 
 def _build_starttls_context(*, verify: bool) -> ssl.SSLContext:
@@ -1457,74 +1488,140 @@ def _guess_attachment_mimetype(filename: str) -> tuple[str, str]:
     return maintype, subtype or "octet-stream"
 
 
-def _compose_to_spool(  # noqa: PLR0913 - one keyword-only param per message part; mirrors _deliver_to_any_host
-    *,
-    sender: str,
-    recipient: str,
-    subject: str,
-    plain_body: str,
-    html_body: str,
-    attachments: tuple[AttachmentPayload, ...],
-) -> IO[bytes]:
-    """Assemble the message into a rewound, CRLF-encoded spooled temp file.
+@dataclass(frozen=True)
+class _MessageContent:
+    """The recipient-independent content of one `send()` call."""
+
+    plain_body: str
+    html_body: str
+    attachments: tuple[AttachmentPayload, ...]
+
+
+def _new_spool() -> IO[bytes]:
+    """Return an empty spooled temp file: in memory below ``_SPOOL_MAX_SIZE``, on disk above it."""
+    # Returned open and closed by the caller once the bytes are delivered, so
+    # it cannot be opened as a `with` block here.
+    return cast("IO[bytes]", tempfile.SpooledTemporaryFile(max_size=_SPOOL_MAX_SIZE))
+
+
+def _compose_body(content: _MessageContent) -> IO[bytes]:
+    """Encode everything below the per-recipient headers into a rewound spool, once.
 
     Why
-        Serialising into a ``SpooledTemporaryFile`` (in memory below
-        ``_SPOOL_MAX_SIZE``, on disk above it) keeps the fully rendered message
-        off the heap so delivery can stream it to the socket in bounded chunks
-        instead of buffering the whole payload. ``email.policy.SMTP`` yields RFC
-        5321 CRLF line endings on the wire, so the DATA and BDAT senders only add
-        transfer framing and never re-encode the body.
+        The body and every attachment are the same for each recipient, so they
+        are base64-encoded once per ``send()`` and each recipient's message is
+        its own header block plus a copy of this spool. Serialising into a
+        ``SpooledTemporaryFile`` keeps a large message off the heap, and
+        ``email.policy.SMTP`` yields RFC 5321 CRLF line endings, so the DATA and
+        BDAT senders only add transfer framing.
 
     Outputs
     -------
     IO[bytes]
-        Spooled file positioned at offset 0, holding the complete message.
-
-    Side Effects
-    ------------
-    Reads each attachment's bytes from disk in chunks; may create a temp file.
+        Spool positioned at offset 0: the MIME headers of the message body
+        (``MIME-Version``, ``Content-Type``, ...), a blank line, and the body.
+        Closed on any failure.
     """
-
-    # Returned open and closed later by the caller (_deliver_to_any_host's `finally`)
-    # once streaming delivery finishes, so it cannot be opened as a `with` block here.
-    spool = cast("IO[bytes]", tempfile.SpooledTemporaryFile(max_size=_SPOOL_MAX_SIZE))  # noqa: SIM115
-    body_message = _build_body_message(plain_body, html_body)
-
-    if not attachments:
-        # No attachments: the body message itself is the whole message, so give
-        # it the envelope headers and flatten it directly (it is small).
-        body_message["Subject"] = subject
-        body_message["From"] = sender
-        body_message["To"] = recipient
-        body_message["Date"] = formatdate(localtime=True)
-        BytesGenerator(spool, policy=email_policy.SMTP).flatten(body_message)
+    spool = _new_spool()
+    try:
+        _write_body(spool, content)
         spool.seek(0)
-        return spool
+    except BaseException:
+        spool.close()
+        raise
+    return spool
+
+
+def _write_body(spool: IO[bytes], content: _MessageContent) -> None:
+    body_message = _build_body_message(content.plain_body, content.html_body)
+    if not content.attachments:
+        # No attachments: the body message is the whole message body (it is small).
+        spool.write(_flatten_message(body_message))
+        return
 
     # With attachments: hand-write a multipart/mixed so each attachment's base64
-    # is streamed from disk instead of held in an in-memory message part.
+    # is streamed from its file instead of held in an in-memory message part.
     boundary = f"==============={uuid.uuid4().hex}=="
     outer = EmailMessage()
-    outer["Subject"] = subject
-    outer["From"] = sender
-    outer["To"] = recipient
-    outer["Date"] = formatdate(localtime=True)
     outer["MIME-Version"] = "1.0"
     outer["Content-Type"] = f'multipart/mixed; boundary="{boundary}"'
-
     delimiter = b"--" + boundary.encode("ascii") + b"\r\n"
     spool.write(_header_block(outer))
     # First body part: the (small) text/alternative message, headers and all.
     spool.write(delimiter)
     spool.write(_flatten_message(body_message))
     spool.write(b"\r\n")
-    for attachment in attachments:
+    for attachment in content.attachments:
         spool.write(delimiter)
         _write_attachment_part(spool, attachment)
     spool.write(b"--" + boundary.encode("ascii") + b"--\r\n")
-    spool.seek(0)
+
+
+def _compose_body_once(content: _MessageContent, *, raise_on_violation: bool) -> IO[bytes]:
+    """Compose the shared body; in warn mode drop an attachment that grew past its limit and retry.
+
+    A file that grows past the size limit while it is read is refused like an
+    oversized file: raised in strict mode, logged and left out in warn mode.
+    """
+    while True:
+        try:
+            return _compose_body(content)
+        except AttachmentSecurityError as exc:
+            if raise_on_violation:
+                raise
+            violation = exc
+        _log_violation(violation, str(violation.path))
+        content = _MessageContent(
+            plain_body=content.plain_body,
+            html_body=content.html_body,
+            attachments=tuple(attachment for attachment in content.attachments if attachment.source != violation.path),
+        )
+
+
+def _envelope_header_lines(*, sender: str, recipient: str, subject: str) -> bytes:
+    """Return the per-recipient header lines (Subject, From, To, Date), CRLF-terminated, no blank line."""
+    envelope = EmailMessage()
+    envelope["Subject"] = subject
+    envelope["From"] = sender
+    envelope["To"] = recipient
+    envelope["Date"] = formatdate(localtime=True)
+    return _header_lines(envelope)
+
+
+def _message_for(header_lines: bytes, body: IO[bytes]) -> IO[bytes]:
+    """Return one recipient's complete message: its header lines, then a copy of the shared body.
+
+    The copy streams in ``_STREAM_CHUNK_SIZE`` pieces, so memory stays at one
+    chunk; the attachments are not read or encoded again.
+    """
+    spool = _new_spool()
+    try:
+        spool.write(header_lines)
+        body.seek(0)
+        shutil.copyfileobj(body, spool, _STREAM_CHUNK_SIZE)
+        spool.seek(0)
+    except BaseException:
+        spool.close()
+        raise
     return spool
+
+
+# Control characters a subject may not carry: CR and LF would end the header (the
+# email package refuses those itself), the rest reach the recipient raw. TAB is
+# legal folding whitespace in an unstructured header.
+_SUBJECT_ALLOWED_CONTROLS: Final[frozenset[str]] = frozenset({"\t"})
+
+
+def _check_subject(subject: str) -> None:
+    """Refuse a subject carrying a control character, without echoing it.
+
+    CR and LF keep the email package's own message, which ``send()`` raised for
+    them before.
+    """
+    if "\r" in subject or "\n" in subject:
+        raise InvalidInputError("Header values may not contain linefeed or carriage return characters")
+    if any(unicodedata.category(character) == "Cc" and character not in _SUBJECT_ALLOWED_CONTROLS for character in subject):
+        raise InvalidInputError("mail_subject must not contain control characters (only TAB is allowed)")
 
 
 def _build_body_message(plain_body: str, html_body: str) -> EmailMessage:
@@ -1540,13 +1637,17 @@ def _build_body_message(plain_body: str, html_body: str) -> EmailMessage:
     return message
 
 
-def _header_block(message: EmailMessage) -> bytes:
-    """Serialise a message's headers to CRLF bytes, terminated by a blank line."""
+def _header_lines(message: EmailMessage) -> bytes:
+    """Serialise a message's headers to CRLF bytes, without the terminating blank line."""
     out = bytearray()
     for name, value in message.items():
         out += email_policy.SMTP.fold_binary(name, value)
-    out += b"\r\n"
     return bytes(out)
+
+
+def _header_block(message: EmailMessage) -> bytes:
+    """Serialise a message's headers to CRLF bytes, terminated by a blank line."""
+    return _header_lines(message) + b"\r\n"
 
 
 def _flatten_message(message: EmailMessage) -> bytes:
@@ -1557,13 +1658,15 @@ def _flatten_message(message: EmailMessage) -> bytes:
 
 
 def _write_attachment_part(spool: IO[bytes], attachment: AttachmentPayload) -> None:
-    """Write one base64 attachment part, streaming its bytes from disk in chunks.
+    """Write one base64 attachment part, streaming the checked file's bytes in chunks.
 
     Why
         Encoding the file incrementally (57 raw bytes per 76-char base64 line,
         read in a large multiple so whole lines are emitted per chunk) keeps peak
         memory at roughly one chunk instead of the full attachment plus its
-        base64 expansion.
+        base64 expansion. The bytes are counted as they are read, so a file that
+        grows past the size limit after it was checked is refused, having been
+        read at most one chunk past the limit.
     """
     maintype, subtype = _guess_attachment_mimetype(attachment.filename)
     part_headers = EmailMessage()
@@ -1575,12 +1678,21 @@ def _write_attachment_part(spool: IO[bytes], attachment: AttachmentPayload) -> N
     # 57 decoded bytes -> one 76-char base64 line; a large multiple keeps each
     # read aligned to whole lines so chunk encodings concatenate cleanly.
     raw_chunk = 57 * 1024
-    with attachment.source.open("rb") as handle:
-        while True:
-            chunk = handle.read(raw_chunk)
-            if not chunk:
-                break
-            spool.write(base64.encodebytes(chunk).replace(b"\n", b"\r\n"))
+    handle = attachment.handle
+    handle.seek(0)
+    total = 0
+    while True:
+        chunk = handle.read(raw_chunk)
+        if not chunk:
+            break
+        total += len(chunk)
+        if attachment.size_limit is not None and total > attachment.size_limit:
+            raise AttachmentSecurityError(
+                path=attachment.source,
+                reason=f'file grew past the limit of {attachment.size_limit} bytes while it was read: "{attachment.source}"',
+                violation_type=AttachmentViolation.SIZE,
+            )
+        spool.write(base64.encodebytes(chunk).replace(b"\n", b"\r\n"))
     spool.write(b"\r\n")
 
 
@@ -1825,36 +1937,9 @@ def _effective_suffix(name: str) -> str:
     return pathlib.PurePath(name.rstrip(". ") or name).suffix.lower()
 
 
-def _check_file_size(path: pathlib.Path, max_size: int | None) -> None:
-    """Check that the file size does not exceed the limit.
-
-    Why
-        Prevent memory exhaustion from excessively large attachments.
-
-    Inputs
-    ------
-    path:
-        The resolved path to check.
-    max_size:
-        Maximum allowed size in bytes (None to skip check).
-
-    Side Effects
-    ------------
-    Raises AttachmentSecurityError if file exceeds size limit.
-    """
-    if max_size is None:
-        return
-
-    try:
-        size = path.stat().st_size
-    except OSError as exc:
-        raise AttachmentSecurityError(
-            path=path,
-            reason=f'cannot stat file: "{path}" ({exc})',
-            violation_type=AttachmentViolation.SIZE,
-        ) from exc
-
-    if size > max_size:
+def _check_size(path: pathlib.Path, size: int, max_size: int | None) -> None:
+    """Raise when *size* (of the opened file at *path*) exceeds *max_size*."""
+    if max_size is not None and size > max_size:
         raise AttachmentSecurityError(
             path=path,
             reason=f'file size {size} bytes exceeds limit {max_size} bytes: "{path}"',
@@ -1862,15 +1947,85 @@ def _check_file_size(path: pathlib.Path, max_size: int | None) -> None:
         )
 
 
+# How an attachment is opened. O_NOFOLLOW refuses a symlink as the last
+# component: the path opened is already resolved, so a symlink there was swapped
+# in after the checks. O_NONBLOCK keeps a FIFO swapped in from blocking the open.
+# O_BINARY matters on Windows only. Each is 0 where the OS lacks it.
+_ATTACHMENT_OPEN_FLAGS: Final[int] = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+
+# errno of open(O_NOFOLLOW) on a symlink: ELOOP on Linux and macOS, EMLINK on FreeBSD.
+_NOFOLLOW_ERRNOS: Final[frozenset[int]] = frozenset({errno.ELOOP, errno.EMLINK})
+
+
+def _changed_after_check(path: pathlib.Path) -> AttachmentSecurityError:
+    return AttachmentSecurityError(
+        path=path,
+        reason=f'file changed after it was checked: "{path}"',
+        violation_type=AttachmentViolation.CHANGED,
+    )
+
+
+def _open_attachment(path: pathlib.Path, max_size: int | None) -> IO[bytes] | None:
+    """Open the checked, resolved *path* once and prove it is the file that was checked.
+
+    Why
+        Reading the file again later by name (once per recipient, as before)
+        lets a path swapped after the checks - a symlink to ``/etc/passwd``, a
+        file grown past the limit - reach the message. The file is opened here
+        once, compared with what was checked (same device and inode, still a
+        regular file, size within the limit), and that open file is what the
+        message body is encoded from.
+
+    Outputs
+    -------
+    IO[bytes] | None
+        The opened file, or ``None`` when *path* does not exist or is not a
+        regular file (the caller reports it as missing).
+
+    Raises
+    ------
+    AttachmentSecurityError
+        ``CHANGED`` when the path became a symlink or another file after the
+        checks; ``SIZE`` when the file exceeds *max_size*.
+    """
+    try:
+        checked = os.lstat(path)
+    except OSError:
+        return None
+    if stat.S_ISLNK(checked.st_mode):
+        raise _changed_after_check(path)
+    if not stat.S_ISREG(checked.st_mode):
+        return None
+    try:
+        descriptor = os.open(path, _ATTACHMENT_OPEN_FLAGS)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        if exc.errno in _NOFOLLOW_ERRNOS:
+            raise _changed_after_check(path) from None
+        raise
+    handle = os.fdopen(descriptor, "rb")
+    try:
+        opened = os.fstat(handle.fileno())
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (checked.st_dev, checked.st_ino):
+            raise _changed_after_check(path)
+        _check_size(path, opened.st_size, max_size)
+    except BaseException:
+        handle.close()
+        raise
+    return handle
+
+
 def _validate_attachment_security(
     path: pathlib.Path,
     original_path_str: str,
     security: AttachmentSecurityOptions,
 ) -> pathlib.Path:
-    """Orchestrate all security checks for a single attachment.
+    """Run the path-based security checks for a single attachment.
 
     Why
-        Provides a single entry point for attachment security validation.
+        Provides a single entry point for attachment path validation. The size
+        is checked on the opened file (:func:`_open_attachment`), not here.
 
     Inputs
     ------
@@ -1888,38 +2043,22 @@ def _validate_attachment_security(
 
     Side Effects
     ------------
-    Raises AttachmentSecurityError if any check fails. Note that file
-    existence is NOT checked here - that's handled by _prepare_attachments
-    after security validation completes.
+    Raises AttachmentSecurityError if any check fails. File existence is not
+    checked here.
     """
-    # 1. Check path traversal (before any I/O)
     _check_path_traversal(path, original_path_str)
-
-    # 2. Check symlink handling
     resolved_path = _check_symlink(path=path, allow_symlinks=security.allow_symlinks)
-
-    # 3. Check sensitive patterns
     _check_sensitive_patterns(resolved_path)
-
-    # 4. Check directory restrictions
     _check_directory_restrictions(
         resolved_path,
         security.allowed_directories,
         security.blocked_directories,
     )
-
-    # 5. Check extension
     _check_extension(
         resolved_path,
         security.allowed_extensions,
         security.blocked_extensions,
     )
-
-    # 6. Check file size (only if file exists)
-    # Note: File existence check comes later in _prepare_attachments
-    if resolved_path.exists():
-        _check_file_size(resolved_path, security.max_size_bytes)
-
     return resolved_path
 
 
@@ -1929,10 +2068,11 @@ def _prepare_attachments(
     *,
     raise_on_missing: bool,
 ) -> tuple[AttachmentPayload, ...]:
-    """Normalise attachment paths into frozen payloads with security validation.
+    """Check each attachment path, open the checked file once, and return the payloads.
 
     Why
-        Validates attachment existence and security before SMTP attempts begin.
+        Validates attachment existence and security before SMTP attempts begin,
+        and ties what is sent to the file that was checked.
 
     Inputs
     ------
@@ -1941,68 +2081,82 @@ def _prepare_attachments(
     security:
         Resolved security options for validation.
     raise_on_missing:
-        When ``True``, missing files raise ``FileNotFoundError``; when ``False``,
-        a warning is logged and the attachment is skipped.
-
-    What
-        Resolves existing files, validates security, and emits immutable payloads.
+        When ``True``, missing files raise ``AttachmentNotFoundError``; when
+        ``False``, a warning is logged and the attachment is skipped.
 
     Outputs
     -------
     tuple[AttachmentPayload, ...]
-        Resolved payloads that passed security validation.
+        Payloads holding open files; the caller closes them
+        (:func:`_close_attachments`). On any failure, those already opened are
+        closed before the error propagates.
 
     Side Effects
     ------------
-    Reads file bytes when paths exist and pass security checks; logs or raises
-    when missing or security violations occur.
+    Opens files; logs or raises when missing or security violations occur.
     """
     prepared: list[AttachmentPayload] = []
-    for path in paths:
-        original_path_str = str(path)
-
-        # Security validation (before reading file contents)
-        try:
-            validated_path = _validate_attachment_security(path, original_path_str, security)
-        except AttachmentSecurityError as exc:
-            if security.raise_on_violation:
-                raise
-            # `exc.reason` and `original_path_str` are both built from the
-            # caller-supplied path; `AttachmentSecurityError.__init__` already
-            # cleans `.reason`, but the path is cleaned again here too, as
-            # defense in depth and for consistency with every other log call.
-            logger.warning(
-                "Attachment security violation: %s",
-                _printable(exc.reason),
-                extra={
-                    "attachment_path": _printable(original_path_str),
-                    "violation_type": exc.violation_type.value,
-                },
-            )
-            continue
-
-        # Check file existence
-        if not validated_path.is_file():
-            clean_path = _printable(str(validated_path))
-            if raise_on_missing:
-                raise AttachmentNotFoundError(f'Attachment File "{clean_path}" can not be found')
-            logger.warning(
-                'Attachment File "%s" can not be found',
-                clean_path,
-                extra={"attachment_path": clean_path},
-            )
-            continue
-
-        # Record the validated path; bytes are read later while streaming so a
-        # large attachment never sits fully in memory from here to delivery.
-        prepared.append(
-            AttachmentPayload(
-                filename=validated_path.name,
-                source=validated_path,
-            )
-        )
-
+    try:
+        for path in paths:
+            payload = _prepare_attachment(path, security, raise_on_missing=raise_on_missing)
+            if payload is not None:
+                prepared.append(payload)
+    except BaseException:
+        _close_attachments(tuple(prepared))
+        raise
     return tuple(prepared)
+
+
+def _prepare_attachment(path: pathlib.Path, security: AttachmentSecurityOptions, *, raise_on_missing: bool) -> AttachmentPayload | None:
+    """Check and open one attachment; ``None`` when it is skipped (warn mode, or missing and tolerated)."""
+    original_path_str = str(path)
+    try:
+        validated_path = _validate_attachment_security(path, original_path_str, security)
+        handle = _open_attachment(validated_path, security.max_size_bytes)
+    except AttachmentSecurityError as exc:
+        if security.raise_on_violation:
+            raise
+        _log_violation(exc, original_path_str)
+        return None
+
+    if handle is None:
+        clean_path = _printable(str(validated_path))
+        if raise_on_missing:
+            raise AttachmentNotFoundError(f'Attachment File "{clean_path}" can not be found')
+        logger.warning(
+            'Attachment File "%s" can not be found',
+            clean_path,
+            extra={"attachment_path": clean_path},
+        )
+        return None
+
+    return AttachmentPayload(
+        filename=validated_path.name,
+        source=validated_path,
+        handle=handle,
+        size_limit=security.max_size_bytes,
+    )
+
+
+def _log_violation(exc: AttachmentSecurityError, original_path_str: str) -> None:
+    """Log a skipped attachment's violation (warn mode)."""
+    # `exc.reason` and `original_path_str` are both built from the
+    # caller-supplied path; `AttachmentSecurityError.__init__` already
+    # cleans `.reason`, but the path is cleaned again here too, as
+    # defense in depth and for consistency with every other log call.
+    logger.warning(
+        "Attachment security violation: %s",
+        _printable(exc.reason),
+        extra={
+            "attachment_path": _printable(original_path_str),
+            "violation_type": exc.violation_type.value,
+        },
+    )
+
+
+def _close_attachments(attachments: tuple[AttachmentPayload, ...]) -> None:
+    for attachment in attachments:
+        attachment.handle.close()
 
 
 def _prepare_hosts(hosts: tuple[str, ...]) -> tuple[str, ...]:
