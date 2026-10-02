@@ -406,8 +406,10 @@ def test_a_pipe_as_the_env_file_is_read_to_its_end_like_process_substitution(cli
 
 
 @pytest.mark.os_posix
-@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs named pipes")
 def test_a_fifo_with_no_writer_as_the_env_file_reads_as_empty_without_waiting(cli_runner: CliRunner, tmp_path: Path) -> None:
+    # A guard in the body, not a skipif, so the type checker sees os.mkfifo only where it exists.
+    if sys.platform == "win32":
+        pytest.skip("needs named pipes")
     fifo = tmp_path / "settings.env"
     os.mkfifo(fifo)
     outcome: list[tuple[Result, RecordingTransport]] = []
