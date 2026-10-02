@@ -250,8 +250,8 @@ _SUBJECT_ALLOWED_CONTROLS: Final[frozenset[str]] = frozenset({"\t"})
 
 _LINE_BREAK_MESSAGE: Final[str] = "Header values may not contain linefeed or carriage return characters"
 
-# Folding a subject costs more than linear time in its length and runs once per recipient, so
-# an unbounded subject is CPU and memory a caller can burn before the first delivery. No mail
+# Folding a subject costs more than linear time in its length, so an unbounded subject is CPU
+# and memory a caller can burn before the first delivery. No mail
 # client shows more than a line or two of it.
 SUBJECT_MAX_CHARACTERS: Final[int] = 4096
 
