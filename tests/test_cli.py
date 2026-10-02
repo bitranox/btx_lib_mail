@@ -12,6 +12,7 @@ import pytest
 
 from btx_lib_mail import __init__conf__
 from btx_lib_mail import cli as cli_mod
+from btx_lib_mail.errors import InvalidInputError
 from btx_lib_mail.lib_mail import ConfMail
 
 if TYPE_CHECKING:
@@ -843,8 +844,8 @@ def test_send_command_refuses_a_non_positive_attachment_max_size_from_env(monkey
 
     result = cli_runner.invoke(cli_mod.cli, ["send", "--subject", "Test", "--body", "Test body"])
 
-    # A plain ValueError: lib_cli_exit_tools maps it to exit code 22, like every other refused value.
-    assert type(result.exception) is ValueError
+    # An InvalidInputError is a ValueError: lib_cli_exit_tools maps it to exit code 22, like every other refused value.
+    assert type(result.exception) is InvalidInputError
     assert str(result.exception) == "attachment_max_size_bytes must be positive, got 0"
     assert calls == {}
 
@@ -862,7 +863,7 @@ def test_send_command_refuses_a_non_positive_timeout_with_the_message_send_gave(
     args = ["send", "--host", "smtp.example.com", "--recipient", "test@example.com", "--subject", "S", "--body", "B", "--timeout", "-1"]
     result = cli_runner.invoke(cli_mod.cli, args)
 
-    assert type(result.exception) is ValueError
+    assert type(result.exception) is InvalidInputError
     assert str(result.exception) == "smtp_timeout must be positive, got -1.0"
     assert calls == {}
 
@@ -890,7 +891,7 @@ def test_send_command_refuses_a_host_with_the_message_send_gave(monkeypatch: pyt
     args = ["send", "--host", host, "--recipient", "test@example.com", "--subject", "S", "--body", "B"]
     result = cli_runner.invoke(cli_mod.cli, args)
 
-    assert type(result.exception) is ValueError
+    assert type(result.exception) is InvalidInputError
     assert str(result.exception) == reason
     assert "s3cr3t-pw" not in result.output
     assert calls == {}

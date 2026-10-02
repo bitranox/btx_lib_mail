@@ -33,6 +33,7 @@ from pydantic import SecretStr, ValidationError
 
 from . import __init__conf__
 from .behaviors import emit_greeting, noop_main, raise_intentional_failure
+from .errors import InvalidInputError
 from .lib_mail import conf, send, validate_email_address, validate_smtp_host
 from .typed_click import argument, option, version_option
 
@@ -123,11 +124,11 @@ def _refusal_message(error: ValidationError) -> str:
 
 @contextmanager
 def _refusals_as_value_error() -> Generator[None, None, None]:
-    """Raise a setting the model refuses as a plain ``ValueError`` (exit code 22, as before)."""
+    """Raise a setting the model refuses as an ``InvalidInputError``, a ``ValueError`` (exit code 22)."""
     try:
         yield
     except ValidationError as exc:
-        raise ValueError(_refusal_message(exc)) from exc
+        raise InvalidInputError(_refusal_message(exc)) from exc
 
 
 def _unquoted(value: str) -> str:

@@ -84,12 +84,12 @@ above apply verbatim.
 `--host` (and `BTX_MAIL_SMTP_HOSTS`) is validated before any delivery is attempted. A
 host carrying `@` or `/` (for example `smtp://user:pw@relay`, which would put a
 credential into the host field) or an interior whitespace or control character is
-refused with a `ValueError` that never echoes the value:
+refused with an `InvalidInputError` (a `ValueError`) that never echoes the value:
 
 ```console
 $ btx-lib-mail send --host "user:pw@relay" --sender a@example.com \
     --recipient b@example.com --subject s --body b
-ValueError: SMTP host must be host[:port]; it must not contain '@' or '/' (pass credentials as smtp_username and smtp_password)
+InvalidInputError: SMTP host must be host[:port]; it must not contain '@' or '/' (pass credentials as smtp_username and smtp_password)
 ```
 
 The CLI does not catch this itself; it surfaces through `lib_cli_exit_tools`, which maps
@@ -107,14 +107,14 @@ first; `validate-smtp-host` checks one host and refuses a comma.
 ### Invalid settings
 
 `send` assigns every resolved option and environment value onto one `ConfMail`, so the
-model's own checks run before any delivery. A value it refuses is reported as a `ValueError`
-carrying the check's message (exit code `22`), for example a timeout or attachment size that
+model's own checks run before any delivery. A value it refuses is reported as an
+`InvalidInputError` (a `ValueError`) carrying the check's message (exit code `22`), for example a timeout or attachment size that
 is not positive:
 
 ```console
 $ BTX_MAIL_ATTACHMENT_MAX_SIZE=0 btx-lib-mail send --host relay.example.com \
     --recipient b@example.com --subject s --body b
-ValueError: attachment_max_size_bytes must be positive, got 0
+InvalidInputError: attachment_max_size_bytes must be positive, got 0
 ```
 
 A value that cannot be parsed at all (`BTX_MAIL_SMTP_TIMEOUT=abc`) is still reported as

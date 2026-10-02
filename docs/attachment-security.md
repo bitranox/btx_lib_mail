@@ -6,18 +6,29 @@ of sensitive files, dangerous executables, or oversized payloads.
 
 ### Security Checks
 
-1. **Path Traversal Prevention**  -  Paths containing `..` sequences are rejected
-   to prevent escaping the intended directory.
-2. **Symlink Handling**  -  Symlinks are rejected by default to prevent following
-   links to sensitive files. Enable via `attachment_allow_symlinks=True`.
+1. **Path Traversal Prevention**  -  A path with a `..` component (`../x`, `a/../b`)
+   is rejected. A `..` inside a file name (`report..final.txt`) is not a component
+   and passes.
+2. **Symlink Handling**  -  A path whose last component is a symlink is rejected by
+   default; enable via `attachment_allow_symlinks=True`. A symlinked DIRECTORY along
+   the path is followed either way: every rule below runs on the resolved target, so a
+   symlinked directory cannot carry a file out of a blocked directory or into an
+   allowed one.
 3. **Sensitive Pattern Detection**  -  Paths matching patterns like `/.ssh/`,
-   `/id_rsa`, `/.env`, `/credentials`, `/.aws/credentials` are always blocked.
+   `/id_rsa`, `/.env`, `/credentials`, `/.aws/credentials`, `/.netrc`,
+   `/.git-credentials` are always blocked. The match ignores case on every platform,
+   since macOS and Windows file systems are case-insensitive (`.SSH/config` is
+   `~/.ssh/config` there).
 4. **Directory Restrictions**  -  By default, files from system directories
    (`/etc`, `/var`, `/root`, etc. on POSIX; `C:\Windows`, etc. on Windows) are
    blocked. Use `attachment_allowed_directories` for whitelist mode.
 5. **Extension Filtering**  -  Dangerous extensions (`.sh`, `.exe`, `.bat`, `.py`,
-   etc.) are blocked by default. Use `attachment_allowed_extensions` for
-   whitelist mode or `attachment_blocked_extensions` to customize the blacklist.
+   etc.) are blocked by default on every platform: the default is the union of the
+   POSIX and Windows lists, because the RECIPIENT's system decides what an attachment
+   runs as. The extension is read after trailing dots and spaces are dropped (Windows
+   saves `x.exe.` as `x.exe`) and compared without case. Use
+   `attachment_allowed_extensions` for whitelist mode or
+   `attachment_blocked_extensions` to customize the blacklist.
    `ConfMail` refuses an empty blocked extension or directory set when its
    allowlist is not set, because it would block nothing; set
    `attachment_allow_empty_blocklists=True` to do that on purpose.
@@ -27,12 +38,12 @@ of sensitive files, dangerous executables, or oversized payloads.
 ### Configuration Example
 
 ```python
-from btx_lib_mail import conf, send, DANGEROUS_EXTENSIONS_POSIX
+from btx_lib_mail import conf, send, DANGEROUS_EXTENSIONS_POSIX, DANGEROUS_EXTENSIONS_WINDOWS
 
 # Global configuration (applies to all send() calls)
 conf.attachment_max_size_bytes = 50_000_000  # 50 MiB
 conf.attachment_allow_symlinks = True
-conf.attachment_blocked_extensions = DANGEROUS_EXTENSIONS_POSIX | {".custom"}
+conf.attachment_blocked_extensions = DANGEROUS_EXTENSIONS_POSIX | DANGEROUS_EXTENSIONS_WINDOWS | {".custom"}
 
 # Per-call override (whitelist mode)
 send(
@@ -60,7 +71,9 @@ send(
 
 ### Public Constants
 
-The library exports OS-specific defaults that can be extended or replaced:
+The library exports its defaults so they can be extended or replaced. Both extension
+sets are blocked on every platform; the directory set of the platform the library runs
+on is the default:
 
 ```python
 from btx_lib_mail import (
@@ -68,6 +81,6 @@ from btx_lib_mail import (
     DANGEROUS_EXTENSIONS_WINDOWS,  # frozenset: .exe, .bat, .ps1, etc.
     DANGEROUS_DIRECTORIES_POSIX,  # frozenset[Path]: /etc, /var, /root, etc.
     DANGEROUS_DIRECTORIES_WINDOWS,  # frozenset[Path]: C:\Windows, etc.
-    SENSITIVE_PATH_PATTERNS,  # tuple[str]: /.ssh/, /id_rsa, /.env, etc.
+    SENSITIVE_PATH_PATTERNS,  # tuple[str]: /.ssh/, /id_rsa, /.env, /.netrc, etc.
 )
 ```

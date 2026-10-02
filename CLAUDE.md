@@ -23,6 +23,7 @@ src/btx_lib_mail/
   behaviors.py         # scaffold helpers (greeting, noop, intentional failure)
   cli.py               # rich-click CLI adapter (send, validate-email, validate-smtp-host, etc.)
   lib_mail.py          # core SMTP delivery logic, validators, configuration, security
+  errors.py            # BtxMailError and its subclasses (each keeps its old builtin base)
   secret_safety.py     # SecretSafeModel, redact_validation_error: credential-safe pydantic errors
   typed_click.py       # typed Protocol facade over rich-click's partially-typed decorators
 
@@ -30,6 +31,7 @@ tests/
   conftest.py          # shared fixtures (cli_runner, traceback isolation)
   test_behaviors.py    # behavior helper tests
   test_cli.py          # CLI command tests
+  test_errors.py       # BtxMailError hierarchy at every raise site
   test_lib_mail.py     # core mail logic + validator + security tests
   test_metadata.py     # metadata constant tests
   test_module_entry.py # python -m entry tests
@@ -71,8 +73,8 @@ tests/
 - `ruff` for linting/formatting (line-length 160)
 - `pyright` strict mode
 - `bandit` security scanning
-- `import-linter` enforces one layers contract: `cli` above `lib_mail` above `secret_safety` above `behaviors`
-  (a module may import only from layers below it)
+- `import-linter` enforces one layers contract: `cli` above `lib_mail` above `secret_safety` and `errors`
+  (independent of each other) above `behaviors` (a module may import only from layers below it)
 
 ## Public API
 
@@ -85,6 +87,9 @@ from btx_lib_mail import (
     CANONICAL_GREETING, emit_greeting, noop_main, print_info, raise_intentional_failure,
     # Delivery seam
     DeliveryOptions, Transport,
+    # Errors (every one is a BtxMailError)
+    BtxMailError, InvalidInputError, ConfigurationError,
+    AttachmentNotFoundError, DeliveryError,
     # Security
     AttachmentSecurityError,
     AttachmentViolation,
@@ -124,16 +129,16 @@ Attachments are validated against multiple security checks:
 
 ### Configuration Fields (ConfMail)
 
-| Field                                    | Type                      | Default               |
-|------------------------------------------|---------------------------|-----------------------|
-| `attachment_allowed_extensions`          | `frozenset[str] \| None`  | `None` (blacklist)    |
-| `attachment_blocked_extensions`          | `frozenset[str]`          | OS-specific dangers   |
-| `attachment_allowed_directories`         | `frozenset[Path] \| None` | `None` (blacklist)    |
-| `attachment_blocked_directories`         | `frozenset[Path]`         | OS-specific sensitive |
-| `attachment_max_size_bytes`              | `int \| None`             | `26_214_400` (25 MiB) |
-| `attachment_allow_symlinks`              | `bool`                    | `False`               |
-| `attachment_raise_on_security_violation` | `bool`                    | `True`                |
-| `attachment_allow_empty_blocklists`      | `bool`                    | `False`               |
+| Field                                    | Type                      | Default                 |
+|------------------------------------------|---------------------------|-------------------------|
+| `attachment_allowed_extensions`          | `frozenset[str] \| None`  | `None` (blacklist)      |
+| `attachment_blocked_extensions`          | `frozenset[str]`          | POSIX + Windows dangers |
+| `attachment_allowed_directories`         | `frozenset[Path] \| None` | `None` (blacklist)      |
+| `attachment_blocked_directories`         | `frozenset[Path]`         | OS-specific sensitive   |
+| `attachment_max_size_bytes`              | `int \| None`             | `26_214_400` (25 MiB)   |
+| `attachment_allow_symlinks`              | `bool`                    | `False`                 |
+| `attachment_raise_on_security_violation` | `bool`                    | `True`                  |
+| `attachment_allow_empty_blocklists`      | `bool`                    | `False`                 |
 
 ### Environment Variables
 

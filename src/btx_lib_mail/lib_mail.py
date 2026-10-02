@@ -41,6 +41,7 @@ from typing import IO, Any, Final, Protocol, cast
 
 from pydantic import ConfigDict, Field, SecretStr, field_validator, model_validator
 
+from .errors import AttachmentNotFoundError, BtxMailError, ConfigurationError, DeliveryError, InvalidInputError
 from .secret_safety import SecretSafeModel
 
 logger = logging.getLogger("btx_lib_mail")
@@ -175,24 +176,36 @@ SENSITIVE_PATH_PATTERNS: Final[tuple[str, ...]] = (
     "/token",
     "/.aws/credentials",
     "/.kube/config",
+    "/.netrc",
+    "/.pgpass",
+    "/.git-credentials",
+    "/.docker/config.json",
+    "/.pypirc",
+    "/.npmrc",
+    "/gh/hosts.yml",
 )
-"""Path patterns that indicate sensitive files (always blocked)."""
+"""Path patterns that indicate sensitive files (always blocked).
+
+Matched as substrings of the resolved path with forward slashes, ignoring case.
+"""
 
 
 def _default_blocked_extensions() -> frozenset[str]:
-    """Return the OS-appropriate set of dangerous file extensions.
+    """Return the dangerous extensions of every platform.
 
     Why
-        Provides sensible defaults without requiring manual configuration.
+        What runs an attachment is the RECIPIENT's machine, not the sender's, so a
+        Linux sender must refuse ``.exe`` as firmly as a Windows sender refuses
+        ``.sh``. Unlike the blocked directories, which describe the sender's own
+        disk, this set does not depend on where the library runs.
 
     Outputs
     -------
     frozenset[str]
-        Dangerous extensions for the current operating system.
+        The union of :data:`DANGEROUS_EXTENSIONS_POSIX` and
+        :data:`DANGEROUS_EXTENSIONS_WINDOWS`.
     """
-    if sys.platform == "win32":
-        return DANGEROUS_EXTENSIONS_WINDOWS
-    return DANGEROUS_EXTENSIONS_POSIX
+    return DANGEROUS_EXTENSIONS_POSIX | DANGEROUS_EXTENSIONS_WINDOWS
 
 
 def _default_blocked_directories() -> frozenset[pathlib.Path]:
@@ -241,7 +254,7 @@ class AttachmentViolation(str, Enum):
 # ---------------------------------------------------------------------------
 
 
-class AttachmentSecurityError(Exception):
+class AttachmentSecurityError(BtxMailError):
     """Raised when an attachment violates security policies.
 
     **Purpose:** Provide a structured exception for attachment security
@@ -404,6 +417,7 @@ class ConfMail(SecretSafeModel):
     # smtphosts is listed because a host that carries user:password@ is refused
     # there, and that refusal must not echo the value.
     credential_fields = frozenset({"smtp_password", "smtphosts"})
+    validation_error_class = ConfigurationError
 
     @field_validator("smtphosts", mode="before")
     @classmethod
@@ -450,7 +464,7 @@ class ConfMail(SecretSafeModel):
             return value
         if isinstance(value, int) and not isinstance(value, bool):
             return str(value)
-        raise ValueError(f"smtp_password must be text, got {type(value).__name__}; quote it in the configuration source")
+        raise InvalidInputError(f"smtp_password must be text, got {type(value).__name__}; quote it in the configuration source")
 
     @field_validator("smtp_timeout", mode="after")
     @classmethod
@@ -476,7 +490,7 @@ class ConfMail(SecretSafeModel):
         """
 
         if value <= 0:
-            raise ValueError(f"smtp_timeout must be positive, got {value}")
+            raise InvalidInputError(f"smtp_timeout must be positive, got {value}")
         return value
 
     @field_validator("smtp_local_hostname", mode="after")
@@ -511,13 +525,13 @@ class ConfMail(SecretSafeModel):
             # Handle default_factory case
             value = value()
         if not isinstance(value, (frozenset, set, list, tuple)):
-            raise ValueError("extensions must be a set, frozenset, list, or tuple of strings")
+            raise InvalidInputError("extensions must be a set, frozenset, list, or tuple of strings")
         raw_list: list[object] = list(value)  # pyright: ignore[reportUnknownArgumentType]
 
         normalised: set[str] = set()
         for ext in raw_list:
             if not isinstance(ext, str):  # pyright: ignore[reportUnnecessaryIsInstance]
-                raise ValueError(f"extension must be a string, got {type(ext).__name__}")
+                raise InvalidInputError(f"extension must be a string, got {type(ext).__name__}")
             ext_lower = ext.lower().strip()
             if not ext_lower:
                 continue
@@ -550,7 +564,7 @@ class ConfMail(SecretSafeModel):
             # Handle default_factory case
             value = value()
         if not isinstance(value, (frozenset, set, list, tuple)):
-            raise ValueError("directories must be a set, frozenset, list, or tuple")
+            raise InvalidInputError("directories must be a set, frozenset, list, or tuple")
         raw_list: list[object] = list(value)  # pyright: ignore[reportUnknownArgumentType]
 
         normalised: set[pathlib.Path] = set()
@@ -560,7 +574,7 @@ class ConfMail(SecretSafeModel):
             elif isinstance(directory, pathlib.Path):  # pyright: ignore[reportUnnecessaryIsInstance]
                 normalised.add(directory)
             else:
-                raise ValueError(f"directory must be a string or Path, got {type(directory).__name__}")
+                raise InvalidInputError(f"directory must be a string or Path, got {type(directory).__name__}")
         return frozenset(normalised)
 
     @field_validator("attachment_max_size_bytes", mode="after")
@@ -582,7 +596,7 @@ class ConfMail(SecretSafeModel):
             The validated size limit.
         """
         if value is not None and value <= 0:
-            raise ValueError(f"attachment_max_size_bytes must be positive, got {value}")
+            raise InvalidInputError(f"attachment_max_size_bytes must be positive, got {value}")
         return value
 
     @model_validator(mode="after")
@@ -603,7 +617,7 @@ class ConfMail(SecretSafeModel):
         )
         for blocked_name, blocked, allowed_name, allowed in axes:
             if not blocked and allowed is None:
-                raise ValueError(
+                raise InvalidInputError(
                     f"{blocked_name} is empty and {allowed_name} is not set, so nothing would be blocked; "
                     f"omit {blocked_name} for the OS defaults, or set attachment_allow_empty_blocklists=True to block nothing on purpose"
                 )
@@ -761,7 +775,7 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
     try:
         validate_email_address(mail_from)
     except ValueError:
-        raise ValueError(f"invalid sender address: {mail_from!r}") from None
+        raise InvalidInputError(f"invalid sender address: {mail_from!r}") from None
 
     # Resolve error handling parameters
     resolved_raise_on_missing = raise_on_missing_attachments if raise_on_missing_attachments is not None else settings.raise_on_missing_attachments
@@ -818,7 +832,11 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
     ]
 
     if failed_recipients:
-        raise RuntimeError(f'following recipients failed "{failed_recipients}" on all of following hosts : "{hosts}"')
+        raise DeliveryError(
+            f'following recipients failed "{failed_recipients}" on all of following hosts : "{hosts}"',
+            failed_recipients=tuple(failed_recipients),
+            hosts=hosts,
+        )
 
     return True
 
@@ -893,7 +911,7 @@ def _resolve_delivery_options(*, settings: ConfMail, overrides: _DeliveryOverrid
     starttls_verify = bool(overrides.starttls_verify if overrides.starttls_verify is not None else settings.smtp_starttls_verify)
     timeout = float(overrides.timeout if overrides.timeout is not None else settings.smtp_timeout)
     if timeout <= 0:
-        raise ValueError(f"smtp_timeout must be positive, got {timeout}")
+        raise InvalidInputError(f"smtp_timeout must be positive, got {timeout}")
     if overrides.local_hostname is not None:
         _check_local_hostname(overrides.local_hostname, label="local_hostname")
     local_hostname = overrides.local_hostname if overrides.local_hostname is not None else settings.smtp_local_hostname
@@ -917,7 +935,7 @@ def _check_local_hostname(value: str, *, label: str) -> None:
     The value is not echoed: a refused name may carry control characters.
     """
     if not value or not all(_EHLO_NAME_FIRST_CHAR <= ord(char) <= _EHLO_NAME_LAST_CHAR for char in value):
-        raise ValueError(f"{label} must be non-empty printable ASCII without spaces")
+        raise InvalidInputError(f"{label} must be non-empty printable ASCII without spaces")
 
 
 @functools.cache
@@ -1629,8 +1647,8 @@ def _check_path_traversal(path: pathlib.Path, original_str: str) -> None:
     ------------
     Raises AttachmentSecurityError if traversal is detected.
     """
-    # Check the original string for traversal patterns before resolution
-    if ".." in original_str:
+    # A ".." COMPONENT climbs out of a directory; "report..final.txt" is just a name.
+    if ".." in pathlib.Path(original_str).parts:
         raise AttachmentSecurityError(
             path=path,
             reason=f'path contains traversal sequence: "{original_str}"',
@@ -1687,12 +1705,12 @@ def _check_sensitive_patterns(path: pathlib.Path) -> None:
     ------------
     Raises AttachmentSecurityError if sensitive pattern is matched.
     """
-    path_str = str(path)
-    # Normalise to forward slashes for consistent matching
-    path_str_normalised = path_str.replace("\\", "/")
+    # Forward slashes so one pattern serves Windows too; casefolded because macOS and
+    # Windows file systems are case-insensitive, where .SSH/config IS ~/.ssh/config.
+    path_str_normalised = str(path).replace("\\", "/").casefold()
 
     for pattern in SENSITIVE_PATH_PATTERNS:
-        if pattern in path_str_normalised:
+        if pattern.casefold() in path_str_normalised:
             raise AttachmentSecurityError(
                 path=path,
                 reason=f'path matches sensitive pattern "{pattern}": "{path}"',
@@ -1770,7 +1788,7 @@ def _check_extension(
     ------------
     Raises AttachmentSecurityError if extension is not allowed.
     """
-    ext = path.suffix.lower()
+    ext = _effective_suffix(path.name)
 
     if allowed is not None:
         # Whitelist mode: only allowed extensions pass
@@ -1787,6 +1805,24 @@ def _check_extension(
             reason=f'extension "{ext}" is blocked: "{path}"',
             violation_type=AttachmentViolation.EXTENSION,
         )
+
+
+def _effective_suffix(name: str) -> str:
+    """Return the lower-cased extension a recipient's system sees for *name*.
+
+    Why
+        Windows drops trailing dots and spaces from a file name, so ``x.exe.``
+        and ``x.exe `` are saved as ``x.exe``; :attr:`pathlib.PurePath.suffix`
+        reports ``.`` and ``.exe `` for them, which no blocklist entry matches.
+
+    Examples
+    --------
+    >>> _effective_suffix("x.sh. . ")
+    '.sh'
+    >>> _effective_suffix("REPORT.PDF")
+    '.pdf'
+    """
+    return pathlib.PurePath(name.rstrip(". ") or name).suffix.lower()
 
 
 def _check_file_size(path: pathlib.Path, max_size: int | None) -> None:
@@ -1949,7 +1985,7 @@ def _prepare_attachments(
         if not validated_path.is_file():
             clean_path = _printable(str(validated_path))
             if raise_on_missing:
-                raise FileNotFoundError(f'Attachment File "{clean_path}" can not be found')
+                raise AttachmentNotFoundError(f'Attachment File "{clean_path}" can not be found')
             logger.warning(
                 'Attachment File "%s" can not be found',
                 clean_path,
@@ -1997,7 +2033,7 @@ def _prepare_hosts(hosts: tuple[str, ...]) -> tuple[str, ...]:
     filtered = [value for value in normalised if value]
     unique = tuple(dict.fromkeys(filtered))
     if not unique:
-        raise ValueError("no valid smtphost passed")
+        raise InvalidInputError("no valid smtphost passed")
     for host in unique:
         validate_smtp_host(host)
     return unique
@@ -2039,7 +2075,7 @@ def _prepare_recipients(
     elif isinstance(recipients, Sequence):  # pyright: ignore[reportUnnecessaryIsInstance]
         raw_items = recipients
     else:  # pragma: no cover - defensive guard
-        raise RuntimeError("invalid type of mail_addresses")
+        raise InvalidInputError("invalid type of mail_addresses")
 
     cleaned = [_normalise_email_address(item) for item in raw_items]
     filtered = [value for value in cleaned if value]
@@ -2056,13 +2092,13 @@ def _prepare_recipients(
             # reaches a log line or an exception message a caller may log.
             clean_entry = _printable(entry)
             if raise_on_invalid:
-                raise ValueError(f"invalid recipient {clean_entry}") from None
+                raise InvalidInputError(f"invalid recipient {clean_entry}") from None
             logger.warning("invalid recipient %s", clean_entry, extra={"recipient": clean_entry})
             continue
         valid.append(entry)
 
     if not valid:
-        raise ValueError("no valid recipients")
+        raise InvalidInputError("no valid recipients")
     return tuple(valid)
 
 
@@ -2152,9 +2188,9 @@ def _collect_host_inputs(value: Any) -> list[str]:
     if isinstance(value, Iterable):  # type: ignore[reportUnnecessaryIsInstance]
         items = list(cast("Iterable[Any]", value))
         if not all(isinstance(item, str) for item in items):
-            raise ValueError("smtphosts entries must be strings")
+            raise InvalidInputError("smtphosts entries must be strings")
         return _checked_hosts(cast("list[str]", items))
-    raise ValueError("smtphosts must be a string, list of strings, or tuple of strings")
+    raise InvalidInputError("smtphosts must be a string, list of strings, or tuple of strings")
 
 
 def _checked_hosts(raw_hosts: list[str]) -> list[str]:
@@ -2203,11 +2239,11 @@ def validate_email_address(address: str) -> None:
     >>> validate_email_address("invalid@")
     Traceback (most recent call last):
         ...
-    ValueError: invalid email address: 'invalid@'
+    btx_lib_mail.errors.InvalidInputError: invalid email address: 'invalid@'
     """
 
     if not EMAIL_PATTERN.fullmatch(address):
-        raise ValueError(f"invalid email address: {address!r}")
+        raise InvalidInputError(f"invalid email address: {address!r}")
 
 
 def _refuse_credentials_in_host(host: str) -> str:
@@ -2227,10 +2263,10 @@ def _refuse_credentials_in_host(host: str) -> str:
     """
     if "@" in host or "/" in host:
         # Never quote the value: a userinfo part here is a password in the wrong field.
-        raise ValueError("SMTP host must be host[:port]; it must not contain '@' or '/' (pass credentials as smtp_username and smtp_password)")
+        raise InvalidInputError("SMTP host must be host[:port]; it must not contain '@' or '/' (pass credentials as smtp_username and smtp_password)")
     if any(not character.isprintable() or character.isspace() for character in host):
         # Never quote the value: it may itself be the forged content.
-        raise ValueError("SMTP host must not contain whitespace or control characters")
+        raise InvalidInputError("SMTP host must not contain whitespace or control characters")
     return host
 
 
@@ -2274,15 +2310,15 @@ def validate_smtp_host(host: str) -> None:
     >>> validate_smtp_host("smtp.example.com:abc")
     Traceback (most recent call last):
         ...
-    ValueError: invalid smtp port in "smtp.example.com:abc"
+    btx_lib_mail.errors.InvalidInputError: invalid smtp port in "smtp.example.com:abc"
     >>> validate_smtp_host("a.example.com,b.example.com")
     Traceback (most recent call last):
         ...
-    ValueError: SMTP host must be one host per entry; pass several hosts as a list, got "a.example.com,b.example.com"
+    btx_lib_mail.errors.InvalidInputError: SMTP host must be one host per entry; pass several hosts as a list, got "a.example.com,b.example.com"
     """
 
     if not host:
-        raise ValueError("empty SMTP host")
+        raise InvalidInputError("empty SMTP host")
 
     _refuse_credentials_in_host(host)
 
@@ -2301,12 +2337,12 @@ def _validate_port_and_brackets(host: str) -> None:
         return
     bracket_end = host.find("]")
     if bracket_end == -1:
-        raise ValueError(f'missing closing bracket in "{host}"')
+        raise InvalidInputError(f'missing closing bracket in "{host}"')
     remainder = host[bracket_end + 1 :]
     if remainder == "":
         return
     if not remainder.startswith(":"):
-        raise ValueError(f'unexpected characters after bracket in "{host}"')
+        raise InvalidInputError(f'unexpected characters after bracket in "{host}"')
     _validate_port(remainder[1:], host)
 
 
@@ -2319,15 +2355,15 @@ def _validate_host_shape(host: str) -> None:
     and an empty host name.
     """
     if "," in host:
-        raise ValueError(f'SMTP host must be one host per entry; pass several hosts as a list, got "{host}"')
+        raise InvalidInputError(f'SMTP host must be one host per entry; pass several hosts as a list, got "{host}"')
     if host.startswith("["):
         name = host[1 : host.find("]")]
     else:
         name = host.rsplit(":", 1)[0] if ":" in host else host
         if ":" in name:
-            raise ValueError(f'more than one ":" in "{host}"; an IPv6 address must be in brackets, as [addr] or [addr]:port')
+            raise InvalidInputError(f'more than one ":" in "{host}"; an IPv6 address must be in brackets, as [addr] or [addr]:port')
     if not name:
-        raise ValueError(f'missing host name in "{host}"')
+        raise InvalidInputError(f'missing host name in "{host}"')
 
 
 def _validate_port(port_str: str, original: str) -> None:
@@ -2354,15 +2390,15 @@ def _validate_port(port_str: str, original: str) -> None:
     try:
         port = int(port_str)
     except ValueError as exc:
-        raise ValueError(f'invalid smtp port in "{original}"') from exc
+        raise InvalidInputError(f'invalid smtp port in "{original}"') from exc
     if not (min_port <= port <= max_port):
         # The message names the host and nothing derived from it: a model that scrubs
         # the host as a credential can only remove the whole string, not a re-quoted port.
-        raise ValueError(f'port must be {min_port}-{max_port} in "{original}"')
+        raise InvalidInputError(f'port must be {min_port}-{max_port} in "{original}"')
     # int() also takes a sign, "_" separators and any Unicode digits; checked after the
     # range so a port the range check already refused keeps that message.
     if not (port_str.isascii() and port_str.isdigit()):
-        raise ValueError(f'invalid smtp port in "{original}"')
+        raise InvalidInputError(f'invalid smtp port in "{original}"')
 
 
 def _parse_smtp_host(address: str) -> tuple[str, int | None]:

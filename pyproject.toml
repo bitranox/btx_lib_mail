@@ -199,12 +199,12 @@ default-remote = "origin"
 root_package = "btx_lib_mail"
 
 [[tool.importlinter.contracts]]
-name = "Layered: cli above lib_mail above secret_safety above behaviors"
+name = "Layered: cli above lib_mail above secret_safety and errors above behaviors"
 type = "layers"
 layers = [
   "btx_lib_mail.cli",
   "btx_lib_mail.lib_mail",
-  "btx_lib_mail.secret_safety",
+  "btx_lib_mail.secret_safety | btx_lib_mail.errors",
   "btx_lib_mail.behaviors",
 ]
 

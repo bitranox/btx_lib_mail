@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+### Added
+
+- `BtxMailError`, the common base of every exception the library raises on purpose, with
+  `InvalidInputError` (also a `ValueError`), `ConfigurationError` (also a pydantic
+  `ValidationError`), `AttachmentNotFoundError` (also a `FileNotFoundError`) and
+  `DeliveryError` (also a `RuntimeError`, with `failed_recipients` and `hosts`).
+  `AttachmentSecurityError` derives from it too. Each keeps the builtin it replaces as a
+  second base, so existing `except ValueError:` (and so on) clauses still catch it; messages
+  and CLI exit codes are unchanged, and the CLI's stderr line names the new class
+  (`InvalidInputError: ...` instead of `ValueError: ...`).
+- `SecretSafeModel.validation_error_class` and `redact_validation_error(error_class=...)` name
+  the `ValidationError` subclass a model's errors are raised as.
+- Sensitive-path patterns `/.netrc`, `/.pgpass`, `/.git-credentials`, `/.docker/config.json`,
+  `/.pypirc`, `/.npmrc` and `/gh/hosts.yml`.
+
+### Changed
+
+- The default `attachment_blocked_extensions` is the union of `DANGEROUS_EXTENSIONS_POSIX` and
+  `DANGEROUS_EXTENSIONS_WINDOWS` on every platform, so a Linux or macOS sender now refuses
+  `.exe`, `.bat`, `.ps1`, `.dll`, `.lnk` and the rest of the Windows list by default (and a
+  Windows sender `.sh`, `.py`, ...). The recipient's system decides what an attachment runs
+  as, not the sender's. The blocked-directory default stays per platform.
+- The extension check drops trailing dots and spaces before reading the extension, so
+  `x.exe.` and `x.sh ` are refused like `x.exe` and `x.sh`.
+- Sensitive-path patterns match without regard to case on every platform: `.SSH/config` and
+  `.AWS/CREDENTIALS` are refused (they are `~/.ssh/config` on macOS and Windows).
+- The path-traversal check refuses a `..` path COMPONENT only: `report..final.txt` is now
+  accepted, `a/../b` is still refused with the same message.
+
 ## [3.1.0] 2026-10-02 11:58:41
 
 ### Changed

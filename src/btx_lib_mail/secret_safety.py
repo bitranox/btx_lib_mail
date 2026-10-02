@@ -246,9 +246,9 @@ def _redacted_detail(error: ErrorDetails, *, hidden_locations: frozenset[str], d
         return {"type": PydanticCustomError(cast("LiteralString", str(error["type"])), REDACTED_INPUT), "loc": error["loc"], "input": REDACTED_INPUT}
 
 
-def _failed_redaction() -> ValidationError:
+def _failed_redaction(error_class: type[ValidationError] = ValidationError) -> ValidationError:
     detail: InitErrorDetails = {"type": PydanticCustomError(_FAILED_TYPE, _FAILED_MESSAGE), "loc": (), "input": REDACTED_INPUT}
-    return ValidationError.from_exception_data(_FAILED_TITLE, [detail], hide_input=True)
+    return error_class.from_exception_data(_FAILED_TITLE, [detail], hide_input=True)
 
 
 def redact_validation_error(
@@ -256,6 +256,7 @@ def redact_validation_error(
     *,
     credential_fields: frozenset[str],
     declared_names: frozenset[str] = frozenset(),
+    error_class: type[ValidationError] = ValidationError,
 ) -> ValidationError:
     """Return a copy of *exc* whose error inputs and ctx cannot carry a credential.
 
@@ -279,6 +280,8 @@ def redact_validation_error(
             such as "timeout must be positive" keeps the field name. The
             exemption is for keys only: a VALUE equal to a declared name is
             still walked and scrubbed. Empty by default, so every key is walked.
+        error_class: The class of the returned error: ``ValidationError`` or a
+            subclass of it, so a caller can give the error a base of its own.
 
     Returns:
         A new ``ValidationError`` with the same title, types, locations and
@@ -323,10 +326,10 @@ def redact_validation_error(
     """
     try:
         details = [_redacted_detail(error, hidden_locations=credential_fields, declared_names=declared_names) for error in exc.errors(include_url=False)]
-        return ValidationError.from_exception_data(exc.title, details, hide_input=True)
+        return error_class.from_exception_data(exc.title, details, hide_input=True)
     except Exception:
         # Fail closed: nothing of the original survives.
-        return _failed_redaction()
+        return _failed_redaction(error_class)
 
 
 def _alias_names(alias: str | AliasPath | AliasChoices | None) -> frozenset[str]:
@@ -424,7 +427,30 @@ def _check_credential_fields(model: type[BaseModel], names: object) -> None:
         )
 
 
-class SecretSafeModel(BaseModel):
+if TYPE_CHECKING:
+    _SecretSafeMeta = type(BaseModel)
+else:
+
+    class _SecretSafeMeta(type(BaseModel)):
+        """Restore ``validation_error_class`` on errors raised by ``Model(...)``.
+
+        A metaclass ``__call__`` and not an ``__init__`` override: pydantic routes
+        validation through a model's own ``__init__`` when it defines one, which
+        drops ``strict=`` and validates twice. Nested validation builds instances
+        without calling the metaclass, and its errors reach the outer model's
+        boundary instead. Hidden from type checkers, which would otherwise read
+        ``Model(...)`` through this signature rather than the fields.
+        """
+
+        def __call__(cls, *args: Any, **kwargs: Any) -> Any:
+            try:
+                return super().__call__(*args, **kwargs)
+            except ValidationError as exc:
+                original = exc
+            raise cls._as_configured_class(original)
+
+
+class SecretSafeModel(BaseModel, metaclass=_SecretSafeMeta):
     """Base for models holding credentials: their validation errors are redacted.
 
     Subclasses list their credential fields in ``credential_fields``; aliases of
@@ -474,10 +500,16 @@ class SecretSafeModel(BaseModel):
     previous field values, fields-set and extra values before re-raising. The
     restore is shallow: a validator that mutates a field value in place before
     raising is not undone.
+
+    ``validation_error_class`` (a ClassVar, ``ValidationError`` by default)
+    names the class of every error this model raises. Set it to a subclass of
+    ``ValidationError`` to give the errors a base of your own; title,
+    ``errors()`` and redaction stay as described above.
     """
 
     model_config = ConfigDict(hide_input_in_errors=True)
     credential_fields: ClassVar[frozenset[str]] = frozenset()
+    validation_error_class: ClassVar[type[ValidationError]] = ValidationError
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
@@ -505,8 +537,8 @@ class SecretSafeModel(BaseModel):
             hidden_locations = cls._hidden_locations()
             declared_names = _declared_names(cls)
         except Exception:
-            return _failed_redaction()
-        return redact_validation_error(original, credential_fields=hidden_locations, declared_names=declared_names)
+            return _failed_redaction(cls.validation_error_class)
+        return redact_validation_error(original, credential_fields=hidden_locations, declared_names=declared_names, error_class=cls.validation_error_class)
 
     @classmethod
     def __get_pydantic_core_schema__(cls, source: type[BaseModel], handler: GetCoreSchemaHandler) -> CoreSchema:
@@ -569,6 +601,34 @@ class SecretSafeModel(BaseModel):
             except ValidationError as exc:
                 original = exc
             raise cls._redacted(original)
+
+        # pydantic rebuilds an error raised inside the schema as a plain
+        # ValidationError at its own boundary, so a validation_error_class other
+        # than ValidationError is restored here, outside it (construction is
+        # wrapped by the metaclass). The error was already redacted inside the
+        # schema; redacting it again is a no-op on its inputs and rebuilds it as
+        # the configured class.
+        @classmethod
+        def model_validate(cls, *args: Any, **kwargs: Any) -> Any:
+            try:
+                return super().model_validate(*args, **kwargs)
+            except ValidationError as exc:
+                original = exc
+            raise cls._as_configured_class(original)
+
+        @classmethod
+        def model_validate_strings(cls, *args: Any, **kwargs: Any) -> Any:
+            try:
+                return super().model_validate_strings(*args, **kwargs)
+            except ValidationError as exc:
+                original = exc
+            raise cls._as_configured_class(original)
+
+        @classmethod
+        def _as_configured_class(cls, original: ValidationError) -> ValidationError:
+            if isinstance(original, cls.validation_error_class):
+                return original
+            return cls._redacted(original)
 
 
 __all__ = ["REDACTED_INPUT", "SecretSafeModel", "redact_validation_error"]

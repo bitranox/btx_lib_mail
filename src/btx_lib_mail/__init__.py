@@ -9,6 +9,7 @@ from .behaviors import (
     noop_main,
     raise_intentional_failure,
 )
+from .errors import AttachmentNotFoundError, BtxMailError, ConfigurationError, DeliveryError, InvalidInputError
 from .lib_mail import (
     DANGEROUS_DIRECTORIES_POSIX,
     DANGEROUS_DIRECTORIES_WINDOWS,
@@ -36,10 +37,15 @@ __all__ = [
     "DANGEROUS_EXTENSIONS_WINDOWS",
     "REDACTED_INPUT",
     "SENSITIVE_PATH_PATTERNS",
+    "AttachmentNotFoundError",
     "AttachmentSecurityError",
     "AttachmentViolation",
+    "BtxMailError",
     "ConfMail",
+    "ConfigurationError",
+    "DeliveryError",
     "DeliveryOptions",
+    "InvalidInputError",
     "SecretSafeModel",
     "Transport",
     "conf",

@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import socket
 import ssl
+import sys
 from email import message_from_bytes
 from email.message import EmailMessage
 from email.policy import default as default_policy
@@ -1182,9 +1183,85 @@ class TestPathTraversalPrevention:
         )
         assert result is True
 
+    @pytest.mark.os_agnostic
+    @pytest.mark.parametrize("name", ["report..final.txt", "...txt"])
+    def test_a_double_dot_inside_a_file_name_is_not_traversal(self, tmp_path: Path, name: str) -> None:
+        attachment = tmp_path / name
+        attachment.write_text("content")
+
+        result = lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients="recipient@example.com",
+            mail_subject="Subject",
+            smtphosts=["smtp.example.com"],
+            attachment_file_paths=[attachment],
+            attachment_blocked_directories=frozenset(),
+            transport=FakeTransport(),
+        )
+        assert result is True
+
+    @pytest.mark.os_agnostic
+    def test_a_double_dot_component_mid_path_is_still_traversal(self, tmp_path: Path) -> None:
+        (tmp_path / "a").mkdir()
+        (tmp_path / "b.txt").write_text("content")
+
+        with pytest.raises(lib_mail.AttachmentSecurityError, match="path contains traversal sequence"):
+            lib_mail.send(
+                mail_from="sender@example.com",
+                mail_recipients="recipient@example.com",
+                mail_subject="Subject",
+                smtphosts=["smtp.example.com"],
+                attachment_file_paths=[tmp_path / "a" / ".." / "b.txt"],
+                attachment_blocked_directories=frozenset(),
+                transport=FakeTransport(),
+            )
+
 
 class TestSymlinkHandling:
     """Tests for symlink security handling."""
+
+    @pytest.mark.os_agnostic
+    def test_a_symlinked_parent_into_a_blocked_directory_is_refused(self, tmp_path: Path) -> None:
+        # Only a symlink as the FINAL component is refused as SYMLINK; a symlinked
+        # directory along the way is followed, and every rule runs on the resolved
+        # target, so it cannot carry a file out of a blocked directory.
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        (vault / "report.txt").write_text("content")
+        (tmp_path / "docs").symlink_to(vault, target_is_directory=True)
+
+        with pytest.raises(lib_mail.AttachmentSecurityError) as excinfo:
+            lib_mail.send(
+                mail_from="sender@example.com",
+                mail_recipients="recipient@example.com",
+                mail_subject="Subject",
+                smtphosts=["smtp.example.com"],
+                attachment_file_paths=[tmp_path / "docs" / "report.txt"],
+                attachment_blocked_directories=frozenset({vault}),
+                transport=FakeTransport(),
+            )
+        assert excinfo.value.violation_type is lib_mail.AttachmentViolation.DIRECTORY
+
+    @pytest.mark.os_agnostic
+    def test_a_symlinked_parent_out_of_an_allowed_directory_is_refused(self, tmp_path: Path) -> None:
+        public = tmp_path / "public"
+        public.mkdir()
+        private = tmp_path / "private"
+        private.mkdir()
+        (private / "report.txt").write_text("content")
+        (public / "shared").symlink_to(private, target_is_directory=True)
+
+        with pytest.raises(lib_mail.AttachmentSecurityError) as excinfo:
+            lib_mail.send(
+                mail_from="sender@example.com",
+                mail_recipients="recipient@example.com",
+                mail_subject="Subject",
+                smtphosts=["smtp.example.com"],
+                attachment_file_paths=[public / "shared" / "report.txt"],
+                attachment_allowed_directories=frozenset({public}),
+                transport=FakeTransport(),
+            )
+        assert excinfo.value.violation_type is lib_mail.AttachmentViolation.DIRECTORY
 
     @pytest.mark.os_agnostic
     def test_symlink_is_rejected_by_default(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1420,6 +1497,58 @@ class TestSensitivePatterns:
                 attachment_blocked_extensions=frozenset(),
             )
 
+    @pytest.mark.os_agnostic
+    @pytest.mark.parametrize(
+        "relative",
+        [
+            ".SSH/config",
+            ".AWS/CREDENTIALS",
+            ".GNUPG/pubring.kbx",
+            ".Env",
+            ".netrc",
+            ".pgpass",
+            ".git-credentials",
+            ".docker/config.json",
+            ".pypirc",
+            ".npmrc",
+            ".config/gh/hosts.yml",
+        ],
+    )
+    def test_a_credential_file_is_blocked_whatever_its_case(self, tmp_path: Path, relative: str) -> None:
+        # macOS and Windows file systems are case-insensitive, so .SSH/config IS
+        # ~/.ssh/config there; the match ignores case on every platform.
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("secret material")
+
+        with pytest.raises(lib_mail.AttachmentSecurityError) as excinfo:
+            lib_mail.send(
+                mail_from="sender@example.com",
+                mail_recipients="recipient@example.com",
+                mail_subject="Subject",
+                smtphosts=["smtp.example.com"],
+                attachment_file_paths=[target],
+                attachment_blocked_directories=frozenset(),
+                transport=FakeTransport(),
+            )
+        assert excinfo.value.violation_type is lib_mail.AttachmentViolation.SENSITIVE_PATTERN
+
+    @pytest.mark.os_agnostic
+    def test_an_ordinary_document_passes_the_sensitive_pattern_check(self, tmp_path: Path) -> None:
+        target = tmp_path / "Quarterly Report.pdf"
+        target.write_bytes(b"%PDF-1.4")
+
+        result = lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients="recipient@example.com",
+            mail_subject="Subject",
+            smtphosts=["smtp.example.com"],
+            attachment_file_paths=[target],
+            attachment_blocked_directories=frozenset(),
+            transport=FakeTransport(),
+        )
+        assert result is True
+
 
 class TestSecurityViolationWarningMode:
     """Tests for warn-only mode (raise_on_security_violation=False)."""
@@ -1515,6 +1644,34 @@ class TestDefaultSecuritySettings:
         config = ConfMail()
         # Check some common dangerous extensions
         assert ".sh" in config.attachment_blocked_extensions or ".exe" in config.attachment_blocked_extensions
+
+    @pytest.mark.os_agnostic
+    def test_default_blocked_extensions_cover_both_families_on_every_platform(self) -> None:
+        # The recipient's OS decides what runs, not the sender's: a Linux sender must
+        # still refuse .exe/.bat, and a Windows sender .sh.
+        blocked = ConfMail().attachment_blocked_extensions
+        assert blocked >= lib_mail.DANGEROUS_EXTENSIONS_POSIX
+        assert blocked >= lib_mail.DANGEROUS_EXTENSIONS_WINDOWS
+
+    @pytest.mark.os_agnostic
+    @pytest.mark.parametrize("name", ["tool.exe", "run.bat", "x.sh.", "x.exe ", "x.sh. . ", "X.EXE"])
+    def test_default_blocklist_refuses_an_executable_name(self, tmp_path: Path, name: str) -> None:
+        if sys.platform == "win32" and name != name.rstrip(". "):
+            pytest.skip("Windows cannot create a file whose name ends in a dot or space")
+        attachment = tmp_path / name
+        attachment.write_bytes(b"payload")
+
+        with pytest.raises(lib_mail.AttachmentSecurityError) as excinfo:
+            lib_mail.send(
+                mail_from="sender@example.com",
+                mail_recipients="recipient@example.com",
+                mail_subject="Subject",
+                smtphosts=["smtp.example.com"],
+                attachment_file_paths=[attachment],
+                attachment_blocked_directories=frozenset(),
+                transport=FakeTransport(),
+            )
+        assert excinfo.value.violation_type is lib_mail.AttachmentViolation.EXTENSION
 
     @pytest.mark.os_agnostic
     def test_default_symlinks_disabled(self) -> None:
