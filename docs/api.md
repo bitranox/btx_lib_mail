@@ -4,9 +4,9 @@ Everything importable from `btx_lib_mail` is described here; the internal design
 [the module reference](systemdesign/module_reference.md). Run
 `python -c "import btx_lib_mail as m; help(m)"` for the docstrings of the installed version.
 
-## Configuration Surface {#public-api-config}
+## Configuration Surface
 
-#### `btx_lib_mail.conf: ConfMail` {#public-api-conf}
+#### `btx_lib_mail.conf: ConfMail`
 
 `conf` is the global configuration instance used whenever a `send` caller does
 not supply per-call overrides or a `config=`. Change it field by field
@@ -14,7 +14,7 @@ not supply per-call overrides or a `config=`. Change it field by field
 (`btx_lib_mail.conf = ConfMail(...)`) has no effect on `send()`, which keeps reading the
 original object. To use a different settings object, pass it as `send(config=...)`.
 
-#### `ConfMail` fields {#public-api-confmail-fields}
+#### `ConfMail` fields
 
 **SMTP Settings:**
 
@@ -63,27 +63,27 @@ Common helpers:
 - `ConfMail.resolved_credentials() -> tuple[str, str] | None`  -  return the
   `(username, password)` pair when both credential fields are populated.
 
-## Functions {#public-api-functions}
+## Functions
 
-#### `emit_greeting(*, stream: TextIO | None = None) -> None` {#public-api-emit-greeting}
+#### `emit_greeting(*, stream: TextIO | None = None) -> None`
 
 Writes the canonical `"Hello World\n"` line to `stream` (defaults to
 `sys.stdout`) and flushes the stream when it exposes a `flush()` method.
 Useful for smoke tests and quick health probes.
 
-#### `raise_intentional_failure() -> None` {#public-api-raise-intentional-failure}
+#### `raise_intentional_failure() -> None`
 
 Raises `RuntimeError("I should fail")` unconditionally. The CLI and tests use
 this helper to validate traceback handling and exit-code mapping without
 crafting bespoke exceptions.
 
-#### `noop_main() -> None` {#public-api-noop-main}
+#### `noop_main() -> None`
 
 Returns `None` immediately. The CLI uses this placeholder when the user opts in
 to running the domain stub (for example via `--traceback` without a
 subcommand), ensuring the scaffold remains predictable.
 
-#### `send(...) -> bool` {#public-api-send}
+#### `send(...) -> bool`
 
 Entry point for SMTP delivery. Returns `True` when all recipients succeed and
 raises when every host fails for at least one recipient. The first seven parameters may be
@@ -109,7 +109,7 @@ passed positionally; every other one is keyword-only.
 | `raise_on_missing_attachments` | `bool \| None`                   | `None`  | `True` raises `AttachmentNotFoundError` for a missing attachment, `False` logs a warning and sends without it. `None` uses `raise_on_missing_attachments` of the config in use.                     |
 | `raise_on_invalid_recipient`   | `bool \| None`                   | `None`  | `True` raises `InvalidInputError` for an invalid recipient, `False` logs a warning and skips it. `None` uses `raise_on_invalid_recipient` of the config in use.                                     |
 | `config`                       | `ConfMail \| None`               | `None`  | Settings used in place of the global `conf` for every value not passed explicitly. When `config` is passed, `conf` is not read at all.                                                              |
-| `transport`                    | `Transport \| None`              | `None`  | Delivery adapter; `None` uses `SmtplibTransport` (importable from `btx_lib_mail.lib_mail`). Inject a test double or an alternative transport here (see [Transport](#public-api-transport)).         |
+| `transport`                    | `Transport \| None`              | `None`  | Delivery adapter; `None` uses `SmtplibTransport` (importable from `btx_lib_mail.lib_mail`). Inject a test double or an alternative transport here (see [Transport](#transport)).                    |
 
 **Attachment Security Parameters (keyword-only):**
 
@@ -178,7 +178,7 @@ Windows, whose file systems do, and exactly on Linux:
 /.docker/config.json, /.pypirc, /.npmrc, /gh/hosts.yml
 ```
 
-**Raises:** every exception below is a `BtxMailError` (see [Exceptions](#public-api-exceptions)).
+**Raises:** every exception below is a `BtxMailError` (see [Exceptions](#exceptions)).
 
 - `InvalidInputError` (a `ValueError`)  -  a refused sender, recipient, host, subject (a
   control character other than TAB), EHLO name, timeout or delivery deadline, or no valid
@@ -224,7 +224,7 @@ raises in strict mode) together with the two attachment-path `WARNING`s (a secur
 missing file), and `AttachmentSecurityError`'s own `str()`/`repr()` when it propagates to the
 caller in strict mode - none of these log a caller- or filesystem-supplied string unclean.
 
-## Exceptions {#public-api-exceptions}
+## Exceptions
 
 Every exception the library raises on purpose derives from `BtxMailError`, so
 `except BtxMailError:` catches any refusal or delivery failure. Each concrete class also
@@ -246,7 +246,7 @@ member: `PATH_TRAVERSAL`, `SYMLINK`, `SENSITIVE_PATTERN`, `DIRECTORY`, `EXTENSIO
 `CHANGED`. The members are strings (`violation_type == "symlink"` holds). Branch on the
 member, never on the message text.
 
-## Validators {#public-api-validators}
+## Validators
 
 - `validate_email_address(address: str) -> None` raises `InvalidInputError` unless the
   address matches `EMAIL_PATTERN` (`local@domain.tld`).
@@ -256,7 +256,7 @@ member, never on the message text.
   refused without the value appearing in the message; a comma (two hosts in one string)
   and an unbracketed IPv6 address are refused too.
 
-## Transport {#public-api-transport}
+## Transport
 
 `send()` hands each recipient's message to a `Transport`, an object with one method:
 
@@ -293,7 +293,7 @@ send("alerts@example.com", "oncall@example.com", "build failed", "See CI.", smtp
 assert transport.sent[0][0] == "oncall@example.com"
 ```
 
-## Logging and metadata {#public-api-logging}
+## Logging and metadata
 
 - `logger` is the library's `logging.Logger` (`"btx_lib_mail"`). It logs one `WARNING` per
   failed host, per skipped attachment and per skipped recipient, and a `DEBUG` line per
@@ -302,7 +302,7 @@ assert transport.sent[0][0] == "oncall@example.com"
   `info` command does. `CANONICAL_GREETING` is the `"Hello World"` text `emit_greeting()`
   writes.
 
-## Secret safety {#public-api-secret-safety}
+## Secret safety
 
 `btx_lib_mail.secret_safety` provides the building blocks `ConfMail` uses to keep a
 credential out of a `pydantic.ValidationError`:

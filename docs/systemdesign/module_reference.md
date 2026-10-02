@@ -96,7 +96,7 @@ cli.cli_send_mail   options > environment > --env-file > conf, assigned onto one
 
 ---
 
-## Core Components {#feature-cli-components}
+## Core Components
 
 ### `__init__` Module (Public API)
 
@@ -115,9 +115,9 @@ and the scaffold helpers (`CANONICAL_GREETING`, `emit_greeting`, `noop_main`,
 
 ---
 
-### `lib_mail` Module (Delivery Entry Point) {#module-btx-lib-mail-lib-mail}
+### `lib_mail` Module (Delivery Entry Point)
 
-#### `send(...) -> bool` {#lib-mail-send}
+#### `send(...) -> bool`
 
 **Purpose:** Turn validated intent (sender, recipients, subject, bodies, attachments)
 into SMTP delivery under the configured delivery and security policies.
@@ -160,7 +160,7 @@ the first delivery.
 
 ### `_config` Module (Settings)
 
-#### `ConfMail` {#lib-mail-confmail}
+#### `ConfMail`
 
 **Purpose:** The validated SMTP and attachment-security settings model; `conf` is the
 module-global instance `send()` reads when no `config` is passed.
@@ -169,7 +169,7 @@ module-global instance `send()` reads when no `config` is passed.
 `smtp_username`, `smtp_password` (`SecretStr`), `smtp_use_starttls`,
 `smtp_starttls_verify`, `smtp_timeout`, `smtp_local_hostname`,
 `smtp_delivery_deadline`, and the `attachment_*` fields. Defaults and meanings are
-tabled in [docs/api.md](../api.md#public-api-confmail-fields).
+tabled in [docs/api.md](../api.md#confmail-fields).
 
 **Validation:** hosts through `validate_smtp_host` (a blank entry is dropped);
 `smtp_password` accepts text or a whole int; `smtp_timeout` and `smtp_delivery_deadline`
@@ -283,7 +283,7 @@ can forge a log line.
 
 ---
 
-### `secret_safety` Module {#module-btx-lib-mail-secret-safety}
+### `secret_safety` Module
 
 * `SecretSafeModel` - pydantic base whose every validation error is rebuilt without a
   credential: the core schema is wrapped, and so are assignment, `model_validate*` and
@@ -303,7 +303,7 @@ outer model's `model_validate_json`, where the JSON parser fails before the mode
 
 ---
 
-### `cli` Module (Transport Adapter) {#module-btx-lib-mail-cli}
+### `cli` Module (Transport Adapter)
 
 * **Group `cli`:** `--traceback/--no-traceback`, `--json`/`-j`, `--json-bare`, `--version`;
   stores a `CliContext` (`traceback`, `json_output`, `json_bare`, `transport`) in
@@ -331,7 +331,7 @@ forwards to the real decorators.
 
 **Location:** src/btx_lib_mail/typed_click.py
 
-### `__main__` Module (Module Entry Point) {#module-btx-lib-mail-main}
+### `__main__` Module (Module Entry Point)
 
 `python -m btx_lib_mail` runs `cli.main()`, the function the console scripts run, so exit
 codes, traceback handling and JSON failure reports are identical.
@@ -340,7 +340,7 @@ codes, traceback handling and JSON failure reports are identical.
 
 ---
 
-## Behaviour Scaffold {#feature-cli-behavior-scaffold}
+## Behaviour Scaffold
 
 ### `behaviors` Module
 
