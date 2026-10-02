@@ -61,7 +61,23 @@ def cli_context(ctx: click.Context) -> CliContext:
 
 
 def dumps_json(payload: object) -> str:
-    return json.dumps(payload, ensure_ascii=False)
+    r"""Serialise payload as JSON that a UTF-8 stream can always write.
+
+    Non-ASCII text stays readable, but a lone surrogate (what an invalid UTF-8
+    byte in a path or argument decodes to) cannot be encoded; it is written as
+    its ``\u`` escape, which is how JSON carries it.
+
+    Args:
+        payload: The JSON-serialisable value.
+
+    Returns:
+        The JSON text.
+
+    Examples:
+        >>> dumps_json({"path": "a" + chr(0xDCFF)})
+        '{"path": "a\\udcff"}'
+    """
+    return json.dumps(payload, ensure_ascii=False).encode("utf-8", "backslashreplace").decode("utf-8")
 
 
 def emit(ctx: click.Context, command: str, data: Mapping[str, Any], human: str, *, skipped: Sequence[Mapping[str, str]] = ()) -> None:

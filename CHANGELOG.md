@@ -181,6 +181,11 @@
   bare `TypeError` or `AttributeError` from inside a check. It is
   `InvalidInputError("<field> must be str, got <type>")` now, before any delivery
   (`validate_smtp_host(None)` keeps `empty SMTP host`).
+- CLI: a `./.env` the process may not read raised a bare `PermissionError` (exit 13); it is
+  a usage error now, `./.env in the working directory can not be read (EACCES)`, exit 2.
+- CLI: with `--json`, a failure whose message held a path that is not valid UTF-8 crashed
+  while writing the envelope (`UnicodeEncodeError`, exit 22, no JSON). The undecodable byte
+  is written as its `\udcff` escape now, and the envelope carries the original exit code.
 
 ## [3.1.0] 2026-10-02 11:58:41
 

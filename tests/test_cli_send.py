@@ -829,6 +829,41 @@ def test_a_refused_value_keeps_its_documented_exit_code_in_json_mode(capsys: pyt
     assert code == lib_cli_exit_tools.get_system_exit_code(ValueError())
 
 
+@pytest.mark.os_linux
+@pytest.mark.skipif(sys.platform != "linux", reason="macOS and Windows refuse a file name that is not valid UTF-8")
+def test_a_json_failure_naming_a_path_that_is_not_utf8_is_still_json(
+    capsys: pytest.CaptureFixture[str], isolated_traceback_config: None, tmp_path: Path
+) -> None:
+    # The invalid byte decodes to a lone surrogate, which a strict UTF-8 stdout cannot write.
+    env_file = Path(os.fsdecode(os.fsencode(tmp_path) + b"/settings-\xff.env"))
+    env_file.write_bytes(b"BTX_MAIL_SENDER=f\xfc@example.com\n")
+
+    code, out = _main(["--json", "send", "--env-file", str(env_file), *_ROUTE, *_MESSAGE], capsys)
+
+    assert code == 2
+    envelope = json.loads(out)
+    assert envelope["error"]["type"] == "BadParameter"
+    assert "is not UTF-8 text" in envelope["error"]["message"]
+
+
+@pytest.mark.os_posix
+@pytest.mark.skipif(sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0), reason="needs POSIX permissions and a non-root user")
+def test_a_dotenv_that_cannot_be_read_is_a_usage_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], isolated_traceback_config: None, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    dotenv = tmp_path / ".env"
+    dotenv.write_text("BTX_MAIL_SENDER=from-file@example.com\n", encoding="utf-8")
+    dotenv.chmod(0)
+    try:
+        code, out = _main(["--json", "send", *_ROUTE, *_MESSAGE], capsys)
+    finally:
+        dotenv.chmod(0o600)
+
+    assert code == 2
+    assert json.loads(out)["error"]["message"] == "./.env in the working directory can not be read (EACCES)"
+
+
 @pytest.mark.os_agnostic
 def test_a_json_send_against_a_real_server_reports_and_delivers(
     capsys: pytest.CaptureFixture[str], isolated_traceback_config: None, tmp_path: Path, data_server: tuple[Any, CollectingHandler]

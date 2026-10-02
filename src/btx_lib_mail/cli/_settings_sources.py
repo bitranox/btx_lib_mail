@@ -5,6 +5,7 @@ Private to btx_lib_mail.cli: import the public names from `btx_lib_mail.cli`.
 
 from __future__ import annotations
 
+import errno
 import os
 import stat
 import sys
@@ -121,10 +122,14 @@ def _read_bounded_env_file(path: Path) -> bytes:
         The file's bytes.
 
     Raises:
-        click.UsageError: The path is not a regular file, pipe or character
-            device, or holds more than ``_ENV_FILE_MAX_BYTES`` bytes.
+        click.UsageError: The path cannot be opened (``can not be read
+            (EACCES)``), is not a regular file, pipe or character device, or
+            holds more than ``_ENV_FILE_MAX_BYTES`` bytes.
     """
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
+    except OSError as exc:
+        raise _env_file_refusal(path, f"can not be read ({errno.errorcode.get(exc.errno or 0, 'OSError')})") from None
     with os.fdopen(descriptor, "rb") as handle:
         mode = os.fstat(handle.fileno()).st_mode
         if not (stat.S_ISREG(mode) or stat.S_ISFIFO(mode) or stat.S_ISCHR(mode)):
