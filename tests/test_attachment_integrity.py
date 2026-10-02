@@ -507,6 +507,24 @@ def test_an_attachment_name_that_is_not_valid_unicode_is_a_filename_refusal(tmp_
             assert not [part for part in message_from_bytes(raw).walk() if part.get_filename()]
 
 
+@pytest.mark.os_posix
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows file names cannot hold control characters")
+def test_an_allowed_symlink_is_judged_by_the_name_of_its_target(tmp_path: Path) -> None:
+    # The message carries the resolved file's name, so that is the name the check must read:
+    # a clean link name in front of a target whose name breaks the header is still refused.
+    target = tmp_path / "report\nBcc: victim@example.com.txt"
+    target.write_bytes(b"quarterly numbers")
+    link = tmp_path / "report.txt"
+    link.symlink_to(target)
+    transport = _RecordingTransport()
+
+    with pytest.raises(AttachmentSecurityError) as caught:
+        _send(transport, link, attachment_allow_symlinks=True)
+
+    assert caught.value.violation_type is AttachmentViolation.FILENAME
+    assert transport.messages == {}
+
+
 # root reads a mode-000 file anyway; the condition reads geteuid only where it exists.
 _UNREADABLE_FILE_SKIP = sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0)
 

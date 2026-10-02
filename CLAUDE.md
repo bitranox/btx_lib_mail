@@ -52,6 +52,7 @@ tests/
   test_errors.py               # BtxMailError hierarchy at every raise site
   test_lib_mail.py             # configuration, validators, attachment rules, orchestration
   test_limits.py               # per-call ceilings: address length, recipient and attachment counts
+  log_capture.py               # everything_logged(): a record's message plus its extra fields
   test_metadata.py             # metadata constant tests
   test_module_entry.py         # python -m entry tests
   test_packaging.py            # builds the sdist and refuses anything outside its include list

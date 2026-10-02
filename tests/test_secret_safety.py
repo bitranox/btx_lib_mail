@@ -24,6 +24,7 @@ from types import MappingProxyType, SimpleNamespace
 from typing import IO, TYPE_CHECKING, ClassVar, Literal, cast
 
 import pytest
+from log_capture import everything_logged
 from pydantic import (
     AliasChoices,
     AliasPath,
@@ -92,7 +93,7 @@ def test_a_failed_host_logs_no_traceback_and_no_auth_string(caplog: pytest.LogCa
     assert record.exc_info is None
     assert record.stack_info is None
     assert _DUMMY not in repr(vars(record))
-    assert _DUMMY not in caplog.text
+    assert _DUMMY not in everything_logged(caplog)
 
 
 @pytest.mark.os_agnostic

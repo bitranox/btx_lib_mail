@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import IO, TYPE_CHECKING, Any
 
 import pytest
+from log_capture import everything_logged
 
 from btx_lib_mail import ConfigurationError, ConfMail, InvalidInputError, send, validate_email_address
 from btx_lib_mail.cli import CliContext, cli
@@ -108,8 +109,9 @@ def test_an_overlong_recipient_in_warn_mode_is_skipped_and_logged_without_its_te
     assert _send(transport, mail_recipients=["ok@example.com", overlong], raise_on_invalid_recipient=False) is True
 
     assert transport.recipients == ["ok@example.com"]
-    assert "the local part has 70 characters" in caplog.text
-    assert overlong not in caplog.text
+    logged = everything_logged(caplog)
+    assert "the local part has 70 characters" in logged, "positive control: the skip was logged"
+    assert overlong not in logged, "neither the message nor an extra field carries the whole address"
 
 
 @pytest.mark.os_agnostic
