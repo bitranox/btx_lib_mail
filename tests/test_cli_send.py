@@ -13,6 +13,7 @@ import re
 import sys
 import threading
 import time
+import tracemalloc
 from email import message_from_bytes
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -371,14 +372,39 @@ def test_dev_null_as_the_env_file_reads_as_no_settings(cli_runner: CliRunner) ->
 
 
 @pytest.mark.os_posix
-@pytest.mark.skipif(not Path("/dev/zero").exists(), reason="needs the POSIX character device /dev/zero")
-def test_an_endless_device_as_the_env_file_is_refused_at_the_size_limit(cli_runner: CliRunner) -> None:
-    # A device reports size 0, so only the bounded read stops /dev/zero from filling memory.
-    result, transport = _invoke(cli_runner, ["send", "--env-file", "/dev/zero", *_ROUTE, *_MESSAGE])
+@pytest.mark.skipif(not Path("/dev/fd").is_dir() or sys.platform == "win32", reason="needs /dev/fd, as process substitution uses")
+def test_a_pipe_holding_more_than_the_maximum_is_refused(cli_runner: CliRunner) -> None:
+    # A pipe reports size 0, so only the bounded read stops it; /dev/zero is the endless case.
+    read_end, write_end = os.pipe()
+    # The reader takes one byte past the limit and stops; the rest fits in the pipe's buffer.
+    writer = threading.Thread(target=lambda: (os.write(write_end, b"#" * (_settings_sources._ENV_FILE_MAX_BYTES + 100)), os.close(write_end)), daemon=True)
+    writer.start()
+    try:
+        result, transport = _invoke(cli_runner, ["send", "--env-file", f"/dev/fd/{read_end}", *_ROUTE, *_MESSAGE])
+    finally:
+        writer.join(timeout=5)
+        os.close(read_end)
 
     assert result.exit_code == 2
-    assert "an env file may be at most" in _flat(result.output)
+    assert f"holds more than {_settings_sources._ENV_FILE_MAX_BYTES} bytes; an env file may be at most" in _flat(result.output)
     assert transport.deliveries == []
+
+
+@pytest.mark.os_agnostic
+def test_an_oversized_env_file_is_refused_without_reading_it_whole(tmp_path: Path) -> None:
+    # A sparse file costs no disk; reading it whole would cost 64 MiB of memory.
+    env_file = tmp_path / "sparse.env"
+    with env_file.open("wb") as handle:
+        handle.truncate(64 * 1024 * 1024)
+    tracemalloc.start()
+    try:
+        with pytest.raises(click.UsageError, match="an env file may be at most"):
+            _settings_sources.read_env_file(env_file)
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert peak < 4 * _settings_sources._ENV_FILE_MAX_BYTES, f"peak {peak} bytes: the env file was read past its limit"
 
 
 @pytest.mark.os_posix
