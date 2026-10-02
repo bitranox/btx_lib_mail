@@ -7,11 +7,21 @@ console scripts and `python -m` entry points.
 **Contents:**
 - `CLICK_CONTEXT_SETTINGS`, `TRACEBACK_SUMMARY_LIMIT`, `TRACEBACK_VERBOSE_LIMIT`
   - shared configuration constants.
+- `CliContext` - the typed `ctx.obj`: output mode, traceback choice, and the
+  transport seam for embedding.
 - `apply_traceback_preferences`, `snapshot_traceback_state`,
   `restore_traceback_state` - shared traceback state helpers.
-- `cli` and its subcommands (`cli_info`, `cli_hello`, `cli_send_mail`, `cli_fail`)
-  plus `cli_main` - the public CLI surface.
+- `cli` and its subcommands (`cli_info`, `cli_hello`, `cli_send_mail`,
+  `cli_validate_email`, `cli_validate_smtp_host`, `cli_fail`) plus `cli_main` -
+  the public CLI surface.
 - `main` - composition helper driving execution through `lib_cli_exit_tools`.
+
+**Output modes:** human-readable by default. `--json`/`-j` (on the group, so
+it composes with every subcommand) prints one envelope
+`{"ok", "command", "data", "skipped"}` on success and
+`{"ok": false, "command", "error": {"type", "message"}, "skipped"}` on failure;
+`--json-bare` prints the `data` (or the `error`) alone. Warnings stay on
+stderr in every mode. Exit codes do not depend on the output mode.
 
 **System Role:** Documented in
 `docs/systemdesign/module_reference.md#feature-cli-components`; this module is
@@ -21,10 +31,14 @@ delivery semantics.
 
 from __future__ import annotations
 
+import json
+import logging
 import os
+import sys
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, TypeVar
+from typing import IO, TYPE_CHECKING, Any, Final, TypeVar
 
 import lib_cli_exit_tools
 import rich_click as click
@@ -32,41 +46,79 @@ from click.core import ParameterSource
 from pydantic import SecretStr, ValidationError
 
 from . import __init__conf__
-from .behaviors import emit_greeting, noop_main, raise_intentional_failure
+from .behaviors import CANONICAL_GREETING, emit_greeting, noop_main, raise_intentional_failure
 from .errors import InvalidInputError
-from .lib_mail import conf, send, validate_email_address, validate_smtp_host
+from .lib_mail import ConfMail, Transport, conf, send, validate_email_address, validate_smtp_host
+from .lib_mail import logger as mail_logger
 from .typed_click import argument, option, version_option
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Sequence
+    from collections.abc import Callable, Generator, Mapping, Sequence
 
-_DOTENV_PATH = Path(".env")
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _FALSE_VALUES = {"0", "false", "no", "off"}
 _T = TypeVar("_T")
 
+# An --env-file is a handful of KEY=value lines; anything larger is not one, and is
+# refused before it is read rather than parsed into memory.
+_ENV_FILE_MAX_BYTES: Final[int] = 64 * 1024
+# A password file holds one line; more than this is not a password file.
+_PASSWORD_FILE_MAX_CHARS: Final[int] = 4096
 
-def _dotenv_value(key: str) -> str | None:
-    if not _DOTENV_PATH.is_file():
-        return None
-    for line in _DOTENV_PATH.read_text(encoding="utf-8").splitlines():
+
+# ---------------------------------------------------------------------------
+# Where unset options come from: the environment, then an explicit --env-file
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _Sources:
+    """The values a command may read for an option it was not given.
+
+    The process environment wins over the ``--env-file``; a key set to an empty
+    string in either counts as unset. No file is read unless it was named, so a
+    ``.env`` that happens to sit in the working directory (a cloned repository,
+    a shared folder) cannot redirect delivery or relax a security setting.
+    """
+
+    environ: Mapping[str, str]
+    env_file: Mapping[str, str] = field(default_factory=lambda: {})
+
+    def value(self, key: str) -> str | None:
+        env_value = self.environ.get(key)
+        if env_value not in (None, ""):
+            return env_value
+        return self.env_file.get(key) or None
+
+
+def _read_env_file(path: Path | None) -> dict[str, str]:
+    """Parse the named env file once into ``KEY -> value`` (first occurrence wins).
+
+    Lines are ``KEY=value``; blank lines, ``#`` comments and lines without ``=``
+    are skipped; a value is stripped of whitespace and one layer of quotes.
+
+    Raises
+    ------
+    click.BadParameter
+        The file is larger than ``_ENV_FILE_MAX_BYTES`` or not UTF-8.
+    """
+    if path is None:
+        return {}
+    size = path.stat().st_size
+    if size > _ENV_FILE_MAX_BYTES:
+        raise click.BadParameter(f"{path} is {size} bytes; an env file may be at most {_ENV_FILE_MAX_BYTES} bytes", param_hint="--env-file")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise click.BadParameter(f"{path} is not UTF-8 text", param_hint="--env-file") from exc
+    values: dict[str, str] = {}
+    for line in text.splitlines():
         stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
             continue
-        if "=" not in stripped:
-            continue
-        candidate_key, candidate_value = stripped.split("=", 1)
-        if candidate_key.strip() != key:
-            continue
-        return _unquoted(candidate_value) or None
-    return None
-
-
-def _configured_value(key: str) -> str | None:
-    env_value = os.getenv(key)
-    if env_value not in (None, ""):
-        return env_value
-    return _dotenv_value(key)
+        key, raw_value = stripped.split("=", 1)
+        values.setdefault(key.strip(), _unquoted(raw_value))
+    return values
 
 
 def _split_values(values: Sequence[str]) -> list[str]:
@@ -79,10 +131,10 @@ def _split_values(values: Sequence[str]) -> list[str]:
     return flattened
 
 
-def _resolve_list(cli_values: Sequence[str], env_key: str, *, label: str) -> list[str]:
+def _resolve_list(cli_values: Sequence[str], env_key: str, *, label: str, sources: _Sources) -> list[str]:
     values = _split_values(cli_values)
     if not values:
-        env_raw = _configured_value(env_key)
+        env_raw = sources.value(env_key)
         if env_raw:
             values = _split_values([env_raw])
     if not values:
@@ -90,20 +142,33 @@ def _resolve_list(cli_values: Sequence[str], env_key: str, *, label: str) -> lis
     return values
 
 
-def _resolve_bool(*, cli_flag: bool | None, env_key: str, default: bool = False) -> bool:
-    if cli_flag is not None:
-        return cli_flag
-    env_raw = _configured_value(env_key)
-    # A blank value is "not set": reading it as False would let a stray space switch
-    # STARTTLS or certificate checks off, while an unset variable keeps them on.
+def _parse_bool(env_raw: str | None, env_key: str) -> bool | None:
+    """Return the boolean *env_raw* spells, or ``None`` when it is unset or blank.
+
+    A blank value is "not set": reading it as False would let a stray space switch
+    STARTTLS or certificate checks off, while an unset variable keeps them on.
+    """
     if env_raw is None or env_raw.strip() == "":
-        return default
+        return None
     lowered = env_raw.strip().lower()
     if lowered in _TRUE_VALUES:
         return True
     if lowered in _FALSE_VALUES:
         return False
     raise click.BadParameter(f"Unrecognised boolean value for {env_key}: {env_raw!r}")
+
+
+def _resolve_bool(*, cli_flag: bool | None, env_key: str, default: bool, sources: _Sources) -> bool:
+    if cli_flag is not None:
+        return cli_flag
+    return _or_default(_parse_bool(sources.value(env_key), env_key), default)
+
+
+def _resolve_optional_bool(*, cli_flag: bool | None, env_key: str, sources: _Sources) -> bool | None:
+    """Return the bool value provided via CLI, the sources, or None for the config's own value."""
+    if cli_flag is not None:
+        return cli_flag
+    return _parse_bool(sources.value(env_key), env_key)
 
 
 def _or_default(value: _T | None, default: _T) -> _T:
@@ -132,7 +197,7 @@ def _refusals_as_value_error() -> Generator[None, None, None]:
 
 
 def _unquoted(value: str) -> str:
-    """Strip whitespace and one layer of surrounding quotes, as ``.env`` values and hosts are read."""
+    """Strip whitespace and one layer of surrounding quotes, as env-file values and hosts are read."""
     return value.strip().strip('"').strip("'")
 
 
@@ -156,64 +221,49 @@ def _resolve_credentials(user: str | None, password: str | None) -> tuple[str, s
     return None
 
 
-def _resolve_float(cli_value: float | None, env_key: str, *, default: float) -> float:
-    """Return the float value provided via CLI, environment, or default.
+def _read_password_file(handle: IO[str] | None) -> str | None:
+    """Return the first line of the ``--password-file`` (``-`` reads stdin), without its line break."""
+    if handle is None:
+        return None
+    content = handle.read(_PASSWORD_FILE_MAX_CHARS + 1)
+    if len(content) > _PASSWORD_FILE_MAX_CHARS:
+        raise click.BadParameter(f"a password file holds one line of at most {_PASSWORD_FILE_MAX_CHARS} characters", param_hint="--password-file")
+    lines = content.splitlines()
+    return lines[0] if lines else None
 
-    Why
-        Keeps timeout resolution readable while surfacing friendly errors.
 
-    Inputs
-    ------
-    cli_value:
-        Value supplied on the CLI (``None`` when flag omitted).
-    env_key:
-        Environment variable consulted when CLI value is absent.
-    default:
-        Fallback applied when neither CLI nor environment provided a value.
+def _resolve_password(*, password: str | None, password_file: IO[str] | None, sources: _Sources) -> str | None:
+    if password is not None and password_file is not None:
+        raise click.UsageError(
+            "--password and --password-file are mutually exclusive; prefer --password-file, which keeps the password out of the process list"
+        )
+    return password or _read_password_file(password_file) or sources.value("BTX_MAIL_SMTP_PASSWORD")
 
-    Outputs
-    -------
-    float
-        Parsed float value honouring the precedence chain.
 
-    Side Effects
-    ------------
-    Raises :class:`click.BadParameter` when the environment variable cannot be
-    parsed as a float.
+def _resolve_float(cli_value: float | None, env_key: str, *, sources: _Sources) -> float | None:
+    """Return the float given on the CLI or in the sources, or ``None`` when neither set it.
+
+    Raises :class:`click.BadParameter` when the source value is not a number.
     """
-
     if cli_value is not None:
         return cli_value
-    env_raw = _configured_value(env_key)
+    env_raw = sources.value(env_key)
     if env_raw is None or env_raw.strip() == "":
-        return default
+        return None
     try:
         return float(env_raw.strip())
     except ValueError as exc:
         raise click.BadParameter(f"Unrecognised float value for {env_key}: {env_raw!r}") from exc
 
 
-def _resolve_int(cli_value: int | None, env_key: str) -> int | None:
-    """Return the int value provided via CLI, environment, or None.
+def _resolve_int(cli_value: int | None, env_key: str, *, sources: _Sources) -> int | None:
+    """Return the int given on the CLI or in the sources, or ``None`` when neither set it.
 
-    Why
-        Keeps size limit resolution readable while surfacing friendly errors.
-
-    Inputs
-    ------
-    cli_value:
-        Value supplied on the CLI (``None`` when flag omitted).
-    env_key:
-        Environment variable consulted when CLI value is absent.
-
-    Outputs
-    -------
-    int | None
-        Parsed int value honouring the precedence chain, or None if not set.
+    Raises :class:`click.BadParameter` when the source value is not an integer.
     """
     if cli_value is not None:
         return cli_value
-    env_raw = _configured_value(env_key)
+    env_raw = sources.value(env_key)
     if env_raw is None or env_raw.strip() == "":
         return None
     try:
@@ -222,25 +272,9 @@ def _resolve_int(cli_value: int | None, env_key: str) -> int | None:
         raise click.BadParameter(f"Unrecognised int value for {env_key}: {env_raw!r}") from exc
 
 
-def _resolve_extensions(cli_value: str | None, env_key: str) -> frozenset[str] | None:
-    """Resolve extension set from CLI, env, or return None for default.
-
-    Why
-        Handles comma-separated extension lists with proper normalisation.
-
-    Inputs
-    ------
-    cli_value:
-        Comma-separated extension string from CLI (``None`` when omitted).
-    env_key:
-        Environment variable consulted when CLI value is absent.
-
-    Outputs
-    -------
-    frozenset[str] | None
-        Normalised extension set, or None to use configuration default.
-    """
-    raw = cli_value or _configured_value(env_key)
+def _resolve_extensions(cli_value: str | None, env_key: str, *, sources: _Sources) -> frozenset[str] | None:
+    """Resolve a comma-separated extension list (lower-cased, dot-prefixed), or None for the config's own value."""
+    raw = cli_value or sources.value(env_key)
     if raw is None or raw.strip() == "":
         return None
 
@@ -256,73 +290,103 @@ def _resolve_extensions(cli_value: str | None, env_key: str) -> frozenset[str] |
     return frozenset(extensions) if extensions else None
 
 
-def _resolve_directories(cli_values: Sequence[str], env_key: str) -> frozenset[Path] | None:
-    """Resolve directory set from CLI, env, or return None for default.
-
-    Why
-        Handles multiple directory options with proper path resolution.
-
-    Inputs
-    ------
-    cli_values:
-        Sequence of directory paths from CLI (repeat options or comma-separated).
-    env_key:
-        Environment variable consulted when CLI values are absent.
-
-    Outputs
-    -------
-    frozenset[Path] | None
-        Normalised directory set, or None to use configuration default.
-    """
-    # Flatten CLI values (support both repeat and comma-separated)
+def _resolve_directories(cli_values: Sequence[str], env_key: str, *, sources: _Sources) -> frozenset[Path] | None:
+    """Resolve repeated or comma-separated directories, or None for the config's own value."""
     flattened = _split_values(cli_values)
 
     if not flattened:
-        env_raw = _configured_value(env_key)
+        env_raw = sources.value(env_key)
         if env_raw:
             flattened = _split_values([env_raw])
 
-    if not flattened:
-        return None
-
-    directories: set[Path] = set()
-    for raw_dir_str in flattened:
-        dir_str = raw_dir_str.strip()
-        if dir_str:
-            directories.add(Path(dir_str))
-
+    directories = {Path(raw_dir.strip()) for raw_dir in flattened if raw_dir.strip()}
     return frozenset(directories) if directories else None
 
 
-def _resolve_optional_bool(*, cli_flag: bool | None, env_key: str) -> bool | None:
-    """Return the bool value provided via CLI, environment, or None for default.
+# ---------------------------------------------------------------------------
+# Output: one place decides human text or JSON, for success and failure alike
+# ---------------------------------------------------------------------------
 
-    Why
-        Similar to _resolve_bool but returns None instead of a default.
 
-    Inputs
-    ------
-    cli_flag:
-        Value supplied on the CLI (``None`` when flag omitted).
-    env_key:
-        Environment variable consulted when CLI value is absent.
+@dataclass(frozen=True)
+class CliContext:
+    """### CliContext {#cli-clicontext}
 
-    Outputs
-    -------
-    bool | None
-        Parsed bool value, or None to use configuration default.
+    **Purpose:** The typed `ctx.obj` every command reads.
+
+    **Fields:**
+    - `traceback: bool` - Verbose tracebacks were requested.
+    - `json_output: bool` - Print the JSON envelope.
+    - `json_bare: bool` - Print the JSON payload without the envelope.
+    - `transport: Transport | None` - Delivery adapter `send` hands to the
+      library; `None` uses the SMTP transport. An application embedding the
+      CLI, or a test, passes its own through `cli.main(obj=CliContext(transport=...))`
+      or `CliRunner.invoke(cli, args, obj=...)`.
     """
-    if cli_flag is not None:
-        return cli_flag
-    env_raw = _configured_value(env_key)
-    if env_raw is None or env_raw.strip() == "":
-        return None
-    lowered = env_raw.strip().lower()
-    if lowered in _TRUE_VALUES:
+
+    traceback: bool = False
+    json_output: bool = False
+    json_bare: bool = False
+    transport: Transport | None = None
+
+    @property
+    def machine_readable(self) -> bool:
+        return self.json_output or self.json_bare
+
+
+def _context(ctx: click.Context) -> CliContext:
+    """Return the typed context object, creating it when a command runs on its own."""
+    if not isinstance(ctx.obj, CliContext):
+        ctx.obj = CliContext()
+    return ctx.obj
+
+
+def _dumps(payload: object) -> str:
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _emit(ctx: click.Context, command: str, data: Mapping[str, Any], human: str, *, skipped: Sequence[Mapping[str, str]] = ()) -> None:
+    """Print one command's result in the output mode the group was given."""
+    state = _context(ctx)
+    if state.json_bare:
+        click.echo(_dumps(dict(data)))
+    elif state.json_output:
+        click.echo(_dumps({"ok": True, "command": command, "data": dict(data), "skipped": [dict(item) for item in skipped]}))
+    else:
+        click.echo(human)
+
+
+def _error_payload(exc: BaseException) -> dict[str, str]:
+    return {"type": type(exc).__name__, "message": str(exc)}
+
+
+class _SkipCollector(logging.Filter):
+    """Collect the library's "skipped" warnings while passing every record on unchanged.
+
+    A filter on the library logger, not a handler: adding a handler would stop the
+    warnings reaching stderr through logging's last-resort handler.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.skipped: list[dict[str, str]] = []
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        kind = record.__dict__.get("skipped")
+        if isinstance(kind, str):
+            value = record.__dict__.get("attachment_path") or record.__dict__.get("recipient") or ""
+            self.skipped.append({"kind": kind, "value": str(value), "reason": record.getMessage()})
         return True
-    if lowered in _FALSE_VALUES:
-        return False
-    raise click.BadParameter(f"Unrecognised boolean value for {env_key}: {env_raw!r}")
+
+
+@contextmanager
+def _collect_skipped() -> Generator[_SkipCollector, None, None]:
+    collector = _SkipCollector()
+    mail_logger.addFilter(collector)
+    try:
+        yield collector
+    finally:
+        mail_logger.removeFilter(collector)
 
 
 #: Shared Click context flags so help output stays consistent across commands.
@@ -404,30 +468,19 @@ def restore_traceback_state(state: TracebackState) -> None:
     lib_cli_exit_tools.config.traceback_force_color = bool(state[1])
 
 
-def _record_traceback_choice(ctx: click.Context, *, enabled: bool) -> None:
-    """Remember the chosen traceback mode inside the Click context.
+def _record_context(ctx: click.Context, *, traceback: bool, json_output: bool, json_bare: bool) -> None:
+    """Store the group's options in the typed ``ctx.obj``, keeping a transport an embedding caller put there.
 
     Why
-        Downstream commands need to know whether verbose tracebacks were
-        requested so they can honour the user's preference without re-parsing
-        flags.
-
-    What
-        Ensures the context has a dict backing store and persists the boolean
-        under the ``"traceback"`` key.
-
-    Inputs
-        ctx:
-            Click context associated with the current invocation.
-        enabled:
-            ``True`` when verbose tracebacks were requested; ``False`` otherwise.
+        Downstream commands read the output mode and traceback choice without
+        re-parsing flags, and the transport seam must survive the group callback.
 
     Side Effects
-        Mutates ``ctx.obj``.
+        Replaces ``ctx.obj``.
     """
 
-    ctx.ensure_object(dict)
-    ctx.obj["traceback"] = enabled
+    previous = ctx.obj if isinstance(ctx.obj, CliContext) else CliContext()
+    ctx.obj = CliContext(traceback=traceback, json_output=json_output, json_bare=json_bare, transport=previous.transport)
 
 
 def _announce_traceback_choice(*, enabled: bool) -> None:
@@ -485,10 +538,15 @@ def _invoke_cli(argv: Sequence[str] | None) -> int:
             Exit code returned by the CLI execution.
     """
 
+    argv_list = list(argv) if argv is not None else None
+    as_json, bare = _json_mode(argv_list if argv_list is not None else sys.argv[1:])
+    if not as_json:
+        return lib_cli_exit_tools.run_cli(cli, argv=argv_list, prog_name=__init__conf__.shell_command)
     return lib_cli_exit_tools.run_cli(
         cli,
-        argv=list(argv) if argv is not None else None,
+        argv=argv_list,
         prog_name=__init__conf__.shell_command,
+        exception_handler=_json_exception_handler(argv_list if argv_list is not None else sys.argv[1:], bare=bare),
     )
 
 
@@ -647,34 +705,42 @@ def _run_cli_via_exit_tools(
     default=False,
     help="Show full Python traceback on errors",
 )
+@option("--json", "-j", "json_output", is_flag=True, default=False, help="Print a JSON envelope: {ok, command, data|error, skipped}.")
+@option("--json-bare", "json_bare", is_flag=True, default=False, help="Print the JSON payload (or error) alone, without the envelope.")
 @click.pass_context
-def cli(ctx: click.Context, *, traceback: bool) -> None:
-    """### cli(traceback: bool = False) -> None {#cli-root}
+def cli(ctx: click.Context, *, traceback: bool, json_output: bool, json_bare: bool) -> None:
+    """### cli(traceback: bool = False, json_output: bool = False, json_bare: bool = False) -> None {#cli-root}
 
-    **Purpose:** Register global CLI options (notably `--traceback`) and ensure
-    `lib_cli_exit_tools` reflects the caller's preference before dispatching to
-    subcommands.
+    **Purpose:** Register global CLI options (`--traceback`, `--json`,
+    `--json-bare`) and ensure `lib_cli_exit_tools` reflects the caller's
+    preference before dispatching to subcommands.
 
     **Parameters:**
     - `ctx: click.Context` - Click context initialised by Click.
-    - `traceback: bool = False` - `True` to enable verbose tracebacks; defaults
-      to `False`.
+    - `traceback: bool = False` - `True` to enable verbose tracebacks.
+    - `json_output: bool = False` - `True` to print the JSON envelope.
+    - `json_bare: bool = False` - `True` to print the JSON payload alone.
 
     **Returns:** `None`.
 
-    **Side Effects:** Stores the traceback preference in `ctx.obj` and mirrors
-    it into `lib_cli_exit_tools.config`. When invoked without a subcommand and
-    without explicitly setting the traceback flag, the command prints help
-    instead of executing the placeholder domain entry.
+    **Side Effects:** Stores a `CliContext` in `ctx.obj` (keeping a transport
+    an embedding caller put there) and mirrors the traceback choice into
+    `lib_cli_exit_tools.config`. When invoked without a subcommand and without
+    explicitly setting the traceback flag, the command prints help instead of
+    executing the placeholder domain entry.
 
     **Example:**
     >>> from click.testing import CliRunner
     >>> runner = CliRunner()
     >>> runner.invoke(cli, ["hello"]).exit_code
     0
+    >>> runner.invoke(cli, ["--json", "hello"]).output
+    '{"ok": true, "command": "hello", "data": {"greeting": "Hello World"}, "skipped": []}\\n'
     """
 
-    _record_traceback_choice(ctx, enabled=traceback)
+    if json_output and json_bare:
+        raise click.UsageError("--json and --json-bare are mutually exclusive; pick one output shape")
+    _record_context(ctx, traceback=traceback, json_output=json_output, json_bare=json_bare)
     _announce_traceback_choice(enabled=traceback)
     if _no_subcommand_requested(ctx):
         if _traceback_option_requested(ctx):
@@ -702,7 +768,8 @@ def cli_main() -> None:
 
 
 @cli.command("info", context_settings=CLICK_CONTEXT_SETTINGS)
-def cli_info() -> None:
+@click.pass_context
+def cli_info(ctx: click.Context) -> None:
     """### cli_info() -> None {#cli-info}
 
     **Purpose:** Surface the package metadata so operators can confirm version,
@@ -713,11 +780,24 @@ def cli_info() -> None:
     **Side Effects:** Writes metadata to standard output.
     """
 
-    __init__conf__.print_info()
+    if not _context(ctx).machine_readable:
+        __init__conf__.print_info()
+        return
+    data = {
+        "name": __init__conf__.name,
+        "title": __init__conf__.title,
+        "version": __init__conf__.version,
+        "homepage": __init__conf__.homepage,
+        "author": __init__conf__.author,
+        "author_email": __init__conf__.author_email,
+        "shell_command": __init__conf__.shell_command,
+    }
+    _emit(ctx, "info", data, "")
 
 
 @cli.command("hello", context_settings=CLICK_CONTEXT_SETTINGS)
-def cli_hello() -> None:
+@click.pass_context
+def cli_hello(ctx: click.Context) -> None:
     """### cli_hello() -> None {#cli-hello}
 
     **Purpose:** Demonstrate the happy-path behaviour by emitting the canonical
@@ -728,7 +808,10 @@ def cli_hello() -> None:
     **Side Effects:** Writes `Hello World` plus newline to standard output.
     """
 
-    emit_greeting()
+    if not _context(ctx).machine_readable:
+        emit_greeting()
+        return
+    _emit(ctx, "hello", {"greeting": CANONICAL_GREETING}, "")
 
 
 @cli.command("send", context_settings=CLICK_CONTEXT_SETTINGS)
@@ -758,6 +841,14 @@ def cli_hello() -> None:
     help="Attachment file path (repeat for multiple files).",
 )
 @option(
+    "--env-file",
+    "env_file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    envvar="BTX_MAIL_ENV_FILE",
+    default=None,
+    help="Read unset BTX_MAIL_* settings from this KEY=value file (also BTX_MAIL_ENV_FILE). No file is read unless named.",
+)
+@option(
     "--starttls/--no-starttls",
     "starttls",
     default=None,
@@ -770,12 +861,27 @@ def cli_hello() -> None:
     help="Verify the server certificate during STARTTLS (default: verify). Use --no-starttls-verify for internal self-signed relays.",
 )
 @option("--username", help="SMTP username.")
-@option("--password", help="SMTP password.")
+@option("--password", help="SMTP password. Visible in the process list; prefer --password-file or BTX_MAIL_SMTP_PASSWORD.")
+@option(
+    "--password-file",
+    "password_file",
+    type=click.File("r", encoding="utf-8"),
+    default=None,
+    help="Read the SMTP password from the first line of this file ('-' reads stdin).",
+)
 @option(
     "--timeout",
     type=float,
     default=None,
     help="Socket timeout in seconds (overrides environment).",
+)
+@option(
+    "--delivery-deadline",
+    "delivery_deadline",
+    type=float,
+    default=None,
+    help="Upper bound in seconds for one SMTP session, which the socket timeout cannot give (default: none).",
+    metavar="SECONDS",
 )
 @option(
     "--local-hostname",
@@ -828,7 +934,9 @@ def cli_hello() -> None:
     default=None,
     help="Raise on security violation (strict) or log warning and skip (warn).",
 )
-def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per `send()` parameter, all keyword-only
+@click.pass_context
+def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per setting, all keyword-only
+    ctx: click.Context,
     *,
     hosts: Sequence[str],
     recipients: Sequence[str],
@@ -837,11 +945,14 @@ def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per `sen
     body: str,
     html_body: str | None,
     attachments: Sequence[Path],
+    env_file: Path | None,
     starttls: bool | None,
     starttls_verify: bool | None,
     username: str | None,
     password: str | None,
+    password_file: IO[str] | None,
     timeout: float | None,
+    delivery_deadline: float | None,
     local_hostname: str | None,
     attachment_allowed_ext: str | None,
     attachment_blocked_ext: str | None,
@@ -853,11 +964,11 @@ def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per `sen
 ) -> None:
     """### cli_send_mail(...) -> None {#cli-send-mail}
 
-    **Purpose:** Provide a convenient SMTP smoke test that resolves CLI and
-    environment inputs into one validated `ConfMail` (a copy of the global
-    `conf`, so settings without an option keep their value) and hands it to
-    `btx_lib_mail.lib_mail.send` as `config=`. A value the model refuses is
-    raised as `ValueError` before any delivery.
+    **Purpose:** Provide a convenient SMTP smoke test that resolves CLI options,
+    the environment and an optional `--env-file` into one validated `ConfMail`
+    (a copy of the global `conf`, so settings without an option keep their
+    value) and hands it to `btx_lib_mail.lib_mail.send` as `config=`. A value the
+    model refuses is raised as `InvalidInputError` before any delivery.
 
     **Parameters:**
     - `hosts: Sequence[str]` - One or more `host[:port]` entries; defaults to
@@ -870,27 +981,36 @@ def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per `sen
     - `body: str` - Required plain-text body.
     - `html_body: str | None` - Optional HTML body.
     - `attachments: Sequence[Path]` - Zero or more filesystem paths to attach.
+    - `env_file: Path | None` - `KEY=value` file read for settings neither an
+      option nor the environment gave; also `BTX_MAIL_ENV_FILE`. No file is
+      read unless it is named.
     - `starttls: bool | None` - Override for STARTTLS preference. When `None`,
-      falls back to configuration/environment.
+      falls back to the sources, then `conf`.
     - `starttls_verify: bool | None` - Override for STARTTLS certificate
       verification. When `None`, falls back to `BTX_MAIL_SMTP_STARTTLS_VERIFY`
       or `conf.smtp_starttls_verify`. `--no-starttls-verify` keeps encryption
       but skips certificate validation for internal self-signed relays.
-    - `username: str | None`, `password: str | None` - Optional credentials.
-      Both are required to enable authentication.
+    - `username: str | None`, `password: str | None`, `password_file` -
+      Optional credentials; both a username and a password are required to
+      authenticate. `--password` and `--password-file` exclude each other.
     - `timeout: float | None` - Optional socket timeout override in seconds.
+    - `delivery_deadline: float | None` - Optional bound in seconds for one
+      SMTP session; also `BTX_MAIL_SMTP_DELIVERY_DEADLINE`.
     - `local_hostname: str | None` - Name announced in EHLO. Falls back to
       `BTX_MAIL_SMTP_LOCAL_HOSTNAME`, then `conf.smtp_local_hostname`.
 
     **Returns:** `None`.
 
-    **Side Effects:** Calls `send()` and echoes a summary message to standard
-    output. Exceptions from `send()` propagate to the shared error handlers.
+    **Side Effects:** Calls `send()` and reports the result on standard output
+    (a summary line, or the JSON envelope with the recipients, hosts and the
+    attachments and recipients skipped in warn mode). Exceptions from `send()`
+    propagate to the shared error handlers.
     """
 
-    requested_hosts = _resolve_list(hosts, "BTX_MAIL_SMTP_HOSTS", label="SMTP host")
-    resolved_recipients = _resolve_list(recipients, "BTX_MAIL_RECIPIENTS", label="recipient")
-    sender_value = sender or _configured_value("BTX_MAIL_SENDER") or resolved_recipients[0]
+    sources = _Sources(environ=os.environ, env_file=_read_env_file(env_file))
+    requested_hosts = _resolve_list(hosts, "BTX_MAIL_SMTP_HOSTS", label="SMTP host", sources=sources)
+    resolved_recipients = _resolve_list(recipients, "BTX_MAIL_RECIPIENTS", label="recipient", sources=sources)
+    sender_value = sender or sources.value("BTX_MAIL_SENDER") or resolved_recipients[0]
 
     # One validated ConfMail is the boundary: every assignment below runs the
     # model's validators, and the copy keeps the global conf untouched while
@@ -898,51 +1018,120 @@ def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per `sen
     settings = conf.model_copy(deep=True)
     with _refusals_as_value_error():
         settings.smtphosts = _checked_hosts(requested_hosts)
-        credentials = _resolve_credentials(username or _configured_value("BTX_MAIL_SMTP_USERNAME"), password or _configured_value("BTX_MAIL_SMTP_PASSWORD"))
+        credentials = _resolve_credentials(
+            username or sources.value("BTX_MAIL_SMTP_USERNAME"),
+            _resolve_password(password=password, password_file=password_file, sources=sources),
+        )
         if credentials is not None:
-            settings.smtp_username, settings.smtp_password = credentials[0], SecretStr(credentials[1])
-        settings.smtp_use_starttls = _resolve_bool(cli_flag=starttls, env_key="BTX_MAIL_SMTP_USE_STARTTLS", default=settings.smtp_use_starttls)
-        settings.smtp_starttls_verify = _resolve_bool(cli_flag=starttls_verify, env_key="BTX_MAIL_SMTP_STARTTLS_VERIFY", default=settings.smtp_starttls_verify)
-        settings.smtp_timeout = _resolve_float(timeout, "BTX_MAIL_SMTP_TIMEOUT", default=settings.smtp_timeout)
-        settings.smtp_local_hostname = local_hostname or _configured_value("BTX_MAIL_SMTP_LOCAL_HOSTNAME") or settings.smtp_local_hostname
-
-        settings.attachment_allowed_extensions = _or_default(
-            _resolve_extensions(attachment_allowed_ext, "BTX_MAIL_ATTACHMENT_ALLOWED_EXT"), settings.attachment_allowed_extensions
+            user, secret = credentials
+            settings.smtp_username, settings.smtp_password = user, SecretStr(secret)
+        _apply_connection_settings(
+            settings,
+            _ConnectionOptions(
+                starttls=starttls, starttls_verify=starttls_verify, timeout=timeout, delivery_deadline=delivery_deadline, local_hostname=local_hostname
+            ),
+            sources,
         )
-        settings.attachment_blocked_extensions = _or_default(
-            _resolve_extensions(attachment_blocked_ext, "BTX_MAIL_ATTACHMENT_BLOCKED_EXT"), settings.attachment_blocked_extensions
-        )
-        settings.attachment_allowed_directories = _or_default(
-            _resolve_directories(attachment_allowed_dirs, "BTX_MAIL_ATTACHMENT_ALLOWED_DIRS"), settings.attachment_allowed_directories
-        )
-        settings.attachment_blocked_directories = _or_default(
-            _resolve_directories(attachment_blocked_dirs, "BTX_MAIL_ATTACHMENT_BLOCKED_DIRS"), settings.attachment_blocked_directories
-        )
-        settings.attachment_max_size_bytes = _or_default(_resolve_int(attachment_max_size, "BTX_MAIL_ATTACHMENT_MAX_SIZE"), settings.attachment_max_size_bytes)
-        settings.attachment_allow_symlinks = _or_default(
-            _resolve_optional_bool(cli_flag=attachment_allow_symlinks, env_key="BTX_MAIL_ATTACHMENT_ALLOW_SYMLINKS"), settings.attachment_allow_symlinks
-        )
-        settings.attachment_raise_on_security_violation = _or_default(
-            _resolve_optional_bool(cli_flag=attachment_raise_on_security, env_key="BTX_MAIL_ATTACHMENT_RAISE_ON_SECURITY"),
-            settings.attachment_raise_on_security_violation,
+        _apply_attachment_settings(
+            settings,
+            _AttachmentOptions(
+                allowed_ext=attachment_allowed_ext,
+                blocked_ext=attachment_blocked_ext,
+                allowed_dirs=attachment_allowed_dirs,
+                blocked_dirs=attachment_blocked_dirs,
+                max_size=attachment_max_size,
+                allow_symlinks=attachment_allow_symlinks,
+                raise_on_security=attachment_raise_on_security,
+            ),
+            sources,
         )
 
-    send(
-        mail_from=sender_value,
-        mail_recipients=resolved_recipients,
-        mail_subject=subject,
-        mail_body=body,
-        mail_body_html=html_body or "",
-        attachment_file_paths=list(attachments),
-        config=settings,
+    with _collect_skipped() as collector:
+        send(
+            mail_from=sender_value,
+            mail_recipients=resolved_recipients,
+            mail_subject=subject,
+            mail_body=body,
+            mail_body_html=html_body or "",
+            attachment_file_paths=list(attachments),
+            config=settings,
+            transport=_context(ctx).transport,
+        )
+
+    skipped_recipients = {item["value"] for item in collector.skipped if item["kind"] == "recipient"}
+    delivered = [recipient for recipient in resolved_recipients if recipient.lower() not in skipped_recipients]
+    data = {"sender": sender_value, "recipients": delivered, "hosts": list(settings.smtphosts)}
+    _emit(ctx, "send", data, f"Mail sent to {', '.join(delivered)} via {', '.join(settings.smtphosts)}", skipped=collector.skipped)
+
+
+@dataclass(frozen=True)
+class _ConnectionOptions:
+    """The `send` options that shape the SMTP session."""
+
+    starttls: bool | None
+    starttls_verify: bool | None
+    timeout: float | None
+    delivery_deadline: float | None
+    local_hostname: str | None
+
+
+def _apply_connection_settings(settings: ConfMail, options: _ConnectionOptions, sources: _Sources) -> None:
+    settings.smtp_use_starttls = _resolve_bool(
+        cli_flag=options.starttls, env_key="BTX_MAIL_SMTP_USE_STARTTLS", default=settings.smtp_use_starttls, sources=sources
     )
+    settings.smtp_starttls_verify = _resolve_bool(
+        cli_flag=options.starttls_verify, env_key="BTX_MAIL_SMTP_STARTTLS_VERIFY", default=settings.smtp_starttls_verify, sources=sources
+    )
+    settings.smtp_timeout = _or_default(_resolve_float(options.timeout, "BTX_MAIL_SMTP_TIMEOUT", sources=sources), settings.smtp_timeout)
+    settings.smtp_delivery_deadline = _or_default(
+        _resolve_float(options.delivery_deadline, "BTX_MAIL_SMTP_DELIVERY_DEADLINE", sources=sources), settings.smtp_delivery_deadline
+    )
+    settings.smtp_local_hostname = options.local_hostname or sources.value("BTX_MAIL_SMTP_LOCAL_HOSTNAME") or settings.smtp_local_hostname
 
-    click.echo(f"Mail sent to {', '.join(resolved_recipients)} via {', '.join(settings.smtphosts)}")
+
+@dataclass(frozen=True)
+class _AttachmentOptions:
+    """The `send` options that shape attachment security."""
+
+    allowed_ext: str | None
+    blocked_ext: str | None
+    allowed_dirs: Sequence[str]
+    blocked_dirs: Sequence[str]
+    max_size: int | None
+    allow_symlinks: bool | None
+    raise_on_security: bool | None
+
+
+def _apply_attachment_settings(settings: ConfMail, options: _AttachmentOptions, sources: _Sources) -> None:
+    settings.attachment_allowed_extensions = _or_default(
+        _resolve_extensions(options.allowed_ext, "BTX_MAIL_ATTACHMENT_ALLOWED_EXT", sources=sources), settings.attachment_allowed_extensions
+    )
+    settings.attachment_blocked_extensions = _or_default(
+        _resolve_extensions(options.blocked_ext, "BTX_MAIL_ATTACHMENT_BLOCKED_EXT", sources=sources), settings.attachment_blocked_extensions
+    )
+    settings.attachment_allowed_directories = _or_default(
+        _resolve_directories(options.allowed_dirs, "BTX_MAIL_ATTACHMENT_ALLOWED_DIRS", sources=sources), settings.attachment_allowed_directories
+    )
+    settings.attachment_blocked_directories = _or_default(
+        _resolve_directories(options.blocked_dirs, "BTX_MAIL_ATTACHMENT_BLOCKED_DIRS", sources=sources), settings.attachment_blocked_directories
+    )
+    settings.attachment_max_size_bytes = _or_default(
+        _resolve_int(options.max_size, "BTX_MAIL_ATTACHMENT_MAX_SIZE", sources=sources), settings.attachment_max_size_bytes
+    )
+    settings.attachment_allow_symlinks = _or_default(
+        _resolve_optional_bool(cli_flag=options.allow_symlinks, env_key="BTX_MAIL_ATTACHMENT_ALLOW_SYMLINKS", sources=sources),
+        settings.attachment_allow_symlinks,
+    )
+    settings.attachment_raise_on_security_violation = _or_default(
+        _resolve_optional_bool(cli_flag=options.raise_on_security, env_key="BTX_MAIL_ATTACHMENT_RAISE_ON_SECURITY", sources=sources),
+        settings.attachment_raise_on_security_violation,
+    )
 
 
 @cli.command("validate-email", context_settings=CLICK_CONTEXT_SETTINGS)
 @argument("address")
-def cli_validate_email(address: str) -> None:
+@click.pass_context
+def cli_validate_email(ctx: click.Context, address: str) -> None:
     """### cli_validate_email(address: str) -> None {#cli-validate-email}
 
     **Purpose:** Validate that *address* is a syntactically correct email
@@ -953,16 +1142,17 @@ def cli_validate_email(address: str) -> None:
 
     **Returns:** `None`.
 
-    **Side Effects:** Echoes a confirmation message on success.
+    **Side Effects:** Reports the valid address on success.
     """
 
     validate_email_address(address)
-    click.echo(f"Valid email address: {address}")
+    _emit(ctx, "validate-email", {"address": address, "valid": True}, f"Valid email address: {address}")
 
 
 @cli.command("validate-smtp-host", context_settings=CLICK_CONTEXT_SETTINGS)
 @argument("host")
-def cli_validate_smtp_host(host: str) -> None:
+@click.pass_context
+def cli_validate_smtp_host(ctx: click.Context, host: str) -> None:
     """### cli_validate_smtp_host(host: str) -> None {#cli-validate-smtp-host}
 
     **Purpose:** Validate that *host* is a syntactically correct SMTP host
@@ -974,11 +1164,11 @@ def cli_validate_smtp_host(host: str) -> None:
 
     **Returns:** `None`.
 
-    **Side Effects:** Echoes a confirmation message on success.
+    **Side Effects:** Reports the valid host on success.
     """
 
     validate_smtp_host(host)
-    click.echo(f"Valid SMTP host: {host}")
+    _emit(ctx, "validate-smtp-host", {"host": host, "valid": True}, f"Valid SMTP host: {host}")
 
 
 @cli.command("fail", context_settings=CLICK_CONTEXT_SETTINGS)
@@ -1020,7 +1210,9 @@ def main(
     - `verbose_limit: int = TRACEBACK_VERBOSE_LIMIT` - Character budget applied
       when verbose tracebacks are enabled.
 
-    **Returns:** `int` - Exit code produced by the CLI.
+    **Returns:** `int` - Exit code produced by the CLI. With `--json` or
+    `--json-bare`, a failure is printed as JSON on standard output and the exit
+    code is the one the same failure has without them.
 
     **Side Effects:** Temporarily mutates `lib_cli_exit_tools.config` while the
     CLI executes.
@@ -1035,6 +1227,43 @@ def main(
         )
     finally:
         _restore_when_requested(state=previous_state, should_restore=restore_traceback)
+
+
+def _json_mode(argv: Sequence[str]) -> tuple[bool, bool]:
+    """Return ``(as_json, bare)`` read from *argv*.
+
+    Read from argv rather than the Click context: an error can escape before the
+    context exists (a malformed option), and its report must still be JSON.
+    """
+    bare = "--json-bare" in argv
+    return bare or "--json" in argv or "-j" in argv, bare
+
+
+def _command_named(argv: Sequence[str]) -> str | None:
+    """Return the first subcommand name in *argv*, for the failure envelope."""
+    return next((token for token in argv if token in cli.commands), None)
+
+
+def _json_exception_handler(argv: Sequence[str], *, bare: bool) -> Callable[[BaseException], int]:
+    """Return a ``run_cli`` exception handler that reports failures as JSON on stdout.
+
+    The exit code is resolved as ``lib_cli_exit_tools`` resolves it without
+    JSON, so a caller may switch on it in either mode.
+    """
+
+    def handle(exc: BaseException) -> int:
+        if isinstance(exc, BrokenPipeError):
+            # The reader went away; there is nobody left to print the error to.
+            return int(lib_cli_exit_tools.config.broken_pipe_exit_code)
+        if isinstance(exc, SystemExit):
+            return int(exc.code or 0) if isinstance(exc.code, int) or exc.code is None else 1
+        error = _error_payload(exc)
+        click.echo(_dumps(error if bare else {"ok": False, "command": _command_named(argv), "error": error, "skipped": []}))
+        if isinstance(exc, click.ClickException):
+            return exc.exit_code
+        return lib_cli_exit_tools.get_system_exit_code(exc)
+
+    return handle
 
 
 def _restore_when_requested(*, state: TracebackState, should_restore: bool) -> None:

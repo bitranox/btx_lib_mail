@@ -30,7 +30,11 @@ src/btx_lib_mail/
 tests/
   conftest.py          # shared fixtures (cli_runner, traceback isolation)
   test_behaviors.py    # behavior helper tests
-  test_cli.py          # CLI command tests
+  test_cli.py          # CLI group, traceback handling, simple commands
+  test_cli_send.py     # send command: settings sources, --env-file, --password-file, --json, real-server security
+  test_attachment_integrity.py # open-once/encode-once attachments, subject and timeout refusals
+  test_deadline.py     # delivery deadline against a dripping server
+  smtp_test_server.py  # shared real aiosmtpd server helpers (DATA and BDAT)
   test_errors.py       # BtxMailError hierarchy at every raise site
   test_lib_mail.py     # core mail logic + validator + security tests
   test_metadata.py     # metadata constant tests
@@ -54,13 +58,20 @@ tests/
   control character, without echoing the value, and a malformed port, bracket, host name
   or a comma (two hosts in one string); `ConfMail.smtphosts` runs it on every non-blank entry
 - **Security**: `AttachmentSecurityOptions` + `_validate_attachment_security()` orchestrate checks
-- **CLI**: `cli.py` uses rich-click groups; `lib_cli_exit_tools` handles exit codes. `send` builds one
-  `ConfMail` (a copy of `conf`, each resolved option assigned with validation) and calls `send(config=)`
+- **CLI**: `cli.py` uses rich-click groups; `lib_cli_exit_tools` handles exit codes (`docs/cli.md#cli-exit-codes`).
+  `send` builds one `ConfMail` (a copy of `conf`, each resolved option assigned with validation) from options >
+  environment > `--env-file` (never an implicit `./.env`) and calls `send(config=)`. `ctx.obj` is a typed
+  `CliContext` (output mode, traceback, and a `transport` seam for embedding/tests). `--json`/`--json-bare` on the
+  group; failures become JSON in `main()`'s exception handler. `python -m btx_lib_mail` runs `cli.main()` too
+- **Deadline**: `ConfMail.smtp_delivery_deadline` / `send(delivery_deadline=)` / `--delivery-deadline`; a watchdog
+  thread shuts the socket down when one SMTP session overruns (`_session_deadline`)
 
 ## Testing Conventions
 
-- Tests inject a `Transport` double through `send(transport=)`; wire tests use a real
-  in-process `aiosmtpd` server, never a socket-level monkeypatch
+- Tests inject a `Transport` double through `send(transport=)` (CLI tests through
+  `invoke(..., obj=CliContext(transport=...))`); wire tests use a real in-process `aiosmtpd`
+  server (`tests/smtp_test_server.py`, `data_server` fixture in conftest), never a socket-level
+  monkeypatch, and never a patch of the package's own functions
 - `_reset_conf_mail` autouse fixture restores global config between tests
 - Markers: `os_agnostic`, `os_windows`, `os_macos`, `os_posix`, `os_linux`, `local_only`
   (real SMTP via `TEST_SMTP_*` env vars)
@@ -110,7 +121,8 @@ from btx_lib_mail import (
 ## CLI Commands
 
 ```
-btx-lib-mail send               # send an email
+btx-lib-mail [--json|--json-bare] [--traceback] <command> ...
+btx-lib-mail send               # send an email (settings: options > env > --env-file > conf)
 btx-lib-mail validate-email     # validate email address syntax
 btx-lib-mail validate-smtp-host # validate SMTP host format (IPv6-aware)
 btx-lib-mail info               # show package metadata

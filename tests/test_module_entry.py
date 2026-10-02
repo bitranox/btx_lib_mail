@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import runpy
 import sys
 from dataclasses import dataclass
@@ -112,24 +113,13 @@ def test_when_module_entry_raises_the_exit_helpers_format_the_song(monkeypatch: 
         codes.append(f"code:{exc}")
         return 88
 
-    def exploding_run_cli(
-        *_args: object,
-        exception_handler: Callable[[BaseException], int] | None = None,
-        **_kwargs: object,
-    ) -> int:
-        def default_handler(exc: BaseException) -> int:
-            return 1
-
-        handler: Callable[[BaseException], int] = exception_handler or default_handler
-        return handler(RuntimeError("boom"))
+    def exploding_run_cli(*_args: object, **_kwargs: object) -> int:
+        raise RuntimeError("boom")
 
     printer = _record_print_message(printed)
     monkeypatch.setattr(lib_cli_exit_tools, "print_exception_message", printer)
     monkeypatch.setattr(lib_cli_exit_tools, "get_system_exit_code", fake_code)
-    monkeypatch.setattr("lib_cli_exit_tools.application.runner.print_exception_message", printer)
-    monkeypatch.setattr("lib_cli_exit_tools.application.runner.get_system_exit_code", fake_code)
     monkeypatch.setattr(lib_cli_exit_tools, "run_cli", exploding_run_cli)
-    monkeypatch.setattr("lib_cli_exit_tools.application.runner.run_cli", exploding_run_cli)
 
     with pytest.raises(SystemExit) as exc:
         runpy.run_module("btx_lib_mail.__main__", run_name="__main__")
@@ -137,6 +127,32 @@ def test_when_module_entry_raises_the_exit_helpers_format_the_song(monkeypatch: 
     assert exc.value.code == 88
     assert printed == [PrintedTraceback(trace_back=False, length_limit=500, stream_present=False)]
     assert codes == ["code:boom"]
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("argv", [["send", "--host", "smtp.example.com"], ["no-such-command"], ["validate-email", "not-an-address"]])
+def test_module_entry_exits_with_the_code_the_console_script_gives(monkeypatch: pytest.MonkeyPatch, isolated_traceback_config: None, argv: list[str]) -> None:
+    script_code = cli_mod.main(argv)
+    monkeypatch.setattr(sys, "argv", ["btx_lib_mail", *argv])
+
+    with pytest.raises(SystemExit) as exc:
+        runpy.run_module("btx_lib_mail.__main__", run_name="__main__")
+
+    assert exc.value.code == script_code
+
+
+@pytest.mark.os_agnostic
+def test_module_entry_reports_a_json_failure_as_json(
+    monkeypatch: pytest.MonkeyPatch, isolated_traceback_config: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["btx_lib_mail", "--json", "validate-email", "not-an-address"])
+
+    with pytest.raises(SystemExit):
+        runpy.run_module("btx_lib_mail.__main__", run_name="__main__")
+
+    envelope = json.loads(capsys.readouterr().out)
+    assert envelope["ok"] is False
+    assert envelope["error"]["type"] == "InvalidInputError"
 
 
 @pytest.mark.os_agnostic
@@ -168,9 +184,9 @@ def test_when_module_entry_imports_cli_the_alias_stays_intact() -> None:
 
 
 @pytest.mark.os_agnostic
-def test_when_the_module_is_imported_it_remains_composed() -> None:
+def test_when_the_module_is_imported_it_runs_nothing() -> None:
     sys.modules.pop("btx_lib_mail.__main__", None)
 
     module = importlib.import_module("btx_lib_mail.__main__")
 
-    assert module._command_name() == __init__conf__.shell_command
+    assert module.cli is cli_mod

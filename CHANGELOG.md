@@ -18,6 +18,22 @@
   `/.pypirc`, `/.npmrc` and `/gh/hosts.yml`.
 - `AttachmentViolation.CHANGED`: an attachment path that became a symlink or another file
   after it was checked.
+- `ConfMail.smtp_delivery_deadline` / `send(delivery_deadline=)` / `--delivery-deadline` /
+  `BTX_MAIL_SMTP_DELIVERY_DEADLINE`: an upper bound in seconds for one SMTP session. The
+  socket timeout bounds each read or write, so a server answering one byte at a time kept a
+  session open indefinitely; past the deadline the socket is shut down and the host counts
+  as failed (`TimeoutError`). Unset by default.
+- CLI: `--json`/`-j` and `--json-bare` on the command group. Every subcommand prints one JSON
+  document (`{"ok", "command", "data", "skipped"}`); a failure prints
+  `{"ok": false, "command", "error": {"type", "message"}}` instead of a traceback, with the
+  exit code it has without `--json`. `skipped` lists attachments and recipients `send` left
+  out in warn mode. The exit codes are documented in `docs/cli.md`.
+- CLI: `--password-file PATH` (`-` reads stdin) keeps the password out of the process list.
+- CLI: `--env-file PATH` (or `BTX_MAIL_ENV_FILE`) names a `KEY=value` file for unset settings;
+  it is read once, must be UTF-8 and at most 64 KiB.
+- `CliContext`, the typed `ctx.obj`; its `transport` lets an application embedding the CLI
+  (or a test) deliver through its own `Transport`.
+- A WARNING when credentials are sent with STARTTLS off, naming the host.
 
 ### Changed
 
@@ -42,8 +58,18 @@
   characters (only TAB is allowed)`); CR and LF keep the email package's message. Before,
   NUL, ESC and the rest were sent raw.
 
+### Removed
+
+- CLI: a `.env` file in the working directory is no longer read. It let any directory the
+  command ran in (a cloned repository, a shared folder) redirect `BTX_MAIL_SMTP_HOSTS` to a
+  host with a valid certificate for its own name (so a verified STARTTLS still handed it the
+  password), switch STARTTLS off, or lift the attachment blocklists. Name the file with
+  `--env-file .env` (or `BTX_MAIL_ENV_FILE=.env`) to keep using it.
+
 ### Fixed
 
+- `python -m btx_lib_mail` runs the same entry point as the console scripts. It ran a
+  separate session before, so a usage error exited `1` there and `2` from `btx-lib-mail`.
 - An attachment path swapped after the checks (for example replaced by a symlink to
   `/etc/passwd` while recipient 1 was being delivered) no longer reaches later recipients:
   every recipient receives the bytes of the file that was checked. A file that grows past

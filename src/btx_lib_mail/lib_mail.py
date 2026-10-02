@@ -34,9 +34,11 @@ import ssl
 import stat
 import sys
 import tempfile
+import threading
 import unicodedata
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Generator, Iterable, Sequence
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from email import policy as email_policy
 from email.generator import BytesGenerator
@@ -363,6 +365,12 @@ class ConfMail(SecretSafeModel):
       it has no dot). Set it where reverse DNS is slow, since that lookup
       otherwise delays the first connection. Must be non-empty printable ASCII
       without spaces.
+    - `smtp_delivery_deadline: float | None = None` - Upper bound in seconds for
+      one SMTP session (one recipient via one host), from the open connection to
+      the server's final reply. `smtp_timeout` bounds each socket operation, so
+      a server answering one byte at a time never trips it; this bounds the
+      whole session, after which the host counts as failed and the next one is
+      tried. `None` sets no bound. Must be positive and finite when set.
     - `attachment_allowed_extensions: frozenset[str] | None = None` - When set,
       only these extensions are allowed (whitelist mode). When `None`, the
       blocked extensions list applies instead.
@@ -419,6 +427,7 @@ class ConfMail(SecretSafeModel):
     smtp_starttls_verify: bool = True
     smtp_timeout: float = 30.0
     smtp_local_hostname: str | None = None
+    smtp_delivery_deadline: float | None = None
 
     # Attachment security settings
     attachment_allowed_extensions: frozenset[str] | None = None
@@ -511,6 +520,14 @@ class ConfMail(SecretSafeModel):
         """
 
         _check_timeout(value)
+        return value
+
+    @field_validator("smtp_delivery_deadline", mode="after")
+    @classmethod
+    def _validate_delivery_deadline(cls, value: float | None) -> float | None:
+        """Refuse a deadline that is not a positive, finite number of seconds."""
+        if value is not None:
+            _check_seconds(value, label="smtp_delivery_deadline")
         return value
 
     @field_validator("smtp_local_hostname", mode="after")
@@ -677,6 +694,7 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
     starttls_verify: bool | None = None,
     timeout: float | None = None,
     local_hostname: str | None = None,
+    delivery_deadline: float | None = None,
     # Attachment security parameters
     attachment_allowed_extensions: frozenset[str] | None = None,
     attachment_blocked_extensions: frozenset[str] | None = None,
@@ -729,6 +747,9 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
       `EHLO`. When `None`, the helper uses `smtp_local_hostname` of the passed
       `config`, else `conf`; when that is unset too, the host's own name,
       looked up once per process.
+    - `delivery_deadline: float | None = None` - Override the upper bound in
+      seconds for one SMTP session. When `None`, the helper uses
+      `smtp_delivery_deadline` of the passed `config`, else `conf`.
     - `attachment_allowed_extensions: frozenset[str] | None = None` - Override
       allowed extensions (whitelist mode). When `None`, uses the passed
       `config`'s default, else `conf`'s.
@@ -768,7 +789,8 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
     **Raises:** (every one a `BtxMailError`)
     - `InvalidInputError` (a `ValueError`) - When the sender, a recipient (in
       strict mode), a host, the subject (a control character other than TAB),
-      `local_hostname` or `timeout` is refused, or no valid recipient remains.
+      `local_hostname`, `timeout` or `delivery_deadline` is refused, or no
+      valid recipient remains.
       Raised before the first delivery.
     - `AttachmentNotFoundError` (a `FileNotFoundError`) - When required
       attachments are missing and `raise_on_missing_attachments` is `True` on
@@ -839,6 +861,7 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
                     starttls_verify=starttls_verify,
                     timeout=timeout,
                     local_hostname=local_hostname,
+                    deadline=delivery_deadline,
                 ),
             ),
             transport=transport if transport is not None else _DEFAULT_TRANSPORT,
@@ -889,6 +912,8 @@ class DeliveryOptions:
     - `timeout: float` - Socket timeout (seconds) applied to SMTP connections.
     - `local_hostname: str | None` - Name announced in `EHLO`; `None` lets the
       transport use the host's own name, looked up once per process.
+    - `deadline: float | None` - Upper bound in seconds for the whole SMTP
+      session once connected; `None` sets none.
     """
 
     # repr=False: a transport or a debugger printing the options must not print the password.
@@ -896,8 +921,9 @@ class DeliveryOptions:
     use_starttls: bool
     starttls_verify: bool
     timeout: float
-    # Defaulted so a DeliveryOptions built without it keeps the pre-knob behaviour.
+    # Defaulted so a DeliveryOptions built without them keeps the behaviour of having none.
     local_hostname: str | None = None
+    deadline: float | None = None
 
 
 @dataclass(frozen=True)
@@ -909,6 +935,7 @@ class _DeliveryOverrides:
     starttls_verify: bool | None
     timeout: float | None
     local_hostname: str | None
+    deadline: float | None
 
 
 @dataclass(frozen=True)
@@ -954,12 +981,16 @@ def _resolve_delivery_options(*, settings: ConfMail, overrides: _DeliveryOverrid
     if overrides.local_hostname is not None:
         _check_local_hostname(overrides.local_hostname, label="local_hostname")
     local_hostname = overrides.local_hostname if overrides.local_hostname is not None else settings.smtp_local_hostname
+    if overrides.deadline is not None:
+        _check_seconds(overrides.deadline, label="delivery_deadline")
+    deadline = overrides.deadline if overrides.deadline is not None else settings.smtp_delivery_deadline
     return DeliveryOptions(
         credentials=credentials,
         use_starttls=use_starttls,
         starttls_verify=starttls_verify,
         timeout=timeout,
         local_hostname=local_hostname,
+        deadline=deadline,
     )
 
 
@@ -978,16 +1009,21 @@ def _check_local_hostname(value: str, *, label: str) -> None:
 
 
 def _check_timeout(value: float) -> None:
-    """Raise unless *value* is a usable socket timeout: positive and finite.
+    """Raise unless *value* is a usable socket timeout: positive and finite."""
+    _check_seconds(value, label="smtp_timeout")
 
-    The non-positive check runs first, so a value refused before keeps its
+
+def _check_seconds(value: float, *, label: str) -> None:
+    """Raise unless *value* is a positive, finite number of seconds.
+
+    The non-positive check runs first, so a timeout refused before keeps its
     message; NaN and infinity, which ``value <= 0`` let through to fail later as
     an unrelated delivery error, get their own.
     """
     if value <= 0:
-        raise InvalidInputError(f"smtp_timeout must be positive, got {value}")
+        raise InvalidInputError(f"{label} must be positive, got {value}")
     if not math.isfinite(value):
-        raise InvalidInputError(f"smtp_timeout must be a finite number of seconds, got {value}")
+        raise InvalidInputError(f"{label} must be a finite number of seconds, got {value}")
 
 
 @functools.cache
@@ -1344,13 +1380,23 @@ class SmtplibTransport:
     ) -> None:
         hostname, port = _parse_smtp_host(host)
         local_hostname = delivery.local_hostname or _default_local_hostname()
-        with smtplib.SMTP(hostname, port=port or 0, local_hostname=local_hostname, timeout=delivery.timeout) as smtp_connection:
+        with (
+            smtplib.SMTP(hostname, port=port or 0, local_hostname=local_hostname, timeout=delivery.timeout) as smtp_connection,
+            _session_deadline(smtp_connection, delivery.deadline),
+        ):
             smtp_connection.ehlo_or_helo_if_needed()
             if delivery.use_starttls:
                 smtp_connection.starttls(context=_build_starttls_context(verify=delivery.starttls_verify))
                 # RFC 3207: server capabilities must be re-fetched after TLS.
                 smtp_connection.ehlo()
             if delivery.credentials is not None:
+                if not delivery.use_starttls:
+                    # Allowed (an internal relay may offer no TLS), but never silently.
+                    logger.warning(
+                        'sending SMTP credentials to host "%s" without TLS (STARTTLS is off)',
+                        _printable(host),
+                        extra={"host": _printable(host)},
+                    )
                 username, password = delivery.credentials
                 _authenticate(smtp_connection, username, password)
             smtp_connection.ehlo_or_helo_if_needed()
@@ -1360,6 +1406,43 @@ class SmtplibTransport:
                 _send_via_bdat(smtp_connection, sender, recipient, message)
             else:
                 _send_via_data(smtp_connection, sender, recipient, message)
+
+
+@contextmanager
+def _session_deadline(smtp_connection: smtplib.SMTP, seconds: float | None) -> Generator[None, None, None]:
+    """Bound the whole SMTP session to *seconds*, raising ``TimeoutError`` past it.
+
+    Why
+        The socket timeout bounds ONE read or write, so a server that answers a
+        byte at a time keeps a session alive indefinitely. When the deadline
+        passes, a watchdog thread shuts the socket down, which ends whatever
+        read or write is blocked; the resulting failure is reported as a
+        ``TimeoutError`` naming the deadline, so the host counts as failed and
+        the next one is tried.
+    """
+    if seconds is None:
+        yield
+        return
+    expired = threading.Event()
+
+    def cut() -> None:
+        expired.set()
+        connection_socket = smtp_connection.sock
+        if connection_socket is not None:
+            with suppress(OSError):
+                connection_socket.shutdown(socket.SHUT_RDWR)
+
+    watchdog = threading.Timer(seconds, cut)
+    watchdog.daemon = True
+    watchdog.start()
+    try:
+        yield
+    except OSError as error:
+        if expired.is_set():
+            raise TimeoutError(f"SMTP session did not finish within the delivery deadline of {seconds} seconds") from error
+        raise
+    finally:
+        watchdog.cancel()
 
 
 def _authenticate(smtp_connection: smtplib.SMTP, username: str, password: str) -> None:
@@ -2126,7 +2209,7 @@ def _prepare_attachment(path: pathlib.Path, security: AttachmentSecurityOptions,
         logger.warning(
             'Attachment File "%s" can not be found',
             clean_path,
-            extra={"attachment_path": clean_path},
+            extra={"attachment_path": clean_path, "skipped": "attachment"},
         )
         return None
 
@@ -2150,6 +2233,7 @@ def _log_violation(exc: AttachmentSecurityError, original_path_str: str) -> None
         extra={
             "attachment_path": _printable(original_path_str),
             "violation_type": exc.violation_type.value,
+            "skipped": "attachment",
         },
     )
 
@@ -2247,7 +2331,7 @@ def _prepare_recipients(
             clean_entry = _printable(entry)
             if raise_on_invalid:
                 raise InvalidInputError(f"invalid recipient {clean_entry}") from None
-            logger.warning("invalid recipient %s", clean_entry, extra={"recipient": clean_entry})
+            logger.warning("invalid recipient %s", clean_entry, extra={"recipient": clean_entry, "skipped": "recipient"})
             continue
         valid.append(entry)
 

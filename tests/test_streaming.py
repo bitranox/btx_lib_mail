@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
-
 # Tests reach into module internals (dot-stuffer, spool composer) by design, and
 # aiosmtpd ships no type stubs, so its server/handler objects are untyped here.
 # pyright: reportPrivateUsage=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false
@@ -22,11 +20,11 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
-aiosmtpd_controller = pytest.importorskip("aiosmtpd.controller")
-aiosmtpd_smtp = pytest.importorskip("aiosmtpd.smtp")
-Controller = aiosmtpd_controller.Controller
-AioSMTP = aiosmtpd_smtp.SMTP
-_AIO_MISSING = aiosmtpd_smtp.MISSING
+from aiosmtpd.controller import Controller
+from smtp_test_server import BdatController as _BdatController
+from smtp_test_server import ChunkingHandler as _ChunkingHandler
+from smtp_test_server import CollectingHandler as _CollectingHandler
+from smtp_test_server import run_server as _run_server
 
 
 def _compose(
@@ -52,123 +50,6 @@ def _read_spool(spool: object) -> bytes:
     return spool.read()  # type: ignore[attr-defined]
 
 
-def _free_port() -> int:
-    """Pick a currently-free localhost TCP port for a throwaway server."""
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return probe.getsockname()[1]
-
-
-class _CollectingHandler:
-    """aiosmtpd handler that captures each delivered message (DATA path)."""
-
-    def __init__(self) -> None:
-        self.messages: list[bytes] = []
-        self.rcpts: list[str] = []
-
-    async def handle_DATA(self, server: Any, session: Any, envelope: Any) -> str:
-        self.messages.append(bytes(envelope.content))
-        self.rcpts.extend(envelope.rcpt_tos)
-        return "250 Message accepted"
-
-
-class _ChunkingHandler(_CollectingHandler):
-    """Collecting handler that also advertises CHUNKING so the client uses BDAT."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        # Incremented by the BDAT command handler; proves the client took the
-        # BDAT branch rather than falling back to DATA.
-        self.bdat_command_count = 0
-
-    async def handle_EHLO(self, server: Any, session: Any, envelope: Any, hostname: str, responses: list[str]) -> list[str]:
-        session.host_name = hostname
-        # Insert CHUNKING before the terminal '250 HELP' line so the multiline
-        # EHLO reply stays well-formed.
-        return [*responses[:-1], "250-CHUNKING", responses[-1]]
-
-
-class _BdatSMTP(AioSMTP):
-    """aiosmtpd SMTP subclass adding an RFC 3030 BDAT command handler.
-
-    Stock aiosmtpd speaks only DATA, so this minimal receiver reads each
-    length-prefixed BDAT chunk straight off the wire and, on the LAST chunk,
-    hands the assembled message to the normal DATA hook.
-    """
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        self._bdat_data = bytearray()
-
-    async def smtp_BDAT(self, arg: str) -> None:
-        parts = (arg or "").split()
-        if not parts or not parts[0].isdigit():
-            await self.push("501 Syntax: BDAT <size> [LAST]")
-            return
-        size = int(parts[0])
-        last = any(token.upper() == "LAST" for token in parts[1:])
-        counter = getattr(self.event_handler, "bdat_command_count", None)
-        if counter is not None:
-            self.event_handler.bdat_command_count += 1
-        if size:
-            self._bdat_data += await self._reader.readexactly(size)
-        if self.envelope is None:  # pragma: no cover - defensive
-            await self.push("503 Error: need MAIL command")
-            return
-        if last:
-            self.envelope.content = bytes(self._bdat_data)
-            self._bdat_data = bytearray()
-            status = await self._call_handler_hook("DATA")
-            await self.push("250 Message accepted" if status is _AIO_MISSING else status)
-        else:
-            await self.push(f"250 {size} octets received")
-
-
-class _BdatController(Controller):
-    """Controller that serves the BDAT-capable SMTP subclass."""
-
-    def factory(self) -> Any:
-        return _BdatSMTP(self.handler, **self.SMTP_kwargs)
-
-
-# A working server reports ready in well under a second.
-_SERVER_READY_TIMEOUT = 8.0
-_SERVER_BIND_ATTEMPTS = 3
-# The name the test server announces. Without one, aiosmtpd's SMTP falls back to
-# socket.getfqdn(), a reverse DNS lookup run inside the server thread on the first
-# connection; on macOS CI runners it takes about 30 s, so every start timed out.
-_SERVER_NAME = "localhost"
-
-
-def _run_server(handler: Any, *, controller_cls: type[Controller] = Controller, **controller_kwargs: Any) -> Controller:
-    # _free_port() releases the port before the server binds it, so another process
-    # can take it in between: only that bind failure is retried, on a fresh port.
-    # Any other start failure is a real defect and fails the test.
-    for attempt in range(1, _SERVER_BIND_ATTEMPTS + 1):
-        controller = controller_cls(
-            handler,
-            hostname="127.0.0.1",
-            port=_free_port(),
-            ready_timeout=_SERVER_READY_TIMEOUT,
-            server_hostname=_SERVER_NAME,
-            **controller_kwargs,
-        )
-        try:
-            controller.start()
-        except TimeoutError:
-            # A subclass of OSError, but a server that bound and then did not
-            # answer is not the bind race, so it is never retried.
-            raise
-        except OSError:
-            with contextlib.suppress(Exception):
-                controller.stop()
-            if attempt == _SERVER_BIND_ATTEMPTS:
-                raise
-            continue
-        return controller
-    raise AssertionError("unreachable: the last bind attempt either returns or raises")
-
-
 @pytest.mark.os_agnostic
 @pytest.mark.parametrize("controller_cls", [Controller, _BdatController], ids=["data", "bdat"])
 def test_the_test_server_never_resolves_the_host_name(monkeypatch: pytest.MonkeyPatch, controller_cls: type[Controller]) -> None:
@@ -181,17 +62,6 @@ def test_the_test_server_never_resolves_the_host_name(monkeypatch: pytest.Monkey
 
     controller = _run_server(_CollectingHandler(), controller_cls=controller_cls)
     controller.stop()
-
-
-@pytest.fixture
-def data_server() -> Iterator[tuple[Controller, _CollectingHandler]]:
-    """A real stock aiosmtpd server (no CHUNKING) that forces the DATA path."""
-    handler = _CollectingHandler()
-    controller = _run_server(handler)
-    try:
-        yield controller, handler
-    finally:
-        controller.stop()
 
 
 @pytest.fixture
@@ -627,6 +497,47 @@ def test_a_non_ascii_password_authenticates_with_utf8_plain() -> None:
 
 
 @pytest.mark.os_agnostic
+def test_credentials_sent_without_tls_are_reported_as_a_warning(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level("WARNING", logger="btx_lib_mail")
+    seen: list[bool] = []
+    controller = _run_server(_CollectingHandler(), authenticator=_utf8_authenticator(seen), auth_require_tls=False, auth_required=True)
+    try:
+        lib_mail.send(
+            mail_from="sender@example.com",
+            mail_recipients="rcpt@example.com",
+            mail_subject="plain auth",
+            smtphosts=[f"127.0.0.1:{controller.port}"],
+            use_starttls=False,
+            credentials=("user", _UTF8_DUMMY),
+        )
+    finally:
+        controller.stop()
+
+    warnings = [record for record in caplog.records if "without TLS" in record.getMessage()]
+    assert len(warnings) == 1
+    assert f"127.0.0.1:{controller.port}" in warnings[0].getMessage()
+    assert _UTF8_DUMMY not in caplog.text
+
+
+@pytest.mark.os_agnostic
+def test_an_anonymous_session_without_tls_logs_no_credential_warning(
+    data_server: tuple[Controller, _CollectingHandler], caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level("WARNING", logger="btx_lib_mail")
+    controller, _handler = data_server
+
+    lib_mail.send(
+        mail_from="sender@example.com",
+        mail_recipients="rcpt@example.com",
+        mail_subject="anonymous",
+        smtphosts=[f"127.0.0.1:{controller.port}"],
+        use_starttls=False,
+    )
+
+    assert "without TLS" not in caplog.text
+
+
+@pytest.mark.os_agnostic
 def test_a_wrong_non_ascii_password_is_refused_without_quoting_it(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level("WARNING", logger="btx_lib_mail")
     seen: list[bool] = []
@@ -823,10 +734,9 @@ def test_the_cli_announces_the_local_hostname(
     tmp_path: Path,
     from_env: bool,
 ) -> None:
-    # The CLI also reads BTX_MAIL_* from the environment and a local .env; a
+    # The CLI also reads BTX_MAIL_* from the environment (and a named env file); a
     # developer's credentials there would make it log in to this AUTH-less server.
-    monkeypatch.setattr(cli_mod, "_DOTENV_PATH", tmp_path / "absent.env")
-    for key in ("BTX_MAIL_SMTP_USERNAME", "BTX_MAIL_SMTP_PASSWORD", "BTX_MAIL_SMTP_LOCAL_HOSTNAME", "BTX_MAIL_SENDER"):
+    for key in ("BTX_MAIL_ENV_FILE", "BTX_MAIL_SMTP_USERNAME", "BTX_MAIL_SMTP_PASSWORD", "BTX_MAIL_SMTP_LOCAL_HOSTNAME", "BTX_MAIL_SENDER"):
         monkeypatch.delenv(key, raising=False)
     name_args = ["--local-hostname", "cli.example.test"]
     if from_env:

@@ -132,6 +132,7 @@ runtime-evaluated-base-classes = ["pydantic.BaseModel", "btx_lib_mail.secret_saf
 # aiosmtpd dispatches by exact method name (handle_<VERB>, smtp_<VERB> matching the
 # uppercase SMTP command), so these e2e test handlers cannot be lowercased.
 "tests/test_streaming.py" = ["N802"]
+"tests/smtp_test_server.py" = ["N802"]
 
 [tool.pyright]
 typeCheckingMode = "strict"

@@ -87,6 +87,23 @@ class MyTransport:
 send(..., transport=MyTransport())
 ```
 
+`delivery` is the resolved `DeliveryOptions` (`credentials`, `use_starttls`,
+`starttls_verify`, `timeout`, `local_hostname`, `deadline`). A transport raises on any
+failure so `send()` can try the next host; an `OSError` it raises is logged with its text,
+anything else by type name only, so never put a credential into an `OSError`'s text.
+
+The CLI takes a transport the same way, through its typed context object, which lets an
+application embed the `send` command, or a test drive it, without SMTP:
+
+```python
+from click.testing import CliRunner
+from btx_lib_mail.cli import CliContext, cli
+
+CliRunner().invoke(
+    cli, ["send", "--host", "relay.example.com", "--recipient", "b@example.com", "--subject", "s", "--body", "b"], obj=CliContext(transport=MyTransport())
+)
+```
+
 This is the seam the test suite uses: orchestration tests inject an in-memory transport,
 while wire behaviour is verified end to end against a real in-process SMTP server
 (`tests/test_streaming.py`), covering DATA, BDAT, dot-stuffing edge cases, STARTTLS with

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import fields
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import lib_cli_exit_tools
 import pytest
 from click.testing import CliRunner
+from smtp_test_server import CollectingHandler, run_server
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -99,3 +100,14 @@ def isolated_traceback_config(monkeypatch: pytest.MonkeyPatch) -> None:
     lib_cli_exit_tools.reset_config()
     monkeypatch.setattr(lib_cli_exit_tools.config, "traceback", False, raising=False)
     monkeypatch.setattr(lib_cli_exit_tools.config, "traceback_force_color", False, raising=False)
+
+
+@pytest.fixture
+def data_server() -> Iterator[tuple[Any, CollectingHandler]]:
+    """A real stock aiosmtpd server (no CHUNKING) that forces the DATA path."""
+    handler = CollectingHandler()
+    controller = run_server(handler)
+    try:
+        yield controller, handler
+    finally:
+        controller.stop()
