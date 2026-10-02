@@ -222,7 +222,7 @@ redacted at the credential fields (`smtp_password`, `smtphosts`).
   base64 streamed from its open file in `57 * 1024`-byte reads and counted against its
   size limit. In warn mode a file that grew past the limit is left out and the body
   composed again.
-* `envelope_header_lines(...)` - one recipient's `Subject`, `From`, `To`, `Date`.
+* `envelope_header_lines(...)` - each recipient's `Subject`, `From`, `To`, `Date`; `Subject` and `From` are folded once per call.
 * `message_for(header_lines, body)` - a read-only, seekable stream of those header lines
   followed by the shared body spool, read in place (no copy); closing it leaves the body open.
 * `check_subject(subject)` - refuses CR or LF (with the email package's own message), any

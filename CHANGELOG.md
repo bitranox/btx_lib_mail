@@ -168,6 +168,10 @@
   `raise_on_missing_attachments=False` the mail went out with no attachment and one warning
   per character); a single `Path` or a number raised a bare `TypeError`. Both are now
   `InvalidInputError: attachment_file_paths must be a sequence of paths, got str`.
+- The Subject and From headers were folded again for every recipient before the first
+  delivery; with a long non-ASCII subject that cost about 28 ms per recipient, over a minute
+  at a thousand recipients. They are folded once per `send()` now; the header bytes are
+  unchanged.
 
 ## [3.1.0] 2026-10-02 11:58:41
 

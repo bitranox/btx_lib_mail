@@ -23,6 +23,8 @@ from ._transport import STREAM_CHUNK_SIZE
 from .errors import InvalidInputError
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from _typeshed import WriteableBuffer
 
 # Message assembly spills to disk above this threshold so a large message never
@@ -148,22 +150,37 @@ def compose_body_once(content: MessageContent, *, raise_on_violation: bool) -> I
         )
 
 
-def envelope_header_lines(*, sender: str, recipient: str, subject: str) -> bytes:
-    """Return the per-recipient header lines (Subject, From, To, Date), CRLF-terminated, no blank line.
+def envelope_header_lines(*, sender: str, subject: str, recipients: Sequence[str]) -> tuple[bytes, ...]:
+    """Return each recipient's header lines (Subject, From, To, Date), CRLF-terminated, no blank line.
+
+    Subject and From are the same for every recipient and folded once: folding
+    a long non-ASCII subject costs tens of milliseconds, which per recipient
+    added up to over a minute for a thousand. Each header folds on its own, so
+    joining the shared lines to a recipient's own gives the same bytes as
+    folding all four together.
 
     Args:
         sender: The From address.
-        recipient: The To address.
         subject: The message subject.
+        recipients: The To addresses, one header block each.
 
     Returns:
-        The CRLF-terminated header lines, with no trailing blank line.
+        One block of CRLF-terminated header lines per recipient, in order,
+        with no trailing blank line.
     """
+    shared = EmailMessage()
+    shared["Subject"] = subject
+    shared["From"] = sender
+    shared_lines = _header_lines(shared)
+    date = formatdate(localtime=True)
+    return tuple(shared_lines + _recipient_header_lines(recipient, date) for recipient in recipients)
+
+
+def _recipient_header_lines(recipient: str, date: str) -> bytes:
+    """Return one recipient's own header lines (To, Date)."""
     envelope = EmailMessage()
-    envelope["Subject"] = subject
-    envelope["From"] = sender
     envelope["To"] = recipient
-    envelope["Date"] = formatdate(localtime=True)
+    envelope["Date"] = date
     return _header_lines(envelope)
 
 

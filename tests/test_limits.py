@@ -5,6 +5,7 @@ Every refusal happens before the first delivery and names the limit, never the o
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -221,6 +222,34 @@ def test_no_attachment_ceiling_sends_every_attachment(tmp_path: Path) -> None:
     assert _send(transport, attachment_file_paths=_attachments(tmp_path, 101), attachment_blocked_directories=frozenset(), config=config) is True
 
     assert transport.recipients == ["one@example.com"]
+
+
+# ---------------------------------------------------------------------------
+# Cost per recipient
+# ---------------------------------------------------------------------------
+
+
+def _fastest_send_seconds(recipient_count: int, subject: str) -> float:
+    recipients = [f"r{index}@example.com" for index in range(recipient_count)]
+    timings: list[float] = []
+    for _ in range(3):
+        started = time.perf_counter()
+        _send(RecordingTransport(), mail_recipients=recipients, mail_subject=subject)
+        timings.append(time.perf_counter() - started)
+    return min(timings)
+
+
+@pytest.mark.os_agnostic
+def test_a_long_subject_is_folded_once_per_call_not_once_per_recipient() -> None:
+    # Folding a 4096-character non-ASCII subject costs tens of milliseconds; done per
+    # recipient, a thousand recipients spent over a minute before the first delivery.
+    subject = "\U0001f600 " * 2048
+    _fastest_send_seconds(1, subject)  # warm the email package's caches
+
+    one = _fastest_send_seconds(1, subject)
+    many = _fastest_send_seconds(41, subject)
+
+    assert many < one * 8, f"41 recipients took {many:.3f}s against {one:.3f}s for one: the subject is folded per recipient"
 
 
 # ---------------------------------------------------------------------------

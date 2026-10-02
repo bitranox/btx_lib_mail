@@ -42,7 +42,8 @@ def _compose_message(
     body = _compose._compose_body(_compose.MessageContent(plain_body=plain_body, html_body=html_body, attachments=attachments))
     try:
         # The message reads the shared body in place, so it is read out before the body closes.
-        with _compose.message_for(_compose.envelope_header_lines(sender=sender, recipient=recipient, subject=subject), body) as message:
+        [header_lines] = _compose.envelope_header_lines(sender=sender, subject=subject, recipients=[recipient])
+        with _compose.message_for(header_lines, body) as message:
             return io.BytesIO(message.read())
     finally:
         body.close()

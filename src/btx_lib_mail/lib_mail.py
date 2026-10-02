@@ -251,7 +251,7 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
         check_body(plain_body=mail_body, html_body=mail_body_html)
         # Every header block is built before the first delivery, so a header the
         # email package refuses fails the call before any recipient was sent to.
-        envelopes = [(recipient, envelope_header_lines(sender=mail_from, recipient=recipient, subject=mail_subject)) for recipient in recipients]
+        envelopes = list(zip(recipients, envelope_header_lines(sender=mail_from, subject=mail_subject, recipients=recipients), strict=True))
         body = compose_body_once(
             MessageContent(plain_body=mail_body, html_body=mail_body_html, attachments=attachments),
             raise_on_violation=security.raise_on_violation,
