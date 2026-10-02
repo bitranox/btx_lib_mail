@@ -53,6 +53,7 @@ tests/
   test_lib_mail.py             # configuration, validators, attachment rules, orchestration
   test_limits.py               # per-call ceilings: address length, recipient and attachment counts
   log_capture.py               # everything_logged(): a record's message plus its extra fields
+  transport_doubles.py         # RecordingTransport / RefusingTransport, typed against Transport
   test_metadata.py             # metadata constant tests
   test_module_entry.py         # python -m entry tests
   test_packaging.py            # builds the sdist and refuses anything outside its include list
@@ -92,11 +93,13 @@ tests/
 
 ## Testing Conventions
 
-- Tests inject a `Transport` double through `send(transport=)` (CLI tests through
-  `invoke(..., obj=CliContext(transport=...))`); wire tests use a real in-process `aiosmtpd`
-  server (`tests/smtp_test_server.py`, `data_server` fixture in conftest), never a socket-level
-  monkeypatch. The package's own `send` is never patched; the remaining own-code patches are
-  the `lib_mail.DEFAULT_TRANSPORT` seam and the traceback/entry-point plumbing in `test_cli.py`
+- Tests inject a `Transport` double from `tests/transport_doubles.py` (`RecordingTransport`,
+  `RefusingTransport`, checked against the protocol by pyright) through `send(transport=)`
+  (CLI tests through `invoke(..., obj=CliContext(transport=...))`); wire tests use a real
+  in-process `aiosmtpd` server (`tests/smtp_test_server.py`, `data_server` fixture in conftest),
+  never a socket-level monkeypatch. The package's own code is not patched, except the
+  `lib_mail.DEFAULT_TRANSPORT` seam and the fault injections in `test_secret_safety.py` that
+  reach its fail-closed branches; the CLI plumbing is driven through `main()`
 - `_reset_conf_mail` autouse fixture restores global config between tests
 - Markers: `os_agnostic`, `os_windows`, `os_macos`, `os_posix`, `os_linux`, `local_only`
   (real SMTP via `TEST_SMTP_*` env vars)

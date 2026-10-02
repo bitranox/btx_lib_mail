@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import pickle
-from typing import IO, TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from pydantic import ValidationError
+from transport_doubles import RecordingTransport, RefusingTransport
 
 import btx_lib_mail
 from btx_lib_mail import (
@@ -26,25 +27,13 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-class _RefusingTransport:
-    """A transport whose every host refuses, so every recipient fails."""
-
-    def deliver(self, *, host: str, sender: str, recipient: str, message: IO[bytes], delivery: Any) -> None:
-        raise ConnectionRefusedError("refused")
-
-
-class _AcceptingTransport:
-    def deliver(self, *, host: str, sender: str, recipient: str, message: IO[bytes], delivery: Any) -> None:
-        return None
-
-
 def _send(**overrides: Any) -> bool:
     arguments: dict[str, Any] = {
         "mail_from": "sender@example.com",
         "mail_recipients": "recipient@example.com",
         "mail_subject": "Subject",
         "smtphosts": ["smtp.example.com"],
-        "transport": _AcceptingTransport(),
+        "transport": RecordingTransport(),
     }
     arguments.update(overrides)
     return send(**arguments)
@@ -112,7 +101,7 @@ def test_an_attachment_security_error_is_a_btx_mail_error(tmp_path: Path) -> Non
 @pytest.mark.os_agnostic
 def test_a_failed_delivery_is_a_delivery_error_naming_recipients_and_hosts() -> None:
     with pytest.raises(DeliveryError) as caught:
-        _send(mail_recipients=["a@example.com", "b@example.com"], smtphosts=["one.example.com", "two.example.com"], transport=_RefusingTransport())
+        _send(mail_recipients=["a@example.com", "b@example.com"], smtphosts=["one.example.com", "two.example.com"], transport=RefusingTransport())
 
     error = caught.value
     assert isinstance(error, BtxMailError)

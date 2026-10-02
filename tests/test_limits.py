@@ -5,10 +5,11 @@ Every refusal happens before the first delivery and names the limit, never the o
 
 from __future__ import annotations
 
-from typing import IO, TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from log_capture import everything_logged
+from transport_doubles import RecordingTransport
 
 from btx_lib_mail import ConfigurationError, ConfMail, InvalidInputError, send, validate_email_address
 from btx_lib_mail.cli import CliContext, cli
@@ -24,17 +25,7 @@ _DOMAIN_189 = ".".join(["b" * 61] * 3) + ".com"
 _ADDRESS_254 = "a" * 64 + "@" + _DOMAIN_189
 
 
-class _RecordingTransport:
-    """Records the recipient of every delivery."""
-
-    def __init__(self) -> None:
-        self.recipients: list[str] = []
-
-    def deliver(self, *, host: str, sender: str, recipient: str, message: IO[bytes], delivery: Any) -> None:
-        self.recipients.append(recipient)
-
-
-def _send(transport: _RecordingTransport, **overrides: Any) -> bool:
+def _send(transport: RecordingTransport, **overrides: Any) -> bool:
     arguments: dict[str, Any] = {
         "mail_from": "sender@example.com",
         "mail_recipients": ["one@example.com"],
@@ -80,7 +71,7 @@ def test_an_address_longer_than_254_characters_is_refused_without_echoing_it() -
 
 @pytest.mark.os_agnostic
 def test_an_overlong_sender_is_refused_before_any_delivery() -> None:
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
 
     with pytest.raises(InvalidInputError) as caught:
         _send(transport, mail_from="a" * 1_000_000 + "@example.com")
@@ -91,7 +82,7 @@ def test_an_overlong_sender_is_refused_before_any_delivery() -> None:
 
 @pytest.mark.os_agnostic
 def test_an_overlong_recipient_is_refused_without_echoing_it() -> None:
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
 
     with pytest.raises(InvalidInputError) as caught:
         _send(transport, mail_recipients=["ok@example.com", "a" * 70 + "@example.com"])
@@ -103,7 +94,7 @@ def test_an_overlong_recipient_is_refused_without_echoing_it() -> None:
 @pytest.mark.os_agnostic
 def test_an_overlong_recipient_in_warn_mode_is_skipped_and_logged_without_its_text(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level("WARNING", logger="btx_lib_mail")
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
     overlong = "z" * 70 + "@example.com"
 
     assert _send(transport, mail_recipients=["ok@example.com", overlong], raise_on_invalid_recipient=False) is True
@@ -121,7 +112,7 @@ def test_an_overlong_recipient_in_warn_mode_is_skipped_and_logged_without_its_te
 
 @pytest.mark.os_agnostic
 def test_more_recipients_than_the_ceiling_are_refused_before_any_delivery() -> None:
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
     recipients = ["one@example.com", "two@example.com", "three@example.com"]
 
     with pytest.raises(InvalidInputError) as caught:
@@ -133,7 +124,7 @@ def test_more_recipients_than_the_ceiling_are_refused_before_any_delivery() -> N
 
 @pytest.mark.os_agnostic
 def test_the_recipient_ceiling_counts_each_address_once() -> None:
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
     recipients = ["one@example.com", "ONE@example.com", "two@example.com"]
 
     assert _send(transport, mail_recipients=recipients, config=ConfMail(recipient_max_count=2)) is True
@@ -145,7 +136,7 @@ def test_the_recipient_ceiling_counts_each_address_once() -> None:
 def test_the_recipient_ceiling_counts_entries_before_any_is_validated() -> None:
     # Invalid entries count too, so an oversized list is refused without a regex run per entry,
     # even in warn mode, where the invalid ones would otherwise be skipped.
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
     recipients = ["ok@example.com", "bad@", "worse@"]
 
     with pytest.raises(InvalidInputError, match=r"^3 recipients, more than recipient_max_count \(2\)$"):
@@ -156,7 +147,7 @@ def test_the_recipient_ceiling_counts_entries_before_any_is_validated() -> None:
 
 @pytest.mark.os_agnostic
 def test_no_recipient_ceiling_delivers_every_recipient() -> None:
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
     recipients = [f"r{index}@example.com" for index in range(1_001)]
 
     assert _send(transport, mail_recipients=recipients, config=ConfMail(recipient_max_count=None)) is True
@@ -166,7 +157,7 @@ def test_no_recipient_ceiling_delivers_every_recipient() -> None:
 
 @pytest.mark.os_agnostic
 def test_the_default_recipient_ceiling_is_one_thousand() -> None:
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
     recipients = [f"r{index}@example.com" for index in range(1_001)]
 
     assert ConfMail().recipient_max_count == 1_000
@@ -189,7 +180,7 @@ def _attachments(directory: Path, count: int) -> list[Path]:
 
 @pytest.mark.os_agnostic
 def test_more_attachments_than_the_ceiling_are_refused_before_any_is_opened(tmp_path: Path) -> None:
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
     present = _attachments(tmp_path, 2)
     # A third path that does not exist: a refusal by count must come before any file check.
     paths = [*present, tmp_path / "missing.txt"]
@@ -203,7 +194,7 @@ def test_more_attachments_than_the_ceiling_are_refused_before_any_is_opened(tmp_
 
 @pytest.mark.os_agnostic
 def test_attachments_up_to_the_ceiling_are_sent(tmp_path: Path) -> None:
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
 
     config = ConfMail(attachment_max_count=2)
     assert _send(transport, attachment_file_paths=_attachments(tmp_path, 2), attachment_blocked_directories=frozenset(), config=config) is True
@@ -213,7 +204,7 @@ def test_attachments_up_to_the_ceiling_are_sent(tmp_path: Path) -> None:
 
 @pytest.mark.os_agnostic
 def test_the_default_attachment_ceiling_refuses_the_hundred_and_first(tmp_path: Path) -> None:
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
     # The count is checked before any path, so the files need not exist.
     paths = [tmp_path / f"part{index}.txt" for index in range(101)]
 
@@ -224,7 +215,7 @@ def test_the_default_attachment_ceiling_refuses_the_hundred_and_first(tmp_path: 
 
 @pytest.mark.os_agnostic
 def test_no_attachment_ceiling_sends_every_attachment(tmp_path: Path) -> None:
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
     config = ConfMail(attachment_max_count=None)
 
     assert _send(transport, attachment_file_paths=_attachments(tmp_path, 101), attachment_blocked_directories=frozenset(), config=config) is True
@@ -256,7 +247,7 @@ def test_the_cli_reads_the_recipient_ceiling(cli_runner: CliRunner, monkeypatch:
         args += ["--recipient-max-count", "1"]
     else:
         monkeypatch.setenv("BTX_MAIL_RECIPIENT_MAX_COUNT", "1")
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
 
     result = cli_runner.invoke(cli, args, obj=CliContext(transport=transport))
 
@@ -276,7 +267,7 @@ def test_the_cli_reads_the_attachment_ceiling(cli_runner: CliRunner, monkeypatch
         args += ["--attachment-max-count", "1"]
     else:
         monkeypatch.setenv("BTX_MAIL_ATTACHMENT_MAX_COUNT", "1")
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
 
     result = cli_runner.invoke(cli, args, obj=CliContext(transport=transport))
 
@@ -288,7 +279,7 @@ def test_the_cli_reads_the_attachment_ceiling(cli_runner: CliRunner, monkeypatch
 @pytest.mark.os_agnostic
 @pytest.mark.parametrize(("option", "value"), [("--recipient-max-count", "0"), ("--attachment-max-count", "-1")])
 def test_the_cli_refuses_a_non_positive_ceiling(cli_runner: CliRunner, option: str, value: str) -> None:
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
     field = option.removeprefix("--").replace("-", "_")
 
     result = cli_runner.invoke(cli, [*_CLI_ROUTE, "--recipient", "one@example.com", option, value], obj=CliContext(transport=transport))
@@ -303,7 +294,7 @@ def test_the_cli_sends_within_both_ceilings(cli_runner: CliRunner, tmp_path: Pat
     (only,) = _attachments(tmp_path, 1)
     args = [*_CLI_ROUTE, "--recipient", "one@example.com", "--attachment", str(only)]
     args += ["--attachment-blocked-dir", str(tmp_path / "nothing-blocked-here"), "--recipient-max-count", "1", "--attachment-max-count", "1"]
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
 
     result = cli_runner.invoke(cli, args, obj=CliContext(transport=transport))
 

@@ -12,13 +12,13 @@ import os
 import re
 import sys
 import threading
-from dataclasses import dataclass
 from email import message_from_bytes
-from typing import IO, TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any
 
 import click
 import lib_cli_exit_tools
 import pytest
+from transport_doubles import RecordingTransport
 
 from btx_lib_mail import __init__conf__, conf
 from btx_lib_mail import cli as cli_mod
@@ -32,31 +32,6 @@ if TYPE_CHECKING:
     from smtp_test_server import CollectingHandler
 
 # pyright: reportPrivateUsage=false
-
-
-@dataclass(frozen=True)
-class _Delivery:
-    host: str
-    sender: str
-    recipient: str
-    raw: bytes
-    options: Any
-
-
-class _RecordingTransport:
-    """Accepts every message and records what the CLI made the library deliver."""
-
-    def __init__(self) -> None:
-        self.deliveries: list[_Delivery] = []
-
-    def deliver(self, *, host: str, sender: str, recipient: str, message: IO[bytes], delivery: Any) -> None:
-        message.seek(0)
-        self.deliveries.append(_Delivery(host=host, sender=sender, recipient=recipient, raw=message.read(), options=delivery))
-
-    @property
-    def only(self) -> _Delivery:
-        assert len(self.deliveries) == 1, f"expected one delivery, got {len(self.deliveries)}"
-        return self.deliveries[0]
 
 
 @pytest.fixture(autouse=True)
@@ -85,8 +60,8 @@ _MESSAGE = ["--subject", "S", "--body", "B"]
 _ROUTE = ["--host", "smtp.example.com", "--recipient", "one@example.com"]
 
 
-def _invoke(cli_runner: CliRunner, args: list[str], *, input_text: str | None = None) -> tuple[Result, _RecordingTransport]:
-    transport = _RecordingTransport()
+def _invoke(cli_runner: CliRunner, args: list[str], *, input_text: str | None = None) -> tuple[Result, RecordingTransport]:
+    transport = RecordingTransport()
     result = cli_runner.invoke(cli_mod.cli, args, obj=CliContext(transport=transport), input=input_text)
     return result, transport
 
@@ -401,7 +376,7 @@ def test_an_env_file_that_is_a_device_is_refused(cli_runner: CliRunner) -> None:
 def test_an_env_file_that_is_a_fifo_is_refused_without_waiting_for_a_writer(cli_runner: CliRunner, tmp_path: Path) -> None:
     fifo = tmp_path / "settings.env"
     os.mkfifo(fifo)
-    outcome: list[tuple[Result, _RecordingTransport]] = []
+    outcome: list[tuple[Result, RecordingTransport]] = []
     # A plain open() of a FIFO blocks until a writer appears, so the run is bounded by a thread
     # join: a regression fails here after five seconds instead of hanging the suite.
     worker = threading.Thread(target=lambda: outcome.append(_invoke(cli_runner, ["send", "--env-file", str(fifo), *_ROUTE, *_MESSAGE])), daemon=True)
@@ -691,7 +666,7 @@ def test_send_prints_a_json_envelope_naming_what_was_skipped(cli_runner: CliRunn
     args = ["--json", "send", "--host", "smtp.example.com", "--recipient", "one@example.com,not-an-address", *_MESSAGE]
     args += ["--attachment", str(report), "--attachment", str(tool), "--attachment-warn", *_no_blocked_dirs(tmp_path)]
 
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(conf, "raise_on_invalid_recipient", False)
         result = cli_runner.invoke(cli_mod.cli, args, obj=CliContext(transport=transport))
@@ -801,7 +776,7 @@ def test_a_json_send_against_a_real_server_reports_and_delivers(
 
 @pytest.mark.os_agnostic
 def test_the_typed_context_keeps_an_embedded_transport_through_the_group(cli_runner: CliRunner) -> None:
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
 
     result = cli_runner.invoke(cli_mod.cli, ["--traceback", "send", *_ROUTE, *_MESSAGE], obj=CliContext(transport=transport))
 

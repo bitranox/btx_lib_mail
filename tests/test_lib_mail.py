@@ -15,6 +15,7 @@ from typing import IO, TYPE_CHECKING, Any, ClassVar, cast
 
 import pytest
 from pydantic import SecretStr, ValidationError
+from transport_doubles import RecordingTransport
 
 from btx_lib_mail import ConfMail, InvalidInputError, _transport, _validation, lib_mail
 
@@ -322,17 +323,13 @@ def test_a_recipient_whose_lower_case_form_would_be_ascii_is_refused_like_the_se
     # KELVIN SIGN lower-cases to an ASCII "k", so lower-casing before validating turned a
     # non-ASCII address into a different, valid one; the same text as sender was refused.
     kelvin = chr(0x212A) + "elvin@example.com"
-    delivered: list[str] = []
-
-    class _Recording:
-        def deliver(self, *, recipient: str, **_: object) -> None:
-            delivered.append(recipient)
+    transport = RecordingTransport()
 
     with pytest.raises(InvalidInputError, match="invalid recipient"):
-        lib_mail.send(mail_from="sender@example.com", mail_recipients=kelvin, mail_subject="Subject", smtphosts=["smtp.example.com"], transport=_Recording())
+        lib_mail.send(mail_from="sender@example.com", mail_recipients=kelvin, mail_subject="Subject", smtphosts=["smtp.example.com"], transport=transport)
     with pytest.raises(InvalidInputError, match="invalid sender address"):
-        lib_mail.send(mail_from=kelvin, mail_recipients="one@example.com", mail_subject="Subject", smtphosts=["smtp.example.com"], transport=_Recording())
-    assert delivered == []
+        lib_mail.send(mail_from=kelvin, mail_recipients="one@example.com", mail_subject="Subject", smtphosts=["smtp.example.com"], transport=transport)
+    assert transport.deliveries == []
 
 
 @pytest.mark.os_agnostic
@@ -1094,7 +1091,7 @@ class TestEmptyBlockedSetIsRefused:
         directories = frozenset({tmp_path})
         guarded = ConfMail(smtphosts=["cfg.example.com"], attachment_allowed_directories=directories)
         with pytest.raises(lib_mail.AttachmentSecurityError) as refused:
-            lib_mail.send("sender@example.com", "rcpt@example.com", "s", attachment_file_paths=[attachment], config=guarded, transport=_RecordingTransport())
+            lib_mail.send("sender@example.com", "rcpt@example.com", "s", attachment_file_paths=[attachment], config=guarded, transport=RecordingTransport())
         assert refused.value.violation_type is lib_mail.AttachmentViolation.EXTENSION, "positive control: the default config blocks this extension"
         opted_out = ConfMail(
             smtphosts=["cfg.example.com"],
@@ -1102,11 +1099,11 @@ class TestEmptyBlockedSetIsRefused:
             attachment_blocked_extensions=frozenset(),
             attachment_allow_empty_blocklists=True,
         )
-        transport = _RecordingTransport()
+        transport = RecordingTransport()
 
         lib_mail.send("sender@example.com", "rcpt@example.com", "s", attachment_file_paths=[attachment], config=opted_out, transport=transport)
 
-        assert len(transport.calls) == 1
+        assert len(transport.deliveries) == 1
 
     @pytest.mark.os_agnostic
     def test_an_explicit_empty_keyword_to_send_stays_allowed_under_the_default_config(self, tmp_path: Path) -> None:
@@ -1114,7 +1111,7 @@ class TestEmptyBlockedSetIsRefused:
         attachment = tmp_path / f"payload{extension}"
         attachment.write_bytes(b"payload")
         config = ConfMail(smtphosts=["cfg.example.com"], attachment_allowed_directories=frozenset({tmp_path}))
-        transport = _RecordingTransport()
+        transport = RecordingTransport()
 
         lib_mail.send(
             "sender@example.com",
@@ -1126,7 +1123,7 @@ class TestEmptyBlockedSetIsRefused:
             transport=transport,
         )
 
-        assert len(transport.calls) == 1
+        assert len(transport.deliveries) == 1
 
 
 class TestSizeLimitValidation:
@@ -1985,16 +1982,6 @@ class TestRaiseOnInvalidRecipientParameter:
         assert recorder.created[0].sent_messages[0][1] == "valid@example.com"
 
 
-class _RecordingTransport:
-    """Transport double that records the options each delivery received."""
-
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, lib_mail.DeliveryOptions]] = []
-
-    def deliver(self, *, host: str, sender: str, recipient: str, message: IO[bytes], delivery: lib_mail.DeliveryOptions) -> None:
-        self.calls.append((host, delivery))
-
-
 @pytest.mark.os_agnostic
 def test_send_uses_a_passed_config_and_leaves_the_global_conf_alone() -> None:
     lib_mail.conf.smtphosts = ["global.example.com"]
@@ -2005,11 +1992,11 @@ def test_send_uses_a_passed_config_and_leaves_the_global_conf_alone() -> None:
         smtp_timeout=7.0,
         smtp_use_starttls=False,
     )
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
 
     lib_mail.send("sender@example.com", "rcpt@example.com", "s", config=config, transport=transport)
 
-    host, delivery = transport.calls[0]
+    host, delivery = transport.deliveries[0].host, transport.deliveries[0].options
     assert host == "cfg.example.com:2525"
     assert delivery.credentials == ("user", "DUMMY-PLANTED-cfg")
     assert delivery.timeout == 7.0
@@ -2020,11 +2007,11 @@ def test_send_uses_a_passed_config_and_leaves_the_global_conf_alone() -> None:
 @pytest.mark.os_agnostic
 def test_an_explicit_keyword_beats_the_passed_config() -> None:
     config = ConfMail(smtphosts=["cfg.example.com"], smtp_timeout=7.0)
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
 
     lib_mail.send("sender@example.com", "rcpt@example.com", "s", smtphosts=["kw.example.com"], timeout=3.0, config=config, transport=transport)
 
-    host, delivery = transport.calls[0]
+    host, delivery = transport.deliveries[0].host, transport.deliveries[0].options
     assert (host, delivery.timeout) == ("kw.example.com", 3.0)
 
 
@@ -2035,7 +2022,7 @@ def test_a_passed_config_supplies_the_attachment_policy(tmp_path: Path) -> None:
     config = ConfMail(smtphosts=["cfg.example.com"], attachment_allowed_extensions=frozenset({".txt"}))
 
     with pytest.raises(lib_mail.AttachmentSecurityError):
-        lib_mail.send("sender@example.com", "rcpt@example.com", "s", attachment_file_paths=[attachment], config=config, transport=_RecordingTransport())
+        lib_mail.send("sender@example.com", "rcpt@example.com", "s", attachment_file_paths=[attachment], config=config, transport=RecordingTransport())
 
 
 # ---------------------------------------------------------------------------
@@ -2068,22 +2055,22 @@ def test_an_ehlo_name_that_cannot_go_on_the_wire_is_refused(name: str) -> None:
 @pytest.mark.os_agnostic
 def test_the_config_supplies_the_ehlo_name_and_a_keyword_beats_it() -> None:
     config = ConfMail(smtphosts=["cfg.example.com"], smtp_local_hostname="cfg.example.test")
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
 
     lib_mail.send("sender@example.com", "rcpt@example.com", "s", config=config, transport=transport)
     lib_mail.send("sender@example.com", "rcpt@example.com", "s", local_hostname="kw.example.test", config=config, transport=transport)
 
-    assert [delivery.local_hostname for _host, delivery in transport.calls] == ["cfg.example.test", "kw.example.test"]
+    assert [delivery.options.local_hostname for delivery in transport.deliveries] == ["cfg.example.test", "kw.example.test"]
 
 
 @pytest.mark.os_agnostic
 def test_an_unusable_ehlo_keyword_is_refused_before_delivery() -> None:
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
 
     with pytest.raises(ValueError, match="local_hostname"):
         lib_mail.send("sender@example.com", "rcpt@example.com", "s", smtphosts=["h.example.com"], local_hostname="a b", transport=transport)
 
-    assert transport.calls == []
+    assert transport.deliveries == []
 
 
 def _bare_host_fqdn(name: str = "") -> str:

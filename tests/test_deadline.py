@@ -7,9 +7,10 @@ import math
 import socket
 import threading
 import time
-from typing import IO, TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import pytest
+from transport_doubles import RecordingTransport
 
 from btx_lib_mail import ConfigurationError, ConfMail, DeliveryOptions, InvalidInputError, send
 from btx_lib_mail.lib_mail import SmtplibTransport
@@ -136,23 +137,15 @@ def test_conf_mail_refuses_a_deadline_that_is_not_a_positive_finite_number(value
 @pytest.mark.os_agnostic
 def test_send_refuses_a_deadline_that_is_not_positive() -> None:
     with pytest.raises(InvalidInputError, match="delivery_deadline must be positive, got 0"):
-        send("sender@example.com", "one@example.com", "s", smtphosts=["smtp.example.com"], delivery_deadline=0, transport=_Recorder())
-
-
-class _Recorder:
-    def __init__(self) -> None:
-        self.deadlines: list[float | None] = []
-
-    def deliver(self, *, host: str, sender: str, recipient: str, message: IO[bytes], delivery: Any) -> None:
-        self.deadlines.append(delivery.deadline)
+        send("sender@example.com", "one@example.com", "s", smtphosts=["smtp.example.com"], delivery_deadline=0, transport=RecordingTransport())
 
 
 @pytest.mark.os_agnostic
 def test_the_deadline_reaches_the_transport_from_the_config_or_the_keyword() -> None:
-    recorder = _Recorder()
+    recorder = RecordingTransport()
 
     send("sender@example.com", "one@example.com", "s", smtphosts=["smtp.example.com"], config=ConfMail(smtp_delivery_deadline=30), transport=recorder)
     send("sender@example.com", "one@example.com", "s", smtphosts=["smtp.example.com"], delivery_deadline=5, transport=recorder)
     send("sender@example.com", "one@example.com", "s", smtphosts=["smtp.example.com"], config=ConfMail(), transport=recorder)
 
-    assert recorder.deadlines == [30.0, 5, None]
+    assert [delivery.options.deadline for delivery in recorder.deliveries] == [30.0, 5, None]

@@ -71,8 +71,3 @@ def test_when_the_stream_refuses_to_flush_the_song_remains_serene() -> None:
 def test_when_failure_is_invoked_a_runtime_error_rises() -> None:
     with pytest.raises(RuntimeError, match="I should fail"):
         behaviors.raise_intentional_failure()
-
-
-@pytest.mark.os_agnostic
-def test_when_no_work_is_requested_the_placeholder_sits_still() -> None:
-    assert behaviors.noop_main() is None

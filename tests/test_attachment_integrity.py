@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any
 
 import pytest
+from transport_doubles import RecordingTransport
 
 from btx_lib_mail import (
     AttachmentNotFoundError,
@@ -32,21 +33,6 @@ from btx_lib_mail import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-
-class _RecordingTransport:
-    """Records each delivered message; runs *on_first_delivery* once, after recipient 1 is sent."""
-
-    def __init__(self, on_first_delivery: Callable[[], None] | None = None) -> None:
-        self.messages: dict[str, bytes] = {}
-        self._on_first_delivery = on_first_delivery
-
-    def deliver(self, *, host: str, sender: str, recipient: str, message: IO[bytes], delivery: Any) -> None:
-        message.seek(0)
-        self.messages[recipient] = message.read()
-        if self._on_first_delivery is not None:
-            hook, self._on_first_delivery = self._on_first_delivery, None
-            hook()
 
 
 def _attempt(change: Callable[[], None]) -> bool:
@@ -100,7 +86,7 @@ def test_a_path_swapped_for_a_symlink_after_the_check_does_not_reach_later_recip
         report.symlink_to(secret)
 
     applied: list[bool] = []
-    transport = _RecordingTransport(on_first_delivery=lambda: applied.append(_attempt(swap)))
+    transport = RecordingTransport(on_first_delivery=lambda: applied.append(_attempt(swap)))
     assert _send(transport, report) is True
 
     assert applied == [sys.platform != "win32"]
@@ -115,7 +101,7 @@ def test_an_attachment_deleted_during_delivery_does_not_abandon_later_recipients
     report.write_bytes(b"quarterly numbers")
 
     applied: list[bool] = []
-    transport = _RecordingTransport(on_first_delivery=lambda: applied.append(_attempt(report.unlink)))
+    transport = RecordingTransport(on_first_delivery=lambda: applied.append(_attempt(report.unlink)))
     assert _send(transport, report) is True
 
     assert applied == [sys.platform != "win32"]
@@ -222,7 +208,7 @@ def test_every_attachment_handle_and_spool_is_closed_after_a_successful_send(tmp
     report = tmp_path / "report.txt"
     report.write_bytes(b"data")
 
-    assert _unclosed_file_warnings(lambda: _send(_RecordingTransport(), report)) == []
+    assert _unclosed_file_warnings(lambda: _send(RecordingTransport(), report)) == []
 
 
 @pytest.mark.os_agnostic
@@ -231,7 +217,7 @@ def test_opened_attachments_are_closed_when_a_later_check_refuses_the_call(tmp_p
     report.write_bytes(b"data")
 
     # The attachment is opened before the hosts are checked; the bad host must not leak it.
-    assert _unclosed_file_warnings(lambda: _send(_RecordingTransport(), report, smtphosts=["bad host"])) == []
+    assert _unclosed_file_warnings(lambda: _send(RecordingTransport(), report, smtphosts=["bad host"])) == []
 
 
 @pytest.mark.os_agnostic
@@ -247,7 +233,7 @@ def test_an_attachment_opened_before_a_later_one_is_refused_is_closed(tmp_path: 
             smtphosts=["smtp.example.com"],
             attachment_file_paths=[report, tmp_path / "missing.txt"],
             attachment_blocked_directories=frozenset(),
-            transport=_RecordingTransport(),
+            transport=RecordingTransport(),
         )
 
     assert _unclosed_file_warnings(refused_second) == []
@@ -277,7 +263,7 @@ def test_the_body_spool_is_closed_when_composition_fails(tmp_path: Path) -> None
 @pytest.mark.os_agnostic
 @pytest.mark.parametrize("subject", ["a\r\nBcc: x@example.com", "a\nb", "a\rb"])
 def test_a_subject_with_a_line_break_is_refused_with_the_email_package_message(subject: str) -> None:
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
 
     with pytest.raises(InvalidInputError, match=r"^Header values may not contain linefeed or carriage return characters$"):
         send("sender@example.com", ["one@example.com", "two@example.com"], subject, smtphosts=["smtp.example.com"], transport=transport)
@@ -288,7 +274,7 @@ def test_a_subject_with_a_line_break_is_refused_with_the_email_package_message(s
 @pytest.mark.os_agnostic
 @pytest.mark.parametrize("subject", ["a\x00b", "a\x1b[31mb", "a\x7fb"])
 def test_a_subject_with_another_control_character_is_refused_without_echoing_it(subject: str) -> None:
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
 
     with pytest.raises(InvalidInputError) as caught:
         send("sender@example.com", "one@example.com", subject, smtphosts=["smtp.example.com"], transport=transport)
@@ -300,7 +286,7 @@ def test_a_subject_with_another_control_character_is_refused_without_echoing_it(
 @pytest.mark.os_agnostic
 @pytest.mark.parametrize("separator", [chr(0x2028), chr(0x2029)], ids=["line-separator", "paragraph-separator"])
 def test_a_subject_with_a_unicode_line_separator_is_refused_with_the_email_package_message(separator: str) -> None:
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
 
     with pytest.raises(InvalidInputError, match=r"^Header values may not contain linefeed or carriage return characters$"):
         send("sender@example.com", "one@example.com", f"a{separator}b", smtphosts=["smtp.example.com"], transport=transport)
@@ -321,7 +307,7 @@ _LONE_SURROGATE = chr(0xDCFF)  # what an invalid UTF-8 byte in argv decodes to o
     ],
 )
 def test_text_holding_a_lone_surrogate_is_refused_without_echoing_it(field: str, message: str) -> None:
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
     text: dict[str, Any] = {"mail_subject": "Report", field: f"a{_LONE_SURROGATE}b"}
 
     with pytest.raises(InvalidInputError) as caught:
@@ -334,7 +320,7 @@ def test_text_holding_a_lone_surrogate_is_refused_without_echoing_it(field: str,
 @pytest.mark.os_agnostic
 def test_a_subject_at_the_length_limit_is_sent_and_one_past_it_is_refused() -> None:
     limit = _compose.SUBJECT_MAX_CHARACTERS
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
 
     assert send("sender@example.com", "one@example.com", "s" * limit, smtphosts=["smtp.example.com"], transport=transport) is True
     with pytest.raises(InvalidInputError) as caught:
@@ -346,7 +332,7 @@ def test_a_subject_at_the_length_limit_is_sent_and_one_past_it_is_refused() -> N
 
 @pytest.mark.os_agnostic
 def test_a_subject_with_a_tab_is_sent() -> None:
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
 
     assert send("sender@example.com", "one@example.com", "a\tb", smtphosts=["smtp.example.com"], transport=transport) is True
     assert message_from_bytes(transport.messages["one@example.com"])["Subject"] == "a\tb"
@@ -368,13 +354,13 @@ def test_conf_mail_refuses_a_timeout_that_is_not_finite(value: float) -> None:
 @pytest.mark.parametrize("value", [math.nan, math.inf])
 def test_send_refuses_a_timeout_that_is_not_finite(value: float) -> None:
     with pytest.raises(InvalidInputError, match="smtp_timeout must be a finite number of seconds"):
-        send("sender@example.com", "one@example.com", "s", smtphosts=["smtp.example.com"], timeout=value, transport=_RecordingTransport())
+        send("sender@example.com", "one@example.com", "s", smtphosts=["smtp.example.com"], timeout=value, transport=RecordingTransport())
 
 
 @pytest.mark.os_agnostic
 def test_a_negative_infinite_timeout_keeps_the_positive_message() -> None:
     with pytest.raises(InvalidInputError, match="smtp_timeout must be positive, got -inf"):
-        send("sender@example.com", "one@example.com", "s", smtphosts=["smtp.example.com"], timeout=-math.inf, transport=_RecordingTransport())
+        send("sender@example.com", "one@example.com", "s", smtphosts=["smtp.example.com"], timeout=-math.inf, transport=RecordingTransport())
 
 
 # ---------------------------------------------------------------------------
@@ -388,7 +374,7 @@ def test_a_blocked_extension_given_to_send_matches_any_case(tmp_path: Path) -> N
     tool.write_bytes(b"MZ")
 
     with pytest.raises(AttachmentSecurityError) as caught:
-        _send(_RecordingTransport(), tool, attachment_blocked_extensions=frozenset({".EXE"}))
+        _send(RecordingTransport(), tool, attachment_blocked_extensions=frozenset({".EXE"}))
 
     assert caught.value.violation_type is AttachmentViolation.EXTENSION
 
@@ -399,7 +385,7 @@ def test_an_allowed_extension_given_to_send_is_normalised_like_the_config(tmp_pa
     report = tmp_path / "r.pdf"
     report.write_bytes(b"%PDF")
 
-    assert _send(_RecordingTransport(), report, attachment_allowed_extensions=frozenset({spelling})) is True
+    assert _send(RecordingTransport(), report, attachment_allowed_extensions=frozenset({spelling})) is True
 
 
 class _ReadThenFailOnFirstHost:
@@ -472,7 +458,7 @@ def test_the_filename_check_accepts_printable_unicode() -> None:
 def test_a_control_character_in_an_attachment_name_is_a_security_refusal_through_send(tmp_path: Path, character: str) -> None:
     report = tmp_path / f"report{character}final.txt"
     report.write_bytes(b"quarterly numbers")
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
 
     with pytest.raises(AttachmentSecurityError) as caught:
         _send(transport, report)
@@ -484,7 +470,7 @@ def test_a_control_character_in_an_attachment_name_is_a_security_refusal_through
 @pytest.mark.os_agnostic
 @pytest.mark.parametrize("strict", [True, False], ids=["strict", "warn"])
 def test_a_nul_in_an_attachment_path_is_a_filename_refusal_before_any_file_system_call(tmp_path: Path, strict: bool) -> None:
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
     report = tmp_path / "report\x00final.txt"
 
     if strict:
@@ -506,7 +492,7 @@ def test_an_attachment_name_that_is_not_valid_unicode_is_a_filename_refusal(tmp_
     # Content-Disposition header cannot encode.
     report = tmp_path / f"report{chr(0xDCFF)}final.txt"
     report.write_bytes(b"quarterly numbers")
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
 
     if strict:
         with pytest.raises(AttachmentSecurityError) as caught:
@@ -529,7 +515,7 @@ def test_an_allowed_symlink_is_judged_by_the_name_of_its_target(tmp_path: Path) 
     target.write_bytes(b"quarterly numbers")
     link = tmp_path / "report.txt"
     link.symlink_to(target)
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
 
     with pytest.raises(AttachmentSecurityError) as caught:
         _send(transport, link, attachment_allow_symlinks=True)
@@ -544,13 +530,13 @@ def test_a_file_of_exactly_the_size_limit_is_sent_and_one_byte_more_is_refused(t
     at_limit.write_bytes(b"x" * 100)
     over_limit = tmp_path / "over-limit.txt"
     over_limit.write_bytes(b"x" * 101)
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
 
     assert _send(transport, at_limit, attachment_max_size_bytes=100) is True
     assert _attachment_bytes(transport.messages["one@example.com"]) == b"x" * 100
 
     with pytest.raises(AttachmentSecurityError) as caught:
-        _send(_RecordingTransport(), over_limit, attachment_max_size_bytes=100)
+        _send(RecordingTransport(), over_limit, attachment_max_size_bytes=100)
     assert caught.value.violation_type is AttachmentViolation.SIZE
 
 
@@ -565,7 +551,7 @@ def test_an_attachment_that_cannot_be_read_is_reported_like_a_missing_one(tmp_pa
     report = tmp_path / "report.txt"
     report.write_bytes(b"quarterly numbers")
     report.chmod(0)
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
 
     try:
         if tolerate:
@@ -583,7 +569,7 @@ def test_an_attachment_that_cannot_be_read_is_reported_like_a_missing_one(tmp_pa
 def test_an_attachment_path_given_as_a_string_is_sent(tmp_path: Path) -> None:
     report = tmp_path / "report.txt"
     report.write_bytes(b"quarterly numbers")
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
 
     assert _send(transport, str(report)) is True
 
@@ -592,7 +578,7 @@ def test_an_attachment_path_given_as_a_string_is_sent(tmp_path: Path) -> None:
 
 @pytest.mark.os_agnostic
 def test_an_attachment_entry_that_is_not_a_path_is_refused() -> None:
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
 
     with pytest.raises(InvalidInputError, match=r"^attachment_file_paths entries must be paths, got int$"):
         _send(transport, 5)  # pyright: ignore[reportArgumentType]  # the wrong type is the point
@@ -605,7 +591,7 @@ def test_an_attachment_entry_that_is_not_a_path_is_refused() -> None:
 def test_warn_mode_skips_an_attachment_whose_name_holds_a_line_break(tmp_path: Path) -> None:
     report = tmp_path / "report\r\nBcc: victim@example.com.txt"
     report.write_bytes(b"quarterly numbers")
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
 
     assert _send(transport, report, attachment_raise_on_security_violation=False) is True
 
@@ -637,7 +623,7 @@ def test_a_path_swapped_for_another_regular_file_after_the_check_is_refused_as_c
         return real_open(path, flags, *args, **kwargs)
 
     monkeypatch.setattr(os, "open", open_after_swap)
-    transport = _RecordingTransport()
+    transport = RecordingTransport()
 
     with pytest.raises(AttachmentSecurityError) as caught:
         _send(transport, report)

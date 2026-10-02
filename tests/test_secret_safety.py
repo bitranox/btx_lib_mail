@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
-from typing import IO, TYPE_CHECKING, ClassVar, Literal, cast
+from typing import TYPE_CHECKING, ClassVar, Literal, cast
 
 import pytest
 from log_capture import everything_logged
@@ -39,6 +39,7 @@ from pydantic import (
     model_validator,
 )
 from pydantic_core import PydanticCustomError
+from transport_doubles import RecordingTransport, RefusingTransport
 
 import btx_lib_mail
 from btx_lib_mail import REDACTED_INPUT, ConfMail, SecretSafeModel, _validation, lib_mail, redact_validation_error, secret_safety
@@ -47,20 +48,9 @@ from btx_lib_mail.secret_safety import _MAX_VISITS
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
-    from btx_lib_mail.lib_mail import DeliveryOptions
 
 _DUMMY = "DUMMY-pässwörd-PLANTED-7f3a"
 _AUTH_STRING = "\x00user\x00" + _DUMMY
-
-
-class _RaisingTransport:
-    """Transport double that fails every delivery with a preset exception."""
-
-    def __init__(self, error: BaseException) -> None:
-        self.error = error
-
-    def deliver(self, *, host: str, sender: str, recipient: str, message: IO[bytes], delivery: DeliveryOptions) -> None:
-        raise self.error
 
 
 def _send_through(transport: lib_mail.Transport) -> None:
@@ -84,7 +74,7 @@ def test_a_failed_host_logs_no_traceback_and_no_auth_string(caplog: pytest.LogCa
     error = UnicodeEncodeError("ascii", _AUTH_STRING, 6, 7, "ordinal not in range(128)")
 
     with pytest.raises(RuntimeError):
-        _send_through(_RaisingTransport(error))
+        _send_through(RefusingTransport(error))
 
     records = _failure_records(caplog)
     assert len(records) == 1, "positive control: the per-host failure must reach the capture"
@@ -102,7 +92,7 @@ def test_a_failed_host_logs_the_smtp_code_and_server_text(caplog: pytest.LogCapt
     error = smtplib.SMTPAuthenticationError(535, b"5.7.8 Authentication credentials invalid")
 
     with pytest.raises(RuntimeError):
-        _send_through(_RaisingTransport(error))
+        _send_through(RefusingTransport(error))
 
     record = _failure_records(caplog)[0]
     assert "SMTPAuthenticationError 535 5.7.8 Authentication credentials invalid" in record.getMessage()
@@ -145,7 +135,7 @@ def test_a_failing_log_handler_does_not_chain_the_original_delivery_exception(ca
     logging.raiseExceptions = True
     try:
         with pytest.raises(RuntimeError):
-            _send_through(_RaisingTransport(_PLANTED_TRANSPORT_ERROR))
+            _send_through(RefusingTransport(_PLANTED_TRANSPORT_ERROR))
     finally:
         logger.removeHandler(handler)
         logging.raiseExceptions = original
@@ -290,7 +280,7 @@ def test_plain_hosts_still_validate(host: str) -> None:
 )
 def test_send_refuses_a_userinfo_host_before_any_delivery(hosts: list[str], caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.DEBUG, logger="btx_lib_mail")
-    transport = _RaisingTransport(AssertionError("transport must not be reached"))
+    transport = RefusingTransport(AssertionError("transport must not be reached"))
     with pytest.raises(ValueError, match="must not contain") as caught:
         lib_mail.send(
             mail_from="sender@example.com",
@@ -1287,7 +1277,7 @@ def test_a_confmail_host_with_only_outer_whitespace_still_validates() -> None:
 )
 def test_send_refuses_a_host_with_a_control_character_before_any_delivery(hosts: list[str], caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.DEBUG, logger="btx_lib_mail")
-    transport = _RaisingTransport(AssertionError("transport must not be reached"))
+    transport = RefusingTransport(AssertionError("transport must not be reached"))
     with pytest.raises(ValueError, match="whitespace or control characters") as caught:
         lib_mail.send(
             mail_from="sender@example.com",
@@ -1320,7 +1310,7 @@ def test_the_per_host_warning_cannot_carry_a_forged_log_line_or_escape_sequence(
         sender="sender\x1b[31mFORGED sender@example.com",
         recipient="rcpt@example.com",
         message=io.BytesIO(b"Subject: s\r\n\r\nb\r\n"),
-        plan=lib_mail._DeliveryPlan(hosts=("evil\nFORGED line\x1b[31m",), delivery=delivery, transport=_RaisingTransport(ValueError("boom"))),
+        plan=lib_mail._DeliveryPlan(hosts=("evil\nFORGED line\x1b[31m",), delivery=delivery, transport=RefusingTransport(ValueError("boom"))),
     )
 
     assert ok is False
@@ -1334,13 +1324,6 @@ def test_the_per_host_warning_cannot_carry_a_forged_log_line_or_escape_sequence(
     assert all(character.isprintable() for character in str(record.__dict__["recipient"]))
     assert "FORGED sender" in str(record.__dict__["sender"]), "positive control: sender text survives, just cleaned"
     assert all(character.isprintable() for character in str(record.__dict__["sender"])), "extra['sender'] must be cleaned too"
-
-
-class _SucceedingTransport:
-    """Transport double that accepts every delivery."""
-
-    def deliver(self, *, host: str, sender: str, recipient: str, message: IO[bytes], delivery: DeliveryOptions) -> None:
-        return None
 
 
 _RECIPIENT_DUMMY = "dummy-planted-2f9c"
@@ -1358,7 +1341,7 @@ def test_the_success_path_debug_line_cannot_carry_a_forged_log_line_or_escape_se
         sender="sender\x1b[31mFORGED sender@example.com",
         recipient="rcpt\x1b[31mFORGED recipient@example.com",
         message=io.BytesIO(b"Subject: s\r\n\r\nb\r\n"),
-        plan=lib_mail._DeliveryPlan(hosts=("evil\nFORGED host\x1b[31m",), delivery=delivery, transport=_SucceedingTransport()),
+        plan=lib_mail._DeliveryPlan(hosts=("evil\nFORGED host\x1b[31m",), delivery=delivery, transport=RecordingTransport()),
     )
 
     assert ok is True
@@ -1386,7 +1369,7 @@ def test_an_invalid_recipient_warning_cannot_carry_a_forged_log_line_or_escape_s
         mail_subject="s",
         smtphosts=["smtp.example.com"],
         raise_on_invalid_recipient=False,
-        transport=_SucceedingTransport(),
+        transport=RecordingTransport(),
     )
 
     assert ok is True
@@ -1410,7 +1393,7 @@ def test_an_invalid_recipient_raises_a_valueerror_free_of_control_characters() -
             mail_subject="s",
             smtphosts=["smtp.example.com"],
             raise_on_invalid_recipient=True,
-            transport=_SucceedingTransport(),
+            transport=RecordingTransport(),
         )
 
     text = str(caught.value)
@@ -1436,7 +1419,7 @@ def test_an_attachment_path_warning_cannot_carry_a_forged_log_line(tmp_path: Pat
         smtphosts=["smtp.example.com"],
         attachment_file_paths=[forged_path],
         attachment_raise_on_security_violation=False,
-        transport=_SucceedingTransport(),
+        transport=RecordingTransport(),
     )
 
     assert ok is True
@@ -1464,7 +1447,7 @@ def test_an_attachment_security_error_raised_to_the_caller_cannot_carry_a_forged
             mail_subject="s",
             smtphosts=["smtp.example.com"],
             attachment_file_paths=[forged_path],
-            transport=_SucceedingTransport(),
+            transport=RecordingTransport(),
         )
 
     exc = caught.value
