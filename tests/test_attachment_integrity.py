@@ -457,6 +457,45 @@ def test_a_control_character_in_an_attachment_name_is_a_security_refusal_through
     assert transport.messages == {}
 
 
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("strict", [True, False], ids=["strict", "warn"])
+def test_a_nul_in_an_attachment_path_is_a_filename_refusal_before_any_file_system_call(tmp_path: Path, strict: bool) -> None:
+    transport = _RecordingTransport()
+    report = tmp_path / "report\x00final.txt"
+
+    if strict:
+        with pytest.raises(AttachmentSecurityError) as caught:
+            _send(transport, report)
+        assert caught.value.violation_type is AttachmentViolation.FILENAME
+        assert "\x00" not in caught.value.reason
+        assert transport.messages == {}
+    else:
+        assert _send(transport, report, attachment_raise_on_security_violation=False) is True
+        assert len(transport.messages) == 3, "warn mode skips the attachment and still sends"
+
+
+@pytest.mark.os_linux
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="macOS and Windows file systems refuse a name that is not valid UTF-8")
+@pytest.mark.parametrize("strict", [True, False], ids=["strict", "warn"])
+def test_an_attachment_name_that_is_not_valid_unicode_is_a_filename_refusal(tmp_path: Path, strict: bool) -> None:
+    # An invalid UTF-8 byte in a POSIX file name decodes to a lone surrogate, which the
+    # Content-Disposition header cannot encode.
+    report = tmp_path / f"report{chr(0xDCFF)}final.txt"
+    report.write_bytes(b"quarterly numbers")
+    transport = _RecordingTransport()
+
+    if strict:
+        with pytest.raises(AttachmentSecurityError) as caught:
+            _send(transport, report)
+        assert caught.value.violation_type is AttachmentViolation.FILENAME
+        assert transport.messages == {}
+    else:
+        assert _send(transport, report, attachment_raise_on_security_violation=False) is True
+        assert len(transport.messages) == 3
+        for raw in transport.messages.values():
+            assert not [part for part in message_from_bytes(raw).walk() if part.get_filename()]
+
+
 @pytest.mark.os_posix
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows file names cannot hold control characters")
 def test_warn_mode_skips_an_attachment_whose_name_holds_a_line_break(tmp_path: Path) -> None:

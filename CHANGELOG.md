@@ -86,6 +86,10 @@
 
 ### Fixed
 
+- An attachment whose name is not valid Unicode text (an invalid UTF-8 byte in a POSIX name)
+  raised a bare `UnicodeEncodeError` while composing, even in warn mode, and a path holding
+  NUL raised a bare `ValueError` from `os.lstat`. Both are refused as
+  `AttachmentViolation.FILENAME`, so warn mode skips them.
 - A subject holding U+2028 or U+2029, or a subject or body holding a lone surrogate (what an
   invalid UTF-8 byte in argv decodes to on POSIX), raised a bare `ValueError` or
   `UnicodeEncodeError` from the email package. Both are now refused before the first delivery

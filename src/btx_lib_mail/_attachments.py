@@ -412,7 +412,7 @@ def _check_filename(path: pathlib.Path) -> None:
 
     Raises:
         AttachmentSecurityError: If the file name contains a control
-            character.
+            character or is not valid Unicode text.
 
     Examples:
         >>> _check_filename(pathlib.Path("/data/Bericht März.pdf"))
@@ -422,6 +422,36 @@ def _check_filename(path: pathlib.Path) -> None:
         btx_lib_mail._attachments.AttachmentSecurityError: ...contains a control character: "/d/a b" [path=/d/a b]
     """
     if any(unicodedata.category(character) == "Cc" for character in path.name):
+        raise AttachmentSecurityError(
+            path=path,
+            reason=f'file name contains a control character: "{path}"',
+            violation_type=AttachmentViolation.FILENAME,
+        )
+    try:
+        path.name.encode("utf-8")
+    except UnicodeEncodeError:
+        # An invalid UTF-8 byte in a POSIX name decodes to a lone surrogate, which the
+        # header cannot encode; the exception message would quote the raw byte.
+        raise AttachmentSecurityError(
+            path=path,
+            reason=f'file name is not valid Unicode text: "{path}"',
+            violation_type=AttachmentViolation.FILENAME,
+        ) from None
+
+
+def _check_nul(path: pathlib.Path) -> None:
+    """Refuse a path holding NUL before any file system call sees it.
+
+    The operating system cannot name such a file, and ``os.lstat`` would raise a
+    bare ``ValueError`` before the file name check runs.
+
+    Args:
+        path: The path to check.
+
+    Raises:
+        AttachmentSecurityError: If the path contains NUL.
+    """
+    if "\x00" in str(path):
         raise AttachmentSecurityError(
             path=path,
             reason=f'file name contains a control character: "{path}"',
@@ -668,6 +698,7 @@ def _validate_attachment_security(
         AttachmentSecurityError: If any check fails. File existence is not
             checked here.
     """
+    _check_nul(path)
     _check_path_traversal(path, original_path_str)
     resolved_path = _check_symlink(path=path, allow_symlinks=security.allow_symlinks)
     # The resolved name is the one the message carries (see _prepare_attachment).
