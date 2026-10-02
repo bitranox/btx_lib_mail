@@ -282,6 +282,10 @@ class AttachmentSecurityError(BtxMailError):
         self.reason = clean_reason
         self.violation_type = violation_type
 
+    def __reduce__(self) -> tuple[type[AttachmentSecurityError], tuple[pathlib.Path, str, AttachmentViolation]]:
+        """Rebuild from the three constructor arguments; pickle and deepcopy would pass only the message."""
+        return (type(self), (self.path, self.reason, self.violation_type))
+
     def __str__(self) -> str:
         """Return the forgery-safe one-line rendering used by logs and tracebacks.
 

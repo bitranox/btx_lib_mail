@@ -194,6 +194,10 @@
   kin) passed the file-name check, so `report<U+202E>fdp.xlsm`, a type not on the
   blocklist, displayed as `reportmslx.pdf` in a mail client. Such a name is refused as
   `FILENAME` now.
+- A `ConfigurationError` whose hidden input came from a validator (a host carrying
+  credentials, a non-string password) and every `AttachmentSecurityError` failed to pickle
+  or deep-copy (`TypeError`), so neither crossed a process pool or a copy of the state that
+  held it. Both round-trip now with the same message.
 
 ## [3.1.0] 2026-10-02 11:58:41
 

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import copy
 import pickle
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -13,6 +15,7 @@ import btx_lib_mail
 from btx_lib_mail import (
     AttachmentNotFoundError,
     AttachmentSecurityError,
+    AttachmentViolation,
     BtxMailError,
     ConfigurationError,
     ConfMail,
@@ -22,9 +25,6 @@ from btx_lib_mail import (
     validate_email_address,
     validate_smtp_host,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def _send(**overrides: Any) -> bool:
@@ -123,6 +123,38 @@ def test_a_delivery_error_survives_pickling() -> None:
     assert str(restored) == "text"
     assert restored.failed_recipients == ("a@example.com",)
     assert restored.hosts == ("h",)
+
+
+def _comparable(error: ConfigurationError) -> list[dict[str, Any]]:
+    """The error details with each ctx value as text: an exception in ctx compares by identity."""
+    return [{**detail, "ctx": {key: str(value) for key, value in detail.get("ctx", {}).items()}} for detail in error.errors(include_url=False)]
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    "settings",
+    [{"smtphosts": ["smtp://user:pw@smtp.example.com"]}, {"smtp_timeout": -1}, {"smtp_timeout": "x"}, {"unknown": 1}, {"smtp_password": 1.5}],
+    ids=["hidden-value-error", "value-error", "parsing", "extra", "hidden-password"],
+)
+def test_a_configuration_error_survives_pickling_and_deepcopy(settings: dict[str, Any]) -> None:
+    with pytest.raises(ConfigurationError) as caught:
+        ConfMail(**settings)
+    error = caught.value
+
+    for restored in (pickle.loads(pickle.dumps(error)), copy.deepcopy(error)):  # noqa: S301 - round-trips an object this test just built
+        assert type(restored) is ConfigurationError
+        assert str(restored) == str(error)
+        assert _comparable(restored) == _comparable(error)
+
+
+@pytest.mark.os_agnostic
+def test_an_attachment_security_error_survives_pickling_and_deepcopy() -> None:
+    error = AttachmentSecurityError(path=Path("/data/report.sh"), reason="extension blocked", violation_type=AttachmentViolation.EXTENSION)
+
+    for restored in (pickle.loads(pickle.dumps(error)), copy.deepcopy(error)):  # noqa: S301 - round-trips an object this test just built
+        assert type(restored) is AttachmentSecurityError
+        assert str(restored) == str(error)
+        assert (restored.path, restored.reason, restored.violation_type) == (error.path, error.reason, error.violation_type)
 
 
 def _construct() -> None:

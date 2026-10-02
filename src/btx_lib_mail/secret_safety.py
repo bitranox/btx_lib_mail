@@ -43,6 +43,7 @@ from collections.abc import Collection, Iterator, Mapping, Set
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from enum import Enum
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, ClassVar, Final, cast, get_args, get_origin
 from weakref import WeakKeyDictionary
 
@@ -214,12 +215,36 @@ def _renders_as(detail: InitErrorDetails, error_type: str, message: str) -> bool
     return probe["type"] == error_type and probe["msg"] == message
 
 
+# Built-in types whose message is a fixed prefix plus ctx["error"]. A ValidationError pickles
+# as its errors(), and these cannot be rebuilt without that ctx.
+_ERROR_CONTEXT_PREFIXES: Final[Mapping[str, str]] = MappingProxyType({"value_error": "Value error, ", "assertion_error": "Assertion failed, "})
+
+
+def _context_from_message(error_type: str, message: str) -> dict[str, Any] | None:
+    """Return the ctx a built-in type needs, rebuilt from its already-scrubbed message.
+
+    Args:
+        error_type: The pydantic error type.
+        message: The message, already scrubbed of the input.
+
+    Returns:
+        ``{"error": <text after the prefix>}`` for ``value_error`` and
+        ``assertion_error``, so the ctx carries nothing the message does not;
+        ``None`` for any other type or message.
+    """
+    prefix = _ERROR_CONTEXT_PREFIXES.get(error_type)
+    if prefix is None or not message.startswith(prefix):
+        return None
+    return {"error": message.removeprefix(prefix)}
+
+
 def _faithful_detail(error: ErrorDetails, *, hide: bool, declared_names: frozenset[str]) -> InitErrorDetails:
     error_type, location = error["type"], error["loc"]
     message = _scrubbed(error["msg"], error["input"], declared_names=declared_names) if hide else error["msg"]
     error_input: Any = REDACTED_INPUT if hide else error["input"]
-    # ctx can repeat the input (union_tag_invalid's ctx["tag"]), so a hidden error keeps none.
-    context = None if hide else error.get("ctx")
+    # ctx can repeat the input (union_tag_invalid's ctx["tag"]), so a hidden error keeps none of
+    # it; a type whose message is "<prefix>{error}" gets its ctx back from the scrubbed message.
+    context = _context_from_message(error_type, message) if hide else error.get("ctx")
     candidates: list[InitErrorDetails] = []
     if error_type in _KNOWN_ERROR_TYPES:
         # The built-in type keeps pydantic's documentation link; it is used only
