@@ -645,6 +645,23 @@ def test_an_attachment_entry_that_is_not_a_path_is_refused() -> None:
     assert transport.messages == {}
 
 
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("tolerate", [False, True], ids=["raise", "tolerate"])
+@pytest.mark.parametrize(
+    ("whole", "type_name"),
+    [("/data/report.pdf", "str"), (b"/data/report.pdf", "bytes"), (Path("/data/report.pdf"), Path("x").__class__.__name__), (5, "int")],
+    ids=["str", "bytes", "path", "int"],
+)
+def test_attachment_paths_given_as_one_value_instead_of_a_sequence_are_refused(whole: object, type_name: str, tolerate: bool) -> None:
+    # A bare string iterates per character: each letter was checked as a path of its own.
+    transport = RecordingTransport()
+
+    with pytest.raises(InvalidInputError, match=rf"^attachment_file_paths must be a sequence of paths, got {type_name}$"):
+        _send(transport, "unused", attachment_file_paths=whole, raise_on_missing_attachments=not tolerate)
+
+    assert transport.messages == {}
+
+
 @pytest.mark.os_posix
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows file names cannot hold control characters")
 def test_warn_mode_skips_an_attachment_whose_name_holds_a_line_break(tmp_path: Path) -> None:

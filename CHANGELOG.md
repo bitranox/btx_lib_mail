@@ -163,6 +163,11 @@
   list), plus the `PKG-INFO` and root `.gitignore` hatchling always adds. Earlier sdists also
   carried repository working files such as `handover.md`, `OPEN-WORK.md` and
   `reset_git_history.sh`.
+- `attachment_file_paths` given one path instead of a sequence (`"report.pdf"`) was iterated
+  one character at a time, so every letter was checked as a path of its own (with
+  `raise_on_missing_attachments=False` the mail went out with no attachment and one warning
+  per character); a single `Path` or a number raised a bare `TypeError`. Both are now
+  `InvalidInputError: attachment_file_paths must be a sequence of paths, got str`.
 
 ## [3.1.0] 2026-10-02 11:58:41
 

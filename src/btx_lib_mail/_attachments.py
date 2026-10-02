@@ -11,15 +11,13 @@ import pathlib
 import stat
 import sys
 import unicodedata
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import IO, TYPE_CHECKING, Final
+from typing import IO, Final, cast
 
 from ._common import logger, printable
 from .errors import AttachmentNotFoundError, BtxMailError, InvalidInputError
-
-if TYPE_CHECKING:
-    from collections.abc import Iterable
 
 DANGEROUS_EXTENSIONS_POSIX: Final[frozenset[str]] = frozenset(
     {
@@ -870,7 +868,7 @@ def _unavailable(path: pathlib.Path, problem: str, *, raise_on_missing: bool) ->
     )
 
 
-def coerce_attachment_paths(entries: Iterable[object]) -> tuple[pathlib.Path, ...]:
+def coerce_attachment_paths(entries: object) -> tuple[pathlib.Path, ...]:
     """Return each attachment entry as a path; a ``str`` or a ``pathlib`` path is accepted.
 
     Args:
@@ -881,15 +879,19 @@ def coerce_attachment_paths(entries: Iterable[object]) -> tuple[pathlib.Path, ..
         The entries as ``pathlib.Path`` objects, in order.
 
     Raises:
-        InvalidInputError: If an entry is neither a ``str`` nor a ``pathlib``
-            path.
+        InvalidInputError: If entries is a single path (``str``, ``bytes``,
+            ``pathlib`` path) or not iterable rather than a sequence of
+            paths, or an entry is neither a ``str`` nor a ``pathlib`` path.
 
     Examples:
         >>> [path.name for path in coerce_attachment_paths(["/data/a.pdf", pathlib.Path("/data/b.pdf")])]
         ['a.pdf', 'b.pdf']
     """
+    # A bare string is iterable too, and would be checked one character at a time.
+    if isinstance(entries, (str, bytes, pathlib.PurePath)) or not isinstance(entries, Iterable):
+        raise InvalidInputError(f"attachment_file_paths must be a sequence of paths, got {type(entries).__name__}")
     paths: list[pathlib.Path] = []
-    for entry in entries:
+    for entry in cast("Iterable[object]", entries):
         if not isinstance(entry, (str, pathlib.PurePath)):
             raise InvalidInputError(f"attachment_file_paths entries must be paths, got {type(entry).__name__}")
         paths.append(pathlib.Path(entry))
