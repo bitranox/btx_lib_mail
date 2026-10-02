@@ -684,6 +684,31 @@ def test_attachment_paths_given_as_one_value_instead_of_a_sequence_are_refused(w
     assert transport.messages == {}
 
 
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("control", [0x202E, 0x202A, 0x2066, 0x2069, 0x200F, 0x061C], ids=["RLO", "LRE", "LRI", "PDI", "RLM", "ALM"])
+def test_an_attachment_name_holding_a_bidi_control_is_refused(tmp_path: Path, control: int) -> None:
+    # U+202E turns "report<RLO>fdp.xlsm" into "reportmslx.pdf" on screen: a macro file posing as a PDF.
+    report = tmp_path / f"report{chr(control)}fdp.xlsm"
+    report.write_bytes(b"quarterly numbers")
+    transport = RecordingTransport()
+
+    with pytest.raises(AttachmentSecurityError) as caught:
+        _send(transport, report)
+
+    assert caught.value.violation_type is AttachmentViolation.FILENAME
+    assert transport.messages == {}
+
+
+@pytest.mark.os_agnostic
+def test_an_attachment_name_holding_a_zero_width_joiner_is_sent(tmp_path: Path) -> None:
+    # A format character that only joins glyphs (emoji sequences) cannot reorder the name.
+    report = tmp_path / f"family-{chr(0x1F468)}{chr(0x200D)}{chr(0x1F469)}.txt"
+    report.write_bytes(b"quarterly numbers")
+    transport = RecordingTransport()
+
+    assert _send(transport, report) is True
+
+
 @pytest.mark.os_posix
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows file names cannot hold control characters")
 def test_warn_mode_skips_an_attachment_whose_name_holds_a_line_break(tmp_path: Path) -> None:

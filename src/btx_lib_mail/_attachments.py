@@ -434,6 +434,11 @@ def _lstat_or_none(path: pathlib.Path) -> os.stat_result | None:
         raise _UnreadableAttachmentError(exc.errno) from None
 
 
+# Unicode bidirectional formatting characters: they reorder how a name is displayed, so
+# "report<U+202E>fdp.xlsm" reads as "reportmslx.pdf" ("Trojan Source", CVE-2021-42574).
+_BIDI_CONTROLS: Final[frozenset[str]] = frozenset(chr(code) for code in (0x061C, 0x200E, 0x200F, *range(0x202A, 0x202F), *range(0x2066, 0x206A)))
+
+
 def _check_filename(path: pathlib.Path) -> None:
     r"""Refuse a file name holding a control character (Unicode category ``Cc``).
 
@@ -448,7 +453,8 @@ def _check_filename(path: pathlib.Path) -> None:
 
     Raises:
         AttachmentSecurityError: If the file name contains a control
-            character or is not valid Unicode text.
+            character or a bidirectional formatting character (which can make
+            ``.xlsm`` display as ``.pdf``), or is not valid Unicode text.
 
     Examples:
         >>> _check_filename(pathlib.Path("/data/Bericht März.pdf"))
@@ -461,6 +467,12 @@ def _check_filename(path: pathlib.Path) -> None:
         raise AttachmentSecurityError(
             path=path,
             reason=f'file name contains a control character: "{path}"',
+            violation_type=AttachmentViolation.FILENAME,
+        )
+    if any(character in _BIDI_CONTROLS for character in path.name):
+        raise AttachmentSecurityError(
+            path=path,
+            reason=f'file name contains a bidirectional control character: "{path}"',
             violation_type=AttachmentViolation.FILENAME,
         )
     if not is_valid_unicode(path.name):

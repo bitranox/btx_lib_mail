@@ -46,10 +46,12 @@ of sensitive files, dangerous executables, or oversized payloads.
    file (`AttachmentNotFoundError`). Swapping or deleting the file while delivery
    runs changes nothing that is sent. The files are closed before `send()` returns.
 8. **File Name**  -  A file name holding a control character (CR, LF, NUL, ESC, DEL
-   or any other Unicode `Cc` character), or one that is not valid Unicode text (an
-   invalid UTF-8 byte in a POSIX name), is refused as `FILENAME`: the name becomes
-   the attachment's `Content-Disposition` header, and a POSIX file system allows
-   all of them in a name. A path holding NUL anywhere is refused the same way,
+   or any other Unicode `Cc` character), a bidirectional formatting character
+   (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069, which can make
+   `report<U+202E>fdp.xlsm` display as `reportmslx.pdf`), or one that is not valid
+   Unicode text (an invalid UTF-8 byte in a POSIX name), is refused as `FILENAME`:
+   the name becomes the attachment's `Content-Disposition` header, and a POSIX file
+   system allows all of them in a name. A path holding NUL anywhere is refused the same way,
    before any file system call.
 
 A refusal raises `AttachmentSecurityError`, whose `violation_type` is an

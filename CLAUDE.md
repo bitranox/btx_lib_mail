@@ -173,7 +173,7 @@ Attachments are validated against multiple security checks:
 5. **Extension Filtering**  -  POSIX and Windows dangerous extensions (`.sh`, `.exe`, etc.) blocked on every platform
 6. **Size Limits**  -  Default 25 MiB (`attachment_max_size_bytes`), also enforced while reading
 7. **One open file**  -  each file opened once after its checks; a swapped path is refused as `CHANGED`
-8. **File name**  -  a control character (Unicode `Cc`) or invalid Unicode in the name, or NUL in the path, is refused as `FILENAME`
+8. **File name**  -  a control character (Unicode `Cc`), a bidirectional formatting character or invalid Unicode in the name, or NUL in the path, is refused as `FILENAME`
 
 ### Configuration Fields (ConfMail)
 
