@@ -2207,3 +2207,62 @@ def test_credentials_that_cannot_be_encoded_are_refused_before_any_connection(cr
 
     assert str(caught.value) == message
     assert transport.deliveries == []
+
+
+# ---------------------------------------------------------------------------
+# A host name that can never resolve is refused when it is given, not at delivery
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    ("host", "message"),
+    [
+        ("[zz]", 'not an IP address in brackets in "[zz]"'),
+        ("[1:1:1]:25", 'not an IP address in brackets in "[1:1:1]:25"'),
+        ("-bad-.example.com", 'a host name label must not start or end with "-" in "-bad-.example.com"'),
+        ("mail-.example.com", 'a host name label must not start or end with "-" in "mail-.example.com"'),
+        ("a..example.com", 'empty host name label in "a..example.com"'),
+        (".example.com", 'empty host name label in ".example.com"'),
+        ("x" * 64 + ".example.com", "a host name label has 64 characters, more than the 63 allowed"),
+        (".".join(["a" * 63] * 4) + ".com", "SMTP host name has 259 characters, more than the 253 allowed"),
+        ("a" * 1_000_000, "SMTP host name has 1000000 characters, more than the 253 allowed"),
+    ],
+    ids=["bracket-letters", "bracket-short-ipv6", "label-hyphens", "label-trailing-hyphen", "empty-label", "leading-dot", "label-64", "name-259", "name-1mb"],
+)
+def test_a_host_that_can_never_resolve_is_refused_by_validate_smtp_host(host: str, message: str) -> None:
+    with pytest.raises(InvalidInputError) as caught:
+        lib_mail.validate_smtp_host(host)
+
+    assert str(caught.value) == message
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    "host",
+    [
+        "smtp.example.com",
+        "smtp.example.com.",
+        "smtp.example.com.:587",
+        "mail_relay.internal",
+        "müller.example",
+        "localhost",
+        "192.0.2.10:25",
+        "[::1]",
+        "[2001:db8::1]:587",
+        "[fe80::1%eth0]:25",
+        "[192.0.2.10]",
+        "x" * 63 + ".example.com",
+        ".".join(["a" * 63] * 3) + "." + "b" * 61,
+    ],
+)
+def test_a_host_that_can_resolve_is_still_accepted(host: str) -> None:
+    lib_mail.validate_smtp_host(host)
+
+
+@pytest.mark.os_agnostic
+def test_an_ehlo_name_longer_than_a_domain_may_be_is_refused_without_echoing_it() -> None:
+    with pytest.raises(InvalidInputError) as caught:
+        lib_mail.send(**_with(local_hostname="h" * 256))
+
+    assert str(caught.value) == "local_hostname has 256 characters, more than the 255 allowed"

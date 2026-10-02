@@ -77,6 +77,7 @@ tests/
 - **Validation**: `validate_email_address()` and `validate_smtp_host()` are public;
   `validate_smtp_host()` refuses a host carrying `@` or `/`, or an interior whitespace or
   control character, without echoing the value, and a malformed port, bracket, host name
+  (empty or over-long label, label hyphen, over 253 characters, non-IP bracket content)
   or a comma (two hosts in one string); `ConfMail.smtphosts` runs it on every non-blank entry
 - **Security**: `AttachmentSecurityOptions` + `_validate_attachment_security()` (path rules) + `_open_attachment()`
   (same file, regular, size) in `_attachments.py`; extension sets are normalised wherever they are given

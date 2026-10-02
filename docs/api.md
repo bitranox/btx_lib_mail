@@ -260,8 +260,10 @@ member, never on the message text.
 - `validate_smtp_host(host: str) -> None` raises `InvalidInputError` unless `host` is one of
   `hostname`, `hostname:port`, `[IPv6]`, `[IPv6]:port`, with a port of ASCII digits in
   1-65535. A host carrying `@` or `/` or an interior whitespace or control character is
-  refused without the value appearing in the message; a comma (two hosts in one string)
-  and an unbracketed IPv6 address are refused too.
+  refused without the value appearing in the message; a comma (two hosts in one string),
+  an unbracketed IPv6 address, bracket content that is not an IP address (`[zz]`), and a
+  name DNS can never resolve (an empty label as in `a..b`, a label starting or ending with
+  `-`, a label over 63 or a name over 253 characters) are refused too.
 
 ## Transport
 

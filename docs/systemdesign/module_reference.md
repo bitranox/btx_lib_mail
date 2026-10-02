@@ -260,7 +260,8 @@ redacted at the credential fields (`smtp_password`, `smtphosts`).
   Refuses, without echoing the value, a host carrying `@` or `/` or an interior
   whitespace or control character; then refuses a bad bracket or a port that is not ASCII
   digits in 1-65535, and after that a comma, an unbracketed IPv6 address or an empty host
-  name.
+  name; last, bracket content that is not an IP address and a name DNS can never resolve
+  (an empty label, a label's leading or trailing `-`, over 63 per label or 253 in all).
 * `prepare_recipients`, `prepare_hosts`, `parse_smtp_host`, `collect_host_inputs`,
   `check_local_hostname`, `check_timeout`, `check_seconds` - the shared checks `send()`
   and `ConfMail` run.

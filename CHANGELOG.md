@@ -199,6 +199,13 @@
   credentials, a non-string password) and every `AttachmentSecurityError` failed to pickle
   or deep-copy (`TypeError`), so neither crossed a process pool or a copy of the state that
   held it. Both round-trip now with the same message.
+- `validate_smtp_host()` (and so `ConfMail.smtphosts`, `send()` and the CLI) accepted host
+  names DNS can never resolve: bracket content that is not an IP address (`[zz]`,
+  `[1:1:1]`), an empty label (`a..b`, `.example.com`), a label starting or ending with
+  `-`, a label over 63 or a name over 253 characters. They failed only at delivery, and a
+  megabyte-long name was copied whole into the `DeliveryError` and the log. They are
+  refused when given now; every host refused before keeps its message. An EHLO name
+  (`local_hostname`) over 255 characters is refused too.
 
 ## [3.1.0] 2026-10-02 11:58:41
 

@@ -5,6 +5,7 @@ Private to btx_lib_mail: import the public names from `btx_lib_mail` or `btx_lib
 
 from __future__ import annotations
 
+import ipaddress
 import math
 import re
 from collections.abc import Iterable, Sequence
@@ -19,6 +20,11 @@ EMAIL_PATTERN: Final[re.Pattern[str]] = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z
 # RFC 5321 section 4.5.3.1: 64 octets before the @, and 254 for the whole address.
 _MAX_LOCAL_PART: Final[int] = 64
 _MAX_ADDRESS: Final[int] = 254
+# RFC 1035 section 2.3.4: 63 octets per label and 253 for a name written without its root dot.
+_MAX_HOST_LABEL: Final[int] = 63
+_MAX_HOST_NAME: Final[int] = 253
+# RFC 5321 section 4.5.3.1.2: a domain, as the EHLO argument is, holds at most 255 octets.
+_MAX_EHLO_NAME: Final[int] = 255
 # How much of an overlong address a skipped-recipient log line shows.
 _SHOWN_PREFIX: Final[int] = 40
 
@@ -64,10 +70,13 @@ def check_local_hostname(value: str, *, label: str) -> None:
         label: Name of the setting or argument to use in the error message.
 
     Raises:
-        InvalidInputError: If value is empty or not printable ASCII without spaces.
+        InvalidInputError: If value is empty, not printable ASCII without
+            spaces, or longer than 255 characters.
     """
     if not value or not all(_EHLO_NAME_FIRST_CHAR <= ord(char) <= _EHLO_NAME_LAST_CHAR for char in value):
         raise InvalidInputError(f"{label} must be non-empty printable ASCII without spaces")
+    if len(value) > _MAX_EHLO_NAME:
+        raise InvalidInputError(f"{label} has {len(value)} characters, more than the {_MAX_EHLO_NAME} allowed")
 
 
 def check_credentials(credentials: tuple[str, str] | None) -> None:
@@ -445,8 +454,10 @@ def validate_smtp_host(host: str) -> None:
     which the error does not echo the value; several hosts in one string
     (`a.example.com,b.example.com`); a port with no host name (`:25`); an
     IPv6 address without brackets (`fe80::1`), whose last group would
-    otherwise be read as the port; and a port that is not plain ASCII digits
-    in 1-65535 (`+25`, `2_5`, non-ASCII digits).
+    otherwise be read as the port; a port that is not plain ASCII digits
+    in 1-65535 (`+25`, `2_5`, non-ASCII digits); bracket content that is not
+    an IP address (`[zz]`); and a name DNS can never resolve (`a..b`,
+    `-bad-.example.com`, a label over 63 or a name over 253 characters).
 
     Validates SMTP host syntax early so errors surface before delivery.
 
@@ -520,7 +531,8 @@ def _validate_host_shape(host: str) -> None:
 
     Raises:
         InvalidInputError: If host names more than one host, an unbracketed
-            IPv6 address, or no host name at all.
+            IPv6 address, or no host name at all; or, checked last, bracket
+            content that is not an IP address or a name DNS can never resolve.
     """
     if "," in host:
         raise InvalidInputError(f'SMTP host must be one host per entry; pass several hosts as a list, got "{host}"')
@@ -532,6 +544,54 @@ def _validate_host_shape(host: str) -> None:
             raise InvalidInputError(f'more than one ":" in "{host}"; an IPv6 address must be in brackets, as [addr] or [addr]:port')
     if not name:
         raise InvalidInputError(f'missing host name in "{host}"')
+    if host.startswith("["):
+        _check_address_literal(name, host)
+    else:
+        _check_host_name(name, host)
+
+
+def _check_address_literal(address: str, host: str) -> None:
+    """Refuse bracket content that is not an IP address (IPv6, zone id included, or IPv4).
+
+    Args:
+        address: The text between the brackets.
+        host: The full host string, for the message.
+
+    Raises:
+        InvalidInputError: If address does not parse as an IP address.
+    """
+    try:
+        ipaddress.ip_address(address)
+    except ValueError:
+        raise InvalidInputError(f'not an IP address in brackets in "{host}"') from None
+
+
+def _check_host_name(name: str, host: str) -> None:
+    """Refuse a host name DNS can never resolve: too long, an empty label, or a label's hyphen.
+
+    The character set is not restricted (internal names use ``_``, IDN names
+    are Unicode), and one trailing dot (a fully qualified name) is allowed.
+    Run after every older check, so a host those refused keeps its message;
+    the length refusal does not echo the name, which may be megabytes long.
+
+    Args:
+        name: The host name without its port.
+        host: The full host string, for the message.
+
+    Raises:
+        InvalidInputError: If name is longer than 253 characters, holds an
+            empty label or one longer than 63 characters, or a label starts
+            or ends with ``-``.
+    """
+    if len(name) > _MAX_HOST_NAME:
+        raise InvalidInputError(f"SMTP host name has {len(name)} characters, more than the {_MAX_HOST_NAME} allowed")
+    for label in name.removesuffix(".").split("."):
+        if not label:
+            raise InvalidInputError(f'empty host name label in "{host}"')
+        if len(label) > _MAX_HOST_LABEL:
+            raise InvalidInputError(f"a host name label has {len(label)} characters, more than the {_MAX_HOST_LABEL} allowed")
+        if label.startswith("-") or label.endswith("-"):
+            raise InvalidInputError(f'a host name label must not start or end with "-" in "{host}"')
 
 
 def _validate_port(port_str: str, original: str) -> None:
