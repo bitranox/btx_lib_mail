@@ -563,11 +563,11 @@ class ConfMail(SecretSafeModel):
             value = value()
         if not isinstance(value, (frozenset, set, list, tuple)):
             raise InvalidInputError("extensions must be a set, frozenset, list, or tuple of strings")
-        raw_list: list[object] = list(value)  # pyright: ignore[reportUnknownArgumentType]
+        raw_list: list[object] = list(cast("Iterable[object]", value))
 
         normalised: set[str] = set()
         for ext in raw_list:
-            if not isinstance(ext, str):  # pyright: ignore[reportUnnecessaryIsInstance]
+            if not isinstance(ext, str):
                 raise InvalidInputError(f"extension must be a string, got {type(ext).__name__}")
             ext_lower = ext.lower().strip()
             if not ext_lower:
@@ -602,13 +602,13 @@ class ConfMail(SecretSafeModel):
             value = value()
         if not isinstance(value, (frozenset, set, list, tuple)):
             raise InvalidInputError("directories must be a set, frozenset, list, or tuple")
-        raw_list: list[object] = list(value)  # pyright: ignore[reportUnknownArgumentType]
+        raw_list: list[object] = list(cast("Iterable[object]", value))
 
         normalised: set[pathlib.Path] = set()
         for directory in raw_list:
             if isinstance(directory, str):
                 normalised.add(pathlib.Path(directory))
-            elif isinstance(directory, pathlib.Path):  # pyright: ignore[reportUnnecessaryIsInstance]
+            elif isinstance(directory, pathlib.Path):
                 normalised.add(directory)
             else:
                 raise InvalidInputError(f"directory must be a string or Path, got {type(directory).__name__}")
@@ -1485,7 +1485,7 @@ def _login_plain_utf8(smtp_connection: smtplib.SMTP, username: str, password: st
         raise smtplib.SMTPAuthenticationError(code, reply)
 
 
-def _require_socket(smtp_connection: smtplib.SMTP) -> Any:
+def _require_socket(smtp_connection: smtplib.SMTP) -> socket.socket:
     """Return the live socket, or raise if the connection was never established."""
     sock = smtp_connection.sock
     if sock is None:  # pragma: no cover - smtplib sets sock once connected
@@ -2310,7 +2310,7 @@ def _prepare_recipients(
 
     if isinstance(recipients, str):
         raw_items: Iterable[str] = (recipients,)
-    elif isinstance(recipients, Sequence):  # pyright: ignore[reportUnnecessaryIsInstance]
+    elif isinstance(recipients, Sequence):  # pyright: ignore[reportUnnecessaryIsInstance] - a caller ignoring the annotation can pass anything
         raw_items = recipients
     else:  # pragma: no cover - defensive guard
         raise InvalidInputError("invalid type of mail_addresses")
@@ -2423,7 +2423,7 @@ def _collect_host_inputs(value: Any) -> list[str]:
         return []
     if isinstance(value, str):
         return _checked_hosts([value])
-    if isinstance(value, Iterable):  # type: ignore[reportUnnecessaryIsInstance]
+    if isinstance(value, Iterable):
         items = list(cast("Iterable[Any]", value))
         if not all(isinstance(item, str) for item in items):
             raise InvalidInputError("smtphosts entries must be strings")

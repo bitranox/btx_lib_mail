@@ -274,6 +274,8 @@ def test_a_host_with_userinfo_or_a_path_is_refused_without_quoting_it(host: str)
 def test_plain_hosts_still_validate(host: str) -> None:
     lib_mail.validate_smtp_host(host)
 
+    assert ConfMail(smtphosts=[host]).smtphosts == [host], "the credential refusal must not catch an ordinary host"
+
 
 @pytest.mark.os_agnostic
 @pytest.mark.parametrize(
@@ -864,6 +866,8 @@ def test_a_failure_computing_the_declared_names_fails_closed_instead_of_leaking_
     def _boom(model: type[BaseModel]) -> frozenset[str]:
         raise ValueError("boom")
 
+    # Patches this package's own helper on purpose: no input makes the real collector raise, so
+    # the fail-closed branch is reachable only by forcing it; the seam is read at call time.
     monkeypatch.setattr(secret_safety, "_declared_names", _boom)
     with pytest.raises(ValidationError) as caught:
         ConfMail(smtp_password=[_DUMMY])  # type: ignore[arg-type]
@@ -895,6 +899,8 @@ def test_a_failure_computing_the_hidden_locations_fails_closed_instead_of_leakin
     def _boom(cls: type[BaseModel]) -> frozenset[str]:
         raise ValueError("boom")
 
+    # Patches this package's own classmethod on purpose, for the same reason as the test above:
+    # the defensive branch has no input that reaches it.
     monkeypatch.setattr(SecretSafeModel, "_hidden_locations", classmethod(_boom))
     with pytest.raises(ValidationError) as caught:
         ConfMail(smtp_password=[_DUMMY])  # type: ignore[arg-type]

@@ -61,7 +61,13 @@ def test_the_test_server_never_resolves_the_host_name(monkeypatch: pytest.Monkey
     monkeypatch.setattr(socket, "getfqdn", refuse)
 
     controller = _run_server(_CollectingHandler(), controller_cls=controller_cls)
-    controller.stop()
+    try:
+        with socket.create_connection(("127.0.0.1", controller.port), timeout=5) as probe:
+            banner = probe.recv(1024)
+    finally:
+        controller.stop()
+
+    assert banner.startswith(b"220 localhost "), banner
 
 
 @pytest.fixture

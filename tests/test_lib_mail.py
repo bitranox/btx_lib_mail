@@ -646,6 +646,9 @@ def test_when_mail_from_lacks_domain_the_send_call_rejects() -> None:
 def test_validate_email_address_accepts_valid() -> None:
     lib_mail.validate_email_address("user@example.com")
 
+    # Accepted means usable: recipient preparation keeps it as given.
+    assert lib_mail._prepare_recipients("user@example.com", raise_on_invalid=True) == ("user@example.com",)
+
 
 @pytest.mark.os_agnostic
 def test_validate_email_address_rejects_missing_domain() -> None:
@@ -684,28 +687,23 @@ def test_validate_email_address_rejects_pipe_in_tld() -> None:
 
 
 @pytest.mark.os_agnostic
-def test_validate_smtp_host_accepts_bare_hostname() -> None:
-    lib_mail.validate_smtp_host("smtp.example.com")
+@pytest.mark.parametrize(
+    ("host", "parsed"),
+    [
+        ("smtp.example.com", ("smtp.example.com", None)),
+        ("smtp.example.com:587", ("smtp.example.com", 587)),
+        ("[::1]", ("::1", None)),
+        ("[::1]:25", ("::1", 25)),
+        ("[2001:db8::1]:587", ("2001:db8::1", 587)),
+        ("host:0025", ("host", 25)),
+    ],
+)
+def test_validate_smtp_host_accepts_a_usable_host(host: str, parsed: tuple[str, int | None]) -> None:
+    lib_mail.validate_smtp_host(host)
 
-
-@pytest.mark.os_agnostic
-def test_validate_smtp_host_accepts_hostname_port() -> None:
-    lib_mail.validate_smtp_host("smtp.example.com:587")
-
-
-@pytest.mark.os_agnostic
-def test_validate_smtp_host_accepts_ipv6_bare() -> None:
-    lib_mail.validate_smtp_host("[::1]")
-
-
-@pytest.mark.os_agnostic
-def test_validate_smtp_host_accepts_ipv6_with_port() -> None:
-    lib_mail.validate_smtp_host("[::1]:25")
-
-
-@pytest.mark.os_agnostic
-def test_validate_smtp_host_accepts_ipv6_full_with_port() -> None:
-    lib_mail.validate_smtp_host("[2001:db8::1]:587")
+    # Accepted means usable: it splits into what the transport connects to, and the model keeps it.
+    assert lib_mail._parse_smtp_host(host) == parsed
+    assert ConfMail(smtphosts=[host]).smtphosts == [host]
 
 
 @pytest.mark.os_agnostic
@@ -773,11 +771,6 @@ def test_validate_smtp_host_refuses_a_port_that_is_not_ascii_digits(host: str) -
     with pytest.raises(ValueError) as caught:
         lib_mail.validate_smtp_host(host)
     assert str(caught.value) == f'invalid smtp port in "{host}"'
-
-
-@pytest.mark.os_agnostic
-def test_validate_smtp_host_accepts_a_port_with_leading_zeros() -> None:
-    lib_mail.validate_smtp_host("host:0025")
 
 
 # Odd ports the range check already refused: the ASCII-digit check must not take them over.
