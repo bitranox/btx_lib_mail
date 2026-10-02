@@ -29,8 +29,9 @@ from typing import Final
 from pydantic import ValidationError
 
 # pydantic ends each error of its report with a link pinned to the installed pydantic
-# version; it describes the library, not the setting the caller got wrong.
-_PYDANTIC_URL_LINE: Final[re.Pattern[str]] = re.compile(r"\n[ \t]*For further information visit https://errors\.pydantic\.dev/\S*")
+# version; it describes the library, not the setting the caller got wrong. Only that exact
+# line shape is removed, so text a caller put into a key or value is never cut.
+_PYDANTIC_URL_LINE: Final[re.Pattern[str]] = re.compile(r"\n    For further information visit https://errors\.pydantic\.dev/\d+\.\d+/v/[a-z0-9_]+(?=\n|$)")
 
 
 class BtxMailError(Exception):

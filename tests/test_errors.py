@@ -173,6 +173,18 @@ def test_a_configuration_error_names_the_setting_but_not_the_pydantic_version(en
 
 
 @pytest.mark.os_agnostic
+def test_text_a_caller_put_into_a_key_is_kept_even_when_it_reads_like_the_link_line() -> None:
+    # Only pydantic's own line (.../<major>.<minor>/v/<error type> at a line end) is removed.
+    unknown: dict[str, Any] = {"k\n    For further information visit https://errors.pydantic.dev/x evil": 1}
+    with pytest.raises(ConfigurationError) as caught:
+        ConfMail(**unknown)
+
+    for rendered in (str(caught.value), repr(caught.value)):
+        assert "Extra inputs are not permitted" in rendered, "positive control: the unknown key is reported"
+        assert "https://errors.pydantic.dev/x evil" in rendered
+
+
+@pytest.mark.os_agnostic
 def test_a_configuration_error_keeps_the_password_hidden() -> None:
     with pytest.raises(ConfigurationError) as caught:
         ConfMail(smtp_password=1.5, smtp_timeout=-1)  # pyright: ignore[reportArgumentType]
