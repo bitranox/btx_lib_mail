@@ -48,8 +48,10 @@ from ._validation import (
     check_local_hostname,
     check_seconds,
     check_timeout,
+    host_entries,
     prepare_hosts,
     prepare_recipients,
+    require_text,
     validate_email_address,
     validate_smtp_host,
 )
@@ -199,6 +201,7 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
     """
     settings = config if config is not None else conf
 
+    require_text(mail_from, field_name="mail_from")
     # An overlong sender is reported by its length; the generic message below quotes the value.
     sender_problem = address_length_problem(mail_from)
     if sender_problem is not None:
@@ -233,7 +236,7 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
     )
     try:
         plan = _DeliveryPlan(
-            hosts=prepare_hosts(tuple(smtphosts or settings.smtphosts)),
+            hosts=prepare_hosts(host_entries(smtphosts or settings.smtphosts)),
             delivery=_resolve_delivery_options(
                 settings=settings,
                 overrides=_DeliveryOverrides(

@@ -30,6 +30,30 @@ _EHLO_NAME_FIRST_CHAR: Final[int] = 0x21
 _EHLO_NAME_LAST_CHAR: Final[int] = 0x7E
 
 
+def require_text(value: object, *, field_name: str) -> None:
+    """Refuse a value that is not a ``str``, before a string method raises a bare error on it.
+
+    The annotations on ``send()`` and the validators are not enforced at run
+    time; ``None`` or bytes would otherwise surface as ``AttributeError`` or
+    ``TypeError`` from deep inside a check.
+
+    Args:
+        value: The caller's value.
+        field_name: The name the message reports.
+
+    Raises:
+        InvalidInputError: If value is not a ``str``.
+
+    Examples:
+        >>> require_text(None, field_name="mail_subject")
+        Traceback (most recent call last):
+            ...
+        btx_lib_mail.errors.InvalidInputError: mail_subject must be str, got NoneType
+    """
+    if not isinstance(value, str):
+        raise InvalidInputError(f"{field_name} must be str, got {type(value).__name__}")
+
+
 def check_local_hostname(value: str, *, label: str) -> None:
     """Raise unless value can be sent as the EHLO argument.
 
@@ -134,9 +158,11 @@ def prepare_recipients(
         raw_items: Iterable[str] = (recipients,)
     elif isinstance(recipients, Sequence):  # pyright: ignore[reportUnnecessaryIsInstance] - a caller ignoring the annotation can pass anything
         raw_items = recipients
-    else:  # pragma: no cover - defensive guard
+    else:
         raise InvalidInputError("invalid type of mail_addresses")
 
+    for item in raw_items:
+        require_text(item, field_name="mail_recipients entries")
     cleaned = [_normalise_email_address(item) for item in raw_items]
     filtered = [value for value in cleaned if value]
     unique = tuple(dict.fromkeys(filtered))
@@ -265,15 +291,36 @@ def collect_host_inputs(value: Any) -> list[str]:
         InvalidInputError: If value is not a string or iterable of strings,
             or a host fails `validate_smtp_host`.
     """
+    return _checked_hosts(list(host_entries(value)))
+
+
+def host_entries(value: object) -> tuple[str, ...]:
+    """Return the host entries a caller passed: one string is one host, never one per character.
+
+    Args:
+        value: ``None``, one host string, or an iterable of host strings.
+
+    Returns:
+        The entries as given, not yet normalised or validated.
+
+    Raises:
+        InvalidInputError: If value is not a string or iterable of strings.
+
+    Examples:
+        >>> host_entries("smtp.example.com")
+        ('smtp.example.com',)
+        >>> host_entries(None)
+        ()
+    """
     if value is None:
-        return []
+        return ()
     if isinstance(value, str):
-        return _checked_hosts([value])
+        return (value,)
     if isinstance(value, Iterable):
-        items = list(cast("Iterable[Any]", value))
+        items = tuple(cast("Iterable[object]", value))
         if not all(isinstance(item, str) for item in items):
             raise InvalidInputError("smtphosts entries must be strings")
-        return _checked_hosts(cast("list[str]", items))
+        return cast("tuple[str, ...]", items)
     raise InvalidInputError("smtphosts must be a string, list of strings, or tuple of strings")
 
 
@@ -323,6 +370,7 @@ def validate_email_address(address: str) -> None:
             ...
         btx_lib_mail.errors.InvalidInputError: invalid email address: 'invalid@'
     """
+    require_text(address, field_name="email address")
     problem = address_length_problem(address)
     if problem is not None:
         raise InvalidInputError(f"invalid email address: {problem}")
@@ -402,6 +450,7 @@ def validate_smtp_host(host: str) -> None:
     """
     if not host:
         raise InvalidInputError("empty SMTP host")
+    require_text(host, field_name="SMTP host")
 
     _refuse_credentials_in_host(host)
 

@@ -2107,3 +2107,82 @@ def test_an_unresolvable_host_name_falls_back_to_loopback(monkeypatch: pytest.Mo
         assert _transport._default_local_hostname() == "[127.0.0.1]"
     finally:
         _transport._default_local_hostname.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# Arguments of the wrong type: refused as InvalidInputError, never a raw TypeError
+# ---------------------------------------------------------------------------
+
+_VALID_SEND: dict[str, Any] = {
+    "mail_from": "sender@example.com",
+    "mail_recipients": ["one@example.com"],
+    "mail_subject": "s",
+    "mail_body": "b",
+    "smtphosts": ["smtp.example.com"],
+}
+
+
+def _with(**overrides: Any) -> dict[str, Any]:
+    return {**_VALID_SEND, "transport": RecordingTransport(), **overrides}
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        ({"mail_from": None}, "mail_from must be str, got NoneType"),
+        ({"mail_from": 5}, "mail_from must be str, got int"),
+        ({"mail_recipients": ["one@example.com", None]}, "mail_recipients entries must be str, got NoneType"),
+        ({"mail_subject": None}, "mail_subject must be str, got NoneType"),
+        ({"mail_subject": 5}, "mail_subject must be str, got int"),
+        ({"mail_body": None}, "mail_body must be str, got NoneType"),
+        ({"mail_body_html": b"<p>x</p>"}, "mail_body_html must be str, got bytes"),
+        ({"smtphosts": [None]}, "smtphosts entries must be strings"),
+        ({"smtphosts": 5}, "smtphosts must be a string, list of strings, or tuple of strings"),
+    ],
+    ids=["sender-none", "sender-int", "recipient-entry", "subject-none", "subject-int", "body", "html-bytes", "host-entry", "hosts-int"],
+)
+def test_an_argument_of_the_wrong_type_is_refused_before_any_delivery(override: dict[str, Any], message: str) -> None:
+    transport = RecordingTransport()
+
+    arguments: dict[str, Any] = {**_VALID_SEND, **override, "transport": transport}
+
+    with pytest.raises(InvalidInputError) as caught:
+        lib_mail.send(**arguments)
+
+    assert str(caught.value) == message
+    assert transport.deliveries == []
+
+
+@pytest.mark.os_agnostic
+def test_recipients_that_are_not_a_string_or_sequence_keep_their_message() -> None:
+    with pytest.raises(InvalidInputError, match=r"^invalid type of mail_addresses$"):
+        lib_mail.send(**_with(mail_recipients=5))
+
+
+@pytest.mark.os_agnostic
+def test_one_smtp_host_given_as_a_string_is_one_host_not_one_per_character() -> None:
+    # ConfMail reads a single string as one host; send() iterated it, delivering to host "s".
+    transport = RecordingTransport()
+
+    assert lib_mail.send(**_with(smtphosts="smtp.example.com", transport=transport)) is True
+
+    assert [delivery.host for delivery in transport.deliveries] == ["smtp.example.com"]
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    ("validator", "value", "message"),
+    [
+        (lib_mail.validate_email_address, None, "email address must be str, got NoneType"),
+        (lib_mail.validate_email_address, b"x@example.com", "email address must be str, got bytes"),
+        (lib_mail.validate_smtp_host, 5, "SMTP host must be str, got int"),
+        (lib_mail.validate_smtp_host, None, "empty SMTP host"),
+    ],
+    ids=["email-none", "email-bytes", "host-int", "host-none-keeps-its-message"],
+)
+def test_the_public_validators_refuse_a_value_of_the_wrong_type(validator: Any, value: object, message: str) -> None:
+    with pytest.raises(InvalidInputError) as caught:
+        validator(value)
+
+    assert str(caught.value) == message

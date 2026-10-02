@@ -172,6 +172,15 @@
   delivery; with a long non-ASCII subject that cost about 28 ms per recipient, over a minute
   at a thousand recipients. They are folded once per `send()` now; the header bytes are
   unchanged.
+- `send(smtphosts="smtp.example.com")` iterated the string one character at a time and
+  delivered to a host named `s` (then `m`, ...), whatever that name resolves to. One string
+  is one host now, as `ConfMail.smtphosts` already read it; an entry that is not a string
+  raises `InvalidInputError("smtphosts entries must be strings")`, as `ConfMail` does.
+- A sender, recipient entry, subject or body that is not a `str` (`None`, a number, bytes),
+  and such a value passed to `validate_email_address()` or `validate_smtp_host()`, raised a
+  bare `TypeError` or `AttributeError` from inside a check. It is
+  `InvalidInputError("<field> must be str, got <type>")` now, before any delivery
+  (`validate_smtp_host(None)` keeps `empty SMTP host`).
 
 ## [3.1.0] 2026-10-02 11:58:41
 

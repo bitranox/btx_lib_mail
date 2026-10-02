@@ -21,6 +21,7 @@ from typing import IO, TYPE_CHECKING, Final, cast
 from ._attachments import AttachmentPayload, AttachmentSecurityError, AttachmentViolation, log_violation
 from ._common import is_valid_unicode
 from ._transport import STREAM_CHUNK_SIZE
+from ._validation import require_text
 from .errors import InvalidInputError
 
 if TYPE_CHECKING:
@@ -291,6 +292,7 @@ def check_subject(subject: str) -> None:
             contains a line break, a control character other than TAB, or a lone
             surrogate.
     """
+    require_text(subject, field_name="mail_subject")
     if "\r" in subject or "\n" in subject:
         raise InvalidInputError(_LINE_BREAK_MESSAGE)
     if any(unicodedata.category(character) == "Cc" and character not in _SUBJECT_ALLOWED_CONTROLS for character in subject):
@@ -313,6 +315,8 @@ def check_body(*, plain_body: str, html_body: str) -> None:
     Raises:
         InvalidInputError: If either body holds a lone surrogate.
     """
+    require_text(plain_body, field_name="mail_body")
+    require_text(html_body, field_name="mail_body_html")
     _check_unicode_text(plain_body, field_name="mail_body")
     _check_unicode_text(html_body, field_name="mail_body_html")
 

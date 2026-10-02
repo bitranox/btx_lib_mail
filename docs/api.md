@@ -101,7 +101,7 @@ passed positionally; every other one is keyword-only.
 | `mail_subject`                 | `str`                                   | -       | UTF-8 subject line of at most 4096 characters. A longer one, a line break, a control character other than TAB, or invalid Unicode is refused with `InvalidInputError` before any delivery.                                                             |
 | `mail_body`                    | `str`                                   | `""`    | Optional plain-text body.                                                                                                                                                                                                                              |
 | `mail_body_html`               | `str`                                   | `""`    | Optional HTML body (UTF-8).                                                                                                                                                                                                                            |
-| `smtphosts`                    | `Sequence[str] \| None`                 | `None`  | Host override. Falls back to `smtphosts` of the config in use (the passed `config`, else the global `conf`).                                                                                                                                           |
+| `smtphosts`                    | `Sequence[str] \| None`                 | `None`  | Host override: a sequence of hosts, or one host as a string. Falls back to `smtphosts` of the config in use (the passed `config`, else the global `conf`).                                                                                             |
 | `attachment_file_paths`        | `Sequence[pathlib.Path \| str] \| None` | `None`  | Attachment paths, a sequence of `Path` or `str` entries; a single path passed alone, or any other entry, is refused with `InvalidInputError`. Missing or unreadable files raise unless `raise_on_missing_attachments` is `False` on the config in use. |
 | `credentials`                  | `tuple[str, str] \| None`               | `None`  | Keyword-only, like every parameter below. `(username, password)` override. Defaults to `resolved_credentials()` of the config in use.                                                                                                                  |
 | `use_starttls`                 | `bool \| None`                          | `None`  | When `None`, the helper uses `smtp_use_starttls` of the config in use.                                                                                                                                                                                 |
@@ -184,8 +184,9 @@ Windows, whose file systems do, and exactly on Linux:
 **Raises:** every exception below is a `BtxMailError` (see [Exceptions](#exceptions)).
 
 - `InvalidInputError` (a `ValueError`)  -  a refused sender, recipient, host, subject (over
-  4096 characters, a line break, a control character other than TAB, or invalid Unicode), body (invalid Unicode), EHLO name, timeout or delivery deadline, or no valid
-  recipient left after validation.
+  4096 characters, a line break, a control character other than TAB, or invalid Unicode), body (invalid Unicode), EHLO name, timeout or delivery deadline, an
+  argument that is not a `str` where one is expected (`mail_subject must be str, got NoneType`),
+  or no valid recipient left after validation.
 - `AttachmentNotFoundError` (a `FileNotFoundError`)  -  when a required attachment is missing,
   is not a regular file (a directory, a FIFO), or cannot be examined or opened (`can not be read
   (EACCES)`, the errno name in brackets; a symlink loop reads `ELOOP`) and `raise_on_missing_attachments` is `True`.
