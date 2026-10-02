@@ -98,7 +98,8 @@
 - A recipient holding KELVIN SIGN (U+212A) was lower-cased to an ASCII `k` before it was
   validated, so a non-ASCII address was silently rewritten to a different, valid one and sent
   there, while the same text as sender was refused. Only an ASCII recipient is lower-cased
-  now; a non-ASCII one is refused like the sender.
+  now; a non-ASCII one is refused like the sender, and the refusal quotes it as given
+  (`invalid recipient ÄBC@example.com`, where it quoted the lower-cased `äbc@example.com`).
 - CLI: an env file (`--env-file`, `BTX_MAIL_ENV_FILE`) that is a device or FIFO passed the
   64 KiB size check (it reports size 0) and was then read without a bound: `/dev/zero` ran out
   of memory and a FIFO blocked for a writer. The file is now opened without blocking and read
