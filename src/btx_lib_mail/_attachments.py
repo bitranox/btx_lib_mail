@@ -385,17 +385,55 @@ def _check_symlink(*, path: pathlib.Path, allow_symlinks: bool) -> pathlib.Path:
     Raises:
         AttachmentSecurityError: If the path is a symlink and symlinks are
             not allowed.
+        _UnreadableAttachmentError: When the path cannot be examined
+            (``EACCES``, ``ENAMETOOLONG``) or is a symlink loop (``ELOOP``).
     """
-    if path.is_symlink():
-        if not allow_symlinks:
-            raise AttachmentSecurityError(
-                path=path,
-                reason=f'symlink detected and not allowed: "{path}"',
-                violation_type=AttachmentViolation.SYMLINK,
-            )
-        # Follow the symlink and return the resolved target
+    if not _is_symlink(path):
         return path.resolve()
-    return path.resolve()
+    if not allow_symlinks:
+        raise AttachmentSecurityError(
+            path=path,
+            reason=f'symlink detected and not allowed: "{path}"',
+            violation_type=AttachmentViolation.SYMLINK,
+        )
+    try:
+        resolved = path.resolve()
+    except RuntimeError:  # Python < 3.13 reports a symlink loop this way
+        raise _UnreadableAttachmentError(errno.ELOOP) from None
+    # Python 3.13+ returns a loop unresolved, still a symlink.
+    if _is_symlink(resolved):
+        raise _UnreadableAttachmentError(errno.ELOOP)
+    return resolved
+
+
+def _is_symlink(path: pathlib.Path) -> bool:
+    """Whether path itself is a symlink; a path that does not exist is not one.
+
+    ``Path.is_symlink()`` re-raises ``EACCES`` and ``ENAMETOOLONG`` on Python
+    3.10-3.13 but swallows them on 3.14, so the outcome is decided here, the
+    same on every version.
+
+    Raises:
+        _UnreadableAttachmentError: When the operating system refuses to
+            examine the path for any reason other than its absence.
+    """
+    status = _lstat_or_none(path)
+    return status is not None and stat.S_ISLNK(status.st_mode)
+
+
+def _lstat_or_none(path: pathlib.Path) -> os.stat_result | None:
+    """``os.lstat(path)``, or ``None`` when path does not exist.
+
+    Raises:
+        _UnreadableAttachmentError: When the operating system refuses to
+            examine the path for any reason other than its absence.
+    """
+    try:
+        return os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    except OSError as exc:
+        raise _UnreadableAttachmentError(exc.errno) from None
 
 
 def _check_filename(path: pathlib.Path) -> None:
@@ -625,7 +663,7 @@ def _changed_after_check(path: pathlib.Path) -> AttachmentSecurityError:
 
 
 class _UnreadableAttachmentError(Exception):
-    """The checked file exists, but opening it failed (permission, open-file limit, I/O).
+    """The path exists, but examining or opening it failed (permission, name length, symlink loop, I/O).
 
     Internal: :func:`_prepare_attachment` reports it like a missing file, so
     ``raise_on_missing_attachments`` decides between raising and skipping.
@@ -664,9 +702,8 @@ def _open_attachment(path: pathlib.Path, max_size: int | None) -> IO[bytes] | No
         _UnreadableAttachmentError: When the regular file exists but the
             operating system refuses to open it.
     """
-    try:
-        checked = os.lstat(path)
-    except OSError:
+    checked = _lstat_or_none(path)
+    if checked is None:
         return None
     if stat.S_ISLNK(checked.st_mode):
         raise _changed_after_check(path)
@@ -714,6 +751,8 @@ def _validate_attachment_security(
     Raises:
         AttachmentSecurityError: If any check fails. File existence is not
             checked here.
+        _UnreadableAttachmentError: When the path cannot be examined, or is
+            a symlink loop.
     """
     _check_nul(path)
     _check_path_traversal(path, original_path_str)
@@ -786,6 +825,8 @@ def _prepare_attachment(path: pathlib.Path, security: AttachmentSecurityOptions,
             raise
         log_violation(exc, original_path_str)
         return None
+    except _UnreadableAttachmentError as exc:
+        return _unavailable(path, f"can not be read ({exc.code})", raise_on_missing=raise_on_missing)
     try:
         handle = _open_attachment(validated_path, security.max_size_bytes)
     except AttachmentSecurityError as exc:

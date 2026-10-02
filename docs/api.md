@@ -187,8 +187,8 @@ Windows, whose file systems do, and exactly on Linux:
   4096 characters, a line break, a control character other than TAB, or invalid Unicode), body (invalid Unicode), EHLO name, timeout or delivery deadline, or no valid
   recipient left after validation.
 - `AttachmentNotFoundError` (a `FileNotFoundError`)  -  when a required attachment is missing,
-  is not a regular file (a directory, a FIFO), or cannot be opened (`can not be read (EACCES)`,
-  the errno name in brackets) and `raise_on_missing_attachments` is `True`.
+  is not a regular file (a directory, a FIFO), or cannot be examined or opened (`can not be read
+  (EACCES)`, the errno name in brackets; a symlink loop reads `ELOOP`) and `raise_on_missing_attachments` is `True`.
 - `AttachmentSecurityError`  -  when an attachment violates security policies and
   `attachment_raise_on_security_violation` is `True`, including a file that changed or
   grew past the size limit after it was checked (see

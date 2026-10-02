@@ -565,6 +565,65 @@ def test_an_attachment_that_cannot_be_read_is_reported_like_a_missing_one(tmp_pa
         report.chmod(0o600)
 
 
+@pytest.mark.os_posix
+@pytest.mark.skipif(_UNREADABLE_FILE_SKIP, reason="needs POSIX permissions and a non-root user")
+@pytest.mark.parametrize("tolerate", [False, True], ids=["raise", "tolerate"])
+def test_an_attachment_in_a_directory_that_cannot_be_searched_is_reported_as_unreadable(tmp_path: Path, tolerate: bool) -> None:
+    # Python 3.10-3.13 re-raise EACCES from Path.is_symlink(), so the symlink check itself must not leak it.
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    report = locked / "report.txt"
+    report.write_bytes(b"quarterly numbers")
+    locked.chmod(0)
+    transport = RecordingTransport()
+
+    try:
+        if tolerate:
+            assert _send(transport, report, raise_on_missing_attachments=False) is True
+            assert len(transport.messages) == 3, "tolerate mode skips the attachment and still sends"
+        else:
+            with pytest.raises(AttachmentNotFoundError, match=r'^Attachment File ".*report\.txt" can not be read \(EACCES\)$'):
+                _send(transport, report)
+            assert transport.messages == {}
+    finally:
+        locked.chmod(0o700)
+
+
+@pytest.mark.os_posix
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows reports an overlong name differently")
+@pytest.mark.parametrize("tolerate", [False, True], ids=["raise", "tolerate"])
+def test_an_attachment_name_longer_than_the_filesystem_allows_is_reported_as_unreadable(tmp_path: Path, tolerate: bool) -> None:
+    report = tmp_path / ("x" * 300 + ".txt")
+    transport = RecordingTransport()
+
+    if tolerate:
+        assert _send(transport, report, raise_on_missing_attachments=False) is True
+        assert len(transport.messages) == 3
+    else:
+        with pytest.raises(AttachmentNotFoundError, match=r'^Attachment File ".*x\.txt" can not be read \(ENAMETOOLONG\)$'):
+            _send(transport, report)
+        assert transport.messages == {}
+
+
+@pytest.mark.os_posix
+@pytest.mark.skipif(sys.platform == "win32", reason="creating symlinks needs a privilege on Windows")
+@pytest.mark.parametrize("tolerate", [False, True], ids=["raise", "tolerate"])
+def test_an_allowed_symlink_loop_is_reported_as_unreadable(tmp_path: Path, tolerate: bool) -> None:
+    # Python 3.10-3.12 raise RuntimeError from Path.resolve() on a loop; 3.13+ return the loop unresolved.
+    first, second = tmp_path / "first.txt", tmp_path / "second.txt"
+    first.symlink_to(second)
+    second.symlink_to(first)
+    transport = RecordingTransport()
+
+    if tolerate:
+        assert _send(transport, first, attachment_allow_symlinks=True, raise_on_missing_attachments=False) is True
+        assert len(transport.messages) == 3
+    else:
+        with pytest.raises(AttachmentNotFoundError, match=r'^Attachment File ".*first\.txt" can not be read \(ELOOP\)$'):
+            _send(transport, first, attachment_allow_symlinks=True)
+        assert transport.messages == {}
+
+
 @pytest.mark.os_agnostic
 def test_an_attachment_path_given_as_a_string_is_sent(tmp_path: Path) -> None:
     report = tmp_path / "report.txt"

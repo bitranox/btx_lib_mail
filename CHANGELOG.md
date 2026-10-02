@@ -108,8 +108,11 @@
 - CLI: a `--password-file` that is not UTF-8 raised a bare `UnicodeDecodeError` (exit 22) whose
   message quoted the offending byte and its offset in the password. It is now a usage error,
   `--password-file: is not UTF-8 text`, exit 2, like an env file that is not UTF-8.
-- An attachment the operating system refuses to open (no read permission, the open-file
-  limit, an I/O error) raised the bare `OSError` (`PermissionError: [Errno 13] ...`), and
+- An attachment the operating system refuses to open or examine (no read permission, a
+  directory on its path that cannot be searched, a name longer than the filesystem allows, a
+  symlink loop when symlinks are allowed, the open-file limit, an I/O error) raised the bare
+  `OSError` (`PermissionError: [Errno 13] ...`, or `RuntimeError: Symlink loop` on Python
+  3.10-3.12), or on Python 3.14 was reported as `can not be found`, and
   `raise_on_missing_attachments=False` could not skip it. It is now reported like a missing
   file: `AttachmentNotFoundError('Attachment File "<path>" can not be read (EACCES)')`, or a
   warning and a skip when that setting is `False`. (The CLI already refused an unreadable
