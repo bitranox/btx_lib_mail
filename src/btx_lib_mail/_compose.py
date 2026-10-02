@@ -9,7 +9,6 @@ from __future__ import annotations
 import base64
 import io
 import mimetypes
-import shutil
 import tempfile
 import unicodedata
 import uuid
@@ -18,11 +17,14 @@ from email import policy as email_policy
 from email.generator import BytesGenerator
 from email.message import EmailMessage
 from email.utils import formatdate
-from typing import IO, Final, cast
+from typing import IO, TYPE_CHECKING, Final, cast
 
 from ._attachments import AttachmentPayload, AttachmentSecurityError, AttachmentViolation, log_violation
 from ._transport import STREAM_CHUNK_SIZE
 from .errors import InvalidInputError
+
+if TYPE_CHECKING:
+    from _typeshed import WriteableBuffer
 
 # Message assembly spills to disk above this threshold so a large message never
 # has to fit in memory as one contiguous string.
@@ -145,21 +147,54 @@ def envelope_header_lines(*, sender: str, recipient: str, subject: str) -> bytes
 
 
 def message_for(header_lines: bytes, body: IO[bytes]) -> IO[bytes]:
-    """Return one recipient's complete message: its header lines, then a copy of the shared body.
+    """Return one recipient's complete message: its header lines, then the shared body.
 
-    The copy streams in ``STREAM_CHUNK_SIZE`` pieces, so memory stays at one
-    chunk; the attachments are not read or encoded again.
+    The body is read in place, never copied, so the scratch disk a large
+    attachment needs is its encoded size once however many recipients there
+    are. The stream is read-only and seekable; closing it leaves the shared body
+    open for the next recipient.
     """
-    spool = _new_spool()
-    try:
-        spool.write(header_lines)
-        body.seek(0)
-        shutil.copyfileobj(body, spool, STREAM_CHUNK_SIZE)
-        spool.seek(0)
-    except BaseException:
-        spool.close()
-        raise
-    return spool
+    return io.BufferedReader(_JoinedMessage(header_lines, body), buffer_size=STREAM_CHUNK_SIZE)
+
+
+class _JoinedMessage(io.RawIOBase):
+    """A read-only, seekable view of ``header_lines`` followed by ``body``."""
+
+    def __init__(self, header_lines: bytes, body: IO[bytes]) -> None:
+        super().__init__()
+        self._header = header_lines
+        self._body = body
+        self._size = len(header_lines) + body.seek(0, io.SEEK_END)
+        self._position = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def tell(self) -> int:
+        return self._position
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        base = {io.SEEK_SET: 0, io.SEEK_CUR: self._position, io.SEEK_END: self._size}[whence]
+        self._position = max(0, base + offset)
+        return self._position
+
+    def readinto(self, buffer: WriteableBuffer, /) -> int:
+        view = memoryview(buffer).cast("B")
+        header_left = len(self._header) - self._position
+        if header_left > 0:
+            count = min(header_left, len(view))
+            view[:count] = self._header[self._position : self._position + count]
+        else:
+            # Seek on every read: the body is shared, and another reader may have moved it.
+            self._body.seek(self._position - len(self._header))
+            chunk = self._body.read(len(view))
+            count = len(chunk)
+            view[:count] = chunk
+        self._position += count
+        return count
 
 
 # Control characters a subject may not carry: CR and LF would end the header (the

@@ -5,6 +5,7 @@ from __future__ import annotations
 # Tests reach into module internals (dot-stuffer, spool composer) by design, and
 # aiosmtpd ships no type stubs, so its server/handler objects are untyped here.
 # pyright: reportPrivateUsage=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false
+import io
 import smtplib
 import socket
 from email import message_from_bytes
@@ -39,7 +40,9 @@ def _compose_message(
     """Compose one recipient's whole message the way send() does: shared body plus its header lines."""
     body = _compose._compose_body(_compose.MessageContent(plain_body=plain_body, html_body=html_body, attachments=attachments))
     try:
-        return _compose.message_for(_compose.envelope_header_lines(sender=sender, recipient=recipient, subject=subject), body)
+        # The message reads the shared body in place, so it is read out before the body closes.
+        with _compose.message_for(_compose.envelope_header_lines(sender=sender, recipient=recipient, subject=subject), body) as message:
+            return io.BytesIO(message.read())
     finally:
         body.close()
 

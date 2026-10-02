@@ -35,6 +35,7 @@ from ._attachments import (
     AttachmentSecurityOptions,
     AttachmentViolation,
     close_attachments,
+    normalise_extensions,
     prepare_attachments,
 )
 from ._common import logger, printable
@@ -381,8 +382,9 @@ def _resolve_attachment_security_options(  # noqa: PLR0913 - one keyword-only ov
     None; pure function.
     """
     # Use sentinel pattern: None means "use default", explicit value overrides
-    allowed_ext = explicit_allowed_extensions if explicit_allowed_extensions is not None else settings.attachment_allowed_extensions
-    blocked_ext = explicit_blocked_extensions if explicit_blocked_extensions is not None else settings.attachment_blocked_extensions
+    # A keyword set is normalised like the ConfMail field, so {".EXE"} blocks x.exe here too.
+    allowed_ext = normalise_extensions(explicit_allowed_extensions) if explicit_allowed_extensions is not None else settings.attachment_allowed_extensions
+    blocked_ext = normalise_extensions(explicit_blocked_extensions) if explicit_blocked_extensions is not None else settings.attachment_blocked_extensions
     allowed_dirs = explicit_allowed_directories if explicit_allowed_directories is not None else settings.attachment_allowed_directories
     blocked_dirs = explicit_blocked_directories if explicit_blocked_directories is not None else settings.attachment_blocked_directories
     max_size = explicit_max_size_bytes if explicit_max_size_bytes is not None else settings.attachment_max_size_bytes
@@ -464,6 +466,9 @@ def _deliver_to_any_host(*, sender: str, recipient: str, message: IO[bytes], pla
 
     for host in plan.hosts:
         try:
+            # A host that read part of the message and failed leaves the stream mid-way;
+            # every attempt starts from the first byte, whatever the transport does.
+            message.seek(0)
             plan.transport.deliver(
                 host=host,
                 sender=sender,

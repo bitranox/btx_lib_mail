@@ -695,3 +695,60 @@ def test_a_command_run_on_its_own_gets_a_default_context() -> None:
     from click.testing import CliRunner as Runner
 
     assert "CliContext(traceback=False" in Runner().invoke(probe, []).output
+
+
+# ---------------------------------------------------------------------------
+# JSON failures carry what the caller needs; JSON mode comes from the group options only
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.os_agnostic
+def test_a_json_delivery_failure_names_the_failed_recipients_and_what_was_skipped(
+    capsys: pytest.CaptureFixture[str], isolated_traceback_config: None, tmp_path: Path
+) -> None:
+    script = tmp_path / "run.sh"
+    script.write_text("echo hi", encoding="utf-8")
+    argv = ["--json", "send", "--host", "127.0.0.1:1", "--recipient", "one@example.com", *_MESSAGE, "--no-starttls", "--timeout", "2"]
+    argv += ["--local-hostname", "client.example.com", "--attachment", str(script), "--attachment-warn", *_no_blocked_dirs(tmp_path)]
+
+    code, out = _main(argv, capsys)
+
+    envelope = json.loads(out)
+    assert code != 0
+    assert envelope["error"]["type"] == "DeliveryError"
+    assert envelope["error"]["failed_recipients"] == ["one@example.com"]
+    assert envelope["error"]["hosts"] == ["127.0.0.1:1"]
+    assert [(item["kind"], item["value"]) for item in envelope["skipped"]] == [("attachment", str(script))]
+
+
+@pytest.mark.os_agnostic
+def test_an_option_value_spelled_like_the_json_flag_does_not_switch_json_on(capsys: pytest.CaptureFixture[str], isolated_traceback_config: None) -> None:
+    code, out = _main(["validate-email", "--json"], capsys)
+
+    assert code != 0
+    assert not out.lstrip().startswith("{"), out
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    ("raw", "value"),
+    [('"s3cret"', "s3cret"), ("'s3cret'", "s3cret"), ('s3cret"', 's3cret"'), ('""x""', '"x"'), ("\"abc'", "\"abc'"), ("  plain  ", "plain")],
+)
+def test_an_env_file_value_loses_one_matching_pair_of_quotes_only(cli_runner: CliRunner, tmp_path: Path, raw: str, value: str) -> None:
+    env_file = tmp_path / "mail.env"
+    env_file.write_text(f"BTX_MAIL_SMTP_USERNAME=user\nBTX_MAIL_SMTP_PASSWORD={raw}\n", encoding="utf-8")
+
+    result, transport = _invoke(cli_runner, ["send", "--env-file", str(env_file), *_ROUTE, *_MESSAGE])
+
+    assert result.exit_code == 0, result.output
+    assert transport.only.options.credentials == ("user", value)
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("command", ["send", "info", "hello", "validate-email", "validate-smtp-host", "fail"])
+def test_command_help_is_plain_text_not_docstring_markup(cli_runner: CliRunner, command: str) -> None:
+    result = cli_runner.invoke(cli_mod.cli, [command, "--help"])
+
+    assert result.exit_code == 0
+    assert "###" not in result.output
+    assert "**Purpose:**" not in result.output

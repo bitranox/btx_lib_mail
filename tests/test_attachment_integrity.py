@@ -293,3 +293,71 @@ def test_send_refuses_a_timeout_that_is_not_finite(value: float) -> None:
 def test_a_negative_infinite_timeout_keeps_the_positive_message() -> None:
     with pytest.raises(InvalidInputError, match="smtp_timeout must be positive, got -inf"):
         send("sender@example.com", "one@example.com", "s", smtphosts=["smtp.example.com"], timeout=-math.inf, transport=_RecordingTransport())
+
+
+# ---------------------------------------------------------------------------
+# send() keyword extension sets, failover rewind, the per-recipient stream
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.os_agnostic
+def test_a_blocked_extension_given_to_send_matches_any_case(tmp_path: Path) -> None:
+    tool = tmp_path / "x.EXE"
+    tool.write_bytes(b"MZ")
+
+    with pytest.raises(AttachmentSecurityError) as caught:
+        _send(_RecordingTransport(), tool, attachment_blocked_extensions=frozenset({".EXE"}))
+
+    assert caught.value.violation_type is AttachmentViolation.EXTENSION
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("spelling", ["PDF", ".PDF", " pdf "])
+def test_an_allowed_extension_given_to_send_is_normalised_like_the_config(tmp_path: Path, spelling: str) -> None:
+    report = tmp_path / "r.pdf"
+    report.write_bytes(b"%PDF")
+
+    assert _send(_RecordingTransport(), report, attachment_allowed_extensions=frozenset({spelling})) is True
+
+
+class _ReadThenFailOnFirstHost:
+    """Reads the whole message on the first host, then fails, so failover must rewind it."""
+
+    def __init__(self) -> None:
+        self.read_sizes: dict[str, int] = {}
+
+    def deliver(self, *, host: str, sender: str, recipient: str, message: IO[bytes], delivery: Any) -> None:
+        self.read_sizes[host] = len(message.read())
+        if host == "first.example.com":
+            raise ConnectionResetError("dropped")
+
+
+@pytest.mark.os_agnostic
+def test_the_next_host_receives_the_whole_message_after_a_host_read_and_failed() -> None:
+    transport = _ReadThenFailOnFirstHost()
+
+    send("sender@example.com", "one@example.com", "s", "body", smtphosts=["first.example.com", "second.example.com"], transport=transport)
+
+    assert transport.read_sizes["first.example.com"] > 0
+    assert transport.read_sizes["second.example.com"] == transport.read_sizes["first.example.com"]
+
+
+@pytest.mark.os_agnostic
+def test_a_recipient_message_reads_the_shared_body_in_place() -> None:
+    shared = _compose._new_spool()
+    shared.write(b"MIME-Version: 1.0\r\n\r\nbody\r\n")
+    message = _compose.message_for(b"Subject: s\r\n", shared)
+    try:
+        assert message.read() == b"Subject: s\r\nMIME-Version: 1.0\r\n\r\nbody\r\n"
+        message.seek(0)
+        assert message.read(5) == b"Subje"
+        # No copy: the recipient's stream reads the shared spool itself, so scratch
+        # disk is the body once, not once more per recipient.
+        shared.seek(0, 2)
+        shared.write(b"tail\r\n")
+        message.seek(0)
+        assert message.read().endswith(b"tail\r\n")
+    finally:
+        message.close()
+    assert not shared.closed, "closing one recipient's message must not close the shared body"
+    shared.close()

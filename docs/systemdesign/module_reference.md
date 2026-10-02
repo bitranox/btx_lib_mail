@@ -1,444 +1,422 @@
 # Module Reference: btx_lib_mail
 
-This document describes the modules that make up `btx_lib_mail` and the public
-and notable internal components of each. It reflects the code as it currently
-stands; for narrative usage and configuration guidance see the
-[README](../../README.md).
+## Status
 
-`btx_lib_mail` is a small SMTP delivery library with a rich-click CLI. The
-package is a CLI-first utility whose modules live in the adapter/transport layer,
-with `behaviors.py` acting as a thin placeholder domain. `import-linter`
-enforces one layers contract: `cli` above `lib_mail` above `secret_safety` above
-`behaviors`, so a module imports only from layers below it.
+Production library, published to PyPI. The version is in `pyproject.toml` and
+`src/btx_lib_mail/__init__conf__.py`; the changes per release are in `CHANGELOG.md`.
 
-## Architecture at a glance
+## Links & References
 
-Delivery flows in one direction, from intent to SMTP side effects:
+**Repository:** https://github.com/bitranox/btx_lib_mail
+**PyPI:** https://pypi.org/project/btx-lib-mail/
+**Documentation:** README.md, docs/api.md, docs/cli.md, docs/configuration.md,
+docs/attachment-security.md, docs/streaming.md, docs/installation.md, CHANGELOG.md
+**Related Files:**
+
+* src/btx_lib_mail/__init__.py (public API surface)
+* src/btx_lib_mail/lib_mail.py (`send()` and the public face of the mail modules)
+* src/btx_lib_mail/_config.py, _attachments.py, _validation.py, _compose.py,
+  _transport.py, _common.py (private modules behind `lib_mail`)
+* src/btx_lib_mail/errors.py (`BtxMailError` and its subclasses)
+* src/btx_lib_mail/secret_safety.py (credential-safe pydantic validation errors)
+* src/btx_lib_mail/cli.py, typed_click.py, __main__.py (command-line adapter)
+* src/btx_lib_mail/behaviors.py, __init__conf__.py (scaffold helpers, static metadata)
+
+---
+
+## Problem Statement
+
+Sending mail from Python with the standard library alone leaves every caller to solve
+the same problems again:
+
+1. `smtplib` and `email` buffer a whole message, attachments and their base64
+   expansion included, so a large attachment costs a multiple of its size in memory.
+2. Neither implements the client side of RFC 3030 BDAT/CHUNKING.
+3. A path handed in as an attachment can be a private key, a system file, an
+   executable, a symlink, or a file swapped after it was checked.
+4. A password in configuration leaks through pydantic validation errors, `repr`,
+   exception text and log lines unless every one of those is guarded.
+5. A script needs to fail over across relays, report failures without tracebacks, and
+   be drivable by a machine (structured output, stable exit codes).
+
+---
+
+## Solution Overview
+
+1. **Streamed delivery** - the message is composed once into a spooled temp file and
+   streamed to the socket in fixed chunks, as BDAT when the server offers CHUNKING,
+   otherwise through the DATA phase with incremental dot-stuffing.
+2. **Attachment security** - path traversal, symlink, sensitive-path, directory,
+   extension and size rules, then each file is opened once and compared with what was
+   checked, so the bytes sent are those of the checked file.
+3. **Secret safety** - `ConfMail` keeps the password in a `SecretStr` and inherits
+   `SecretSafeModel`, whose validation errors never carry a credential.
+4. **One error base** - every refusal and delivery failure is a `BtxMailError`, each
+   also an instance of the builtin a caller would otherwise catch.
+5. **Machine-drivable CLI** - `--json` envelopes, documented exit codes, settings from
+   options, the environment or a named env file, and a transport seam for embedding.
+
+---
+
+## Architecture Integration
+
+**Layer Structure** (enforced by the import-linter layers contract in `pyproject.toml`;
+a module imports only from layers below it, and modules in one layer do not import
+each other):
 
 ```
-cli.cli_send_mail  (resolve CLI flags / env / .env)
-  -> lib_mail.send  (validate, prepare, orchestrate)
-       -> _prepare_recipients / _prepare_attachments / _prepare_hosts
-       -> _resolve_delivery_options / _resolve_attachment_security_options
-       -> _deliver_to_any_host   (compose once to a spool, failover across hosts)
-            -> Transport.deliver  (SmtplibTransport: connect, STARTTLS, login,
-                                   stream via BDAT or DATA)
+cli                                         (rich-click adapter; also typed_click, __main__)
+lib_mail                                    (send() and the public re-exports)
+_compose                                    (message assembly)
+_config | _transport                        (ConfMail and conf | Transport, SmtplibTransport)
+_attachments | _validation                  (attachment security | address and host checks)
+_common | secret_safety | errors            (logger and printable | SecretSafeModel | exceptions)
+behaviors                                   (scaffold helpers)
 ```
 
-Configuration is a Pydantic model (`ConfMail`) with a global `conf` instance;
-per-call overrides passed to `send` win over `conf`. Resolved runtime knobs are
-frozen dataclasses (`DeliveryOptions`, `AttachmentSecurityOptions`) so the
-low-level helpers receive one immutable object each.
+**Data Flow:**
 
-## Core components {#feature-cli-components}
+```
+cli.cli_send_mail   options > environment > --env-file > conf, assigned onto one ConfMail copy
+  -> lib_mail.send  resolve keywords against config (or conf)
+       -> _validation.prepare_recipients / prepare_hosts, check_subject
+       -> _attachments.prepare_attachments   check each path, open each file once
+       -> _compose.compose_body_once         encode body and attachments once into a spool
+       -> per recipient: _compose.message_for (its header lines + a copy of the body)
+            -> lib_mail._deliver_to_any_host  failover across hosts
+                 -> Transport.deliver          SmtplibTransport: connect, STARTTLS, AUTH, BDAT or DATA
+```
 
-The components below back the CLI surface and the delivery engine.
+**Dependencies:**
 
-### btx_lib_mail.lib_mail {#module-btx-lib-mail-lib-mail}
+* **Runtime:** `pydantic` (configuration model, secret-safe errors), `rich-click`
+  (CLI), `lib_cli_exit_tools` (signals, error rendering, exit codes).
+* **Development:** pytest, aiosmtpd (real in-process SMTP server for wire tests), ruff,
+  pyright, bandit, import-linter, pip-audit (the `[dev]` extra).
 
-The SMTP delivery boundary: configuration, input normalisation, message
-rendering, attachment security, and the delivery orchestration.
+---
 
-#### AttachmentViolation {#lib-mail-attachmentviolation}
+## Core Components {#feature-cli-components}
 
-* **Purpose:** Enumerate the closed set of attachment security violation
-  categories so callers match on a typed member instead of a bare string.
-* **Type:** `class AttachmentViolation(str, Enum)` (a `str` mixin rather than the
-  3.11+ `StrEnum`, to keep the Python 3.10 baseline). Members: `PATH_TRAVERSAL`,
-  `SYMLINK`, `SENSITIVE_PATTERN`, `DIRECTORY`, `EXTENSION`, `SIZE`.
-* **Notes:** Members subclass `str`, so `violation == "symlink"`, JSON
-  serialisation, and `AttachmentViolation("symlink")` round-tripping all keep the
-  original wire value.
-* **Location:** src/btx_lib_mail/lib_mail.py
+### `__init__` Module (Public API)
 
-#### AttachmentSecurityError
+Re-exports the public surface so callers import from `btx_lib_mail` and never from a
+private module. `__all__`: `send`, `conf`, `ConfMail`, `logger`, `validate_email_address`,
+`validate_smtp_host`, `DeliveryOptions`, `Transport`, the errors (`BtxMailError`,
+`InvalidInputError`, `ConfigurationError`, `AttachmentNotFoundError`, `DeliveryError`,
+`AttachmentSecurityError`), `AttachmentViolation`, the security constants
+(`DANGEROUS_EXTENSIONS_POSIX`, `DANGEROUS_EXTENSIONS_WINDOWS`,
+`DANGEROUS_DIRECTORIES_POSIX`, `DANGEROUS_DIRECTORIES_WINDOWS`, `SENSITIVE_PATH_PATTERNS`),
+the secret-safety names (`SecretSafeModel`, `redact_validation_error`, `REDACTED_INPUT`),
+and the scaffold helpers (`CANONICAL_GREETING`, `emit_greeting`, `noop_main`,
+`print_info`, `raise_intentional_failure`).
 
-* **Purpose:** Structured exception raised when an attachment violates a security
-  policy, so callers can handle or report it.
-* **Fields:** `path` (`pathlib.Path`), `reason` (`str`), `violation_type`
-  (`AttachmentViolation`).
-* **Notes:** `__str__` renders `violation_type.value` to keep the message stable
-  across Python versions. `__init__` runs `reason` through `_printable` before
-  storing it (`reason` is built with an f-string at every raise site and usually
-  embeds the offending path), and `__str__` runs `path` through `_printable` too,
-  so neither `str(exc)` nor `repr(exc)` (which renders the cleaned `self.args`)
-  can carry a forged line, whether this exception is logged or raised to the
-  caller in strict mode (`attachment_raise_on_security_violation=True`, the
-  default).
-* **Location:** src/btx_lib_mail/lib_mail.py
+**Location:** src/btx_lib_mail/__init__.py
 
-#### AttachmentPayload {#lib-mail-attachmentpayload}
+---
 
-* **Purpose:** Name a validated attachment and point at its source file, so the
-  bytes are read only while the message is streamed to the transport, never held
-  in memory from preparation onward.
-* **Fields:** `filename` (`str`), `source` (`pathlib.Path`). Immutable (`frozen=True`).
-* **Location:** src/btx_lib_mail/lib_mail.py
+### `lib_mail` Module (Delivery Entry Point) {#module-btx-lib-mail-lib-mail}
 
-#### ConfMail {#lib-mail-confmail}
+#### `send(...) -> bool` {#lib-mail-send}
 
-* **Purpose:** Authoritative SMTP configuration (a `SecretSafeModel`, so its own
-  validation errors are redacted) merging CLI options, environment variables, and
-  defaults with type and range checks.
-* **Fields:** `smtphosts` (`list[str]`), `raise_on_missing_attachments` (`bool`),
-  `raise_on_invalid_recipient` (`bool`), `smtp_username` (`str | None`),
-  `smtp_password` (`SecretStr | None`), `smtp_use_starttls` (`bool`, default
-  `True`), `smtp_starttls_verify` (`bool`, default `True`), `smtp_timeout`
-  (`float`, default `30.0`), `smtp_local_hostname` (`str | None`, default
-  `None`), and the attachment security fields
-  (`attachment_allowed_extensions`, `attachment_blocked_extensions`,
-  `attachment_allowed_directories`, `attachment_blocked_directories`,
-  `attachment_max_size_bytes`, `attachment_allow_symlinks`,
-  `attachment_raise_on_security_violation`, `attachment_allow_empty_blocklists`).
-* **Validation:** coerces `smtphosts` from string/iterable, drops a blank entry,
-  and runs `validate_smtp_host` on every other one (`_checked_hosts`): a host
-  carrying `@` or `/`, or any interior whitespace or control character, is refused
-  without echoing it (see `_refuse_credentials_in_host`; outer whitespace is trimmed
-  first, so it does not count), and so is a malformed port, bracket or host name. `smtp_password` accepts `str`, `bytes` and `SecretStr` unchanged, coerces a
-  whole `int` (not `bool`) to its decimal text, and refuses anything else without
-  echoing it. `smtp_local_hostname` must be non-empty printable ASCII without
-  spaces (`_check_local_hostname`, which never echoes the value). `smtp_timeout`
-  and `attachment_max_size_bytes` reject a non-positive
-  value, and extension/directory sets are normalised. A model-level validator
-  (`_refuse_an_empty_blocklist`) refuses an empty blocked extension or directory set
-  whose allowlist is not set, unless `attachment_allow_empty_blocklists` is `True`.
-  A key that is not a field is refused (`extra="forbid"`, an `extra_forbidden`
-  error naming the key without its value), so a `send()` keyword name such as
-  `use_starttls` cannot be dropped silently.
-* **Secret safety:** `credential_fields = frozenset({"smtp_password",
-  "smtphosts"})`; a `ValidationError` raised while validating this model never
-  carries the value at either location (see `secret_safety.SecretSafeModel`).
-* **Global:** `conf` is the shared instance used when per-call overrides are
-  absent.
-* **Location:** src/btx_lib_mail/lib_mail.py
+**Purpose:** Turn validated intent (sender, recipients, subject, bodies, attachments)
+into SMTP delivery under the configured delivery and security policies.
 
-##### ConfMail.resolved_credentials() {#lib-mail-confmail-resolved-credentials}
+**Input:** `mail_from`, `mail_recipients`, `mail_subject`, `mail_body`,
+`mail_body_html`, `smtphosts`, `attachment_file_paths` (these seven may be passed
+positionally), then keyword-only `credentials`, `use_starttls`, `starttls_verify`,
+`timeout`, `local_hostname`, `delivery_deadline`, the `attachment_*` security
+overrides, `raise_on_missing_attachments`, `raise_on_invalid_recipient`, `config` and
+`transport`. A keyword left at `None` takes its value from `config`, else from the
+module-global `conf`.
 
-* **Purpose:** Return `(username, password)` when both are populated, else `None`,
-  so callers do not juggle two separate optionals.
-* **Location:** src/btx_lib_mail/lib_mail.py
+**Output:** `True` when every recipient was delivered; a failure raises.
 
-#### DeliveryOptions {#lib-mail-deliveryoptions}
+**Raises:** `InvalidInputError` (refused sender, recipient, host, subject, EHLO name,
+timeout or deadline; no valid recipient), `AttachmentNotFoundError`,
+`AttachmentSecurityError`, `DeliveryError` (every host failed for a recipient; carries
+`failed_recipients` and `hosts`). All are `BtxMailError`. Every refusal happens before
+the first delivery.
 
-* **Purpose:** Freeze the resolved delivery knobs for one attempt.
-* **Fields:** `credentials` (`tuple[str, str] | None`), `use_starttls` (`bool`),
-  `starttls_verify` (`bool`), `timeout` (`float`), `local_hostname` (`str | None`,
-  default `None`).
-* **Notes:** Resolved by `_resolve_delivery_options` from the `send` keywords
-  (bundled as `_DeliveryOverrides`) falling back to the config in use. A `None`
-  `local_hostname` makes `SmtplibTransport` use `_default_local_hostname()`,
-  smtplib's own rule (FQDN, else an address literal) evaluated once per process
-  and cached, instead of letting smtplib run a reverse DNS lookup per connection. `starttls_verify=False` keeps STARTTLS encryption but
-  skips certificate/hostname validation (for internal self-signed relays); it has
-  no effect when `use_starttls` is `False`.
-* **Location:** src/btx_lib_mail/lib_mail.py
+**Location:** src/btx_lib_mail/lib_mail.py
 
-#### AttachmentSecurityOptions {#lib-mail-attachmentsecurityoptions}
+#### Delivery internals
 
-* **Purpose:** Freeze the resolved attachment security options for one send.
-* **Fields:** `allowed_extensions` (`frozenset[str] | None`),
-  `blocked_extensions` (`frozenset[str]`), `allowed_directories`
-  (`frozenset[Path] | None`), `blocked_directories` (`frozenset[Path]`),
-  `max_size_bytes` (`int | None`), `allow_symlinks` (`bool`),
-  `raise_on_violation` (`bool`).
-* **Notes:** Resolved by `_resolve_attachment_security_options`; `None` means "use
-  the `conf` default", an empty frozenset means "no restriction".
-* **Location:** src/btx_lib_mail/lib_mail.py
+* `_DeliveryPlan` bundles the hosts, the resolved `DeliveryOptions` and the transport for
+  one call. `_resolve_delivery_options` and `_resolve_attachment_security_options` merge
+  the keywords with the config in use.
+* `_deliver_to_any_host(sender, recipient, message, plan)` tries each host in order until
+  the transport accepts the message; each failed host logs one credential-free `WARNING`
+  built by `_describe_failure` (an SMTP reply: class, code and text; another `OSError`:
+  class and text; anything else: class only; control characters cleaned, capped at 200
+  characters), the success path one `DEBUG` line. `_deliver_composed` builds a recipient's
+  message, delivers it, and closes it.
+* `DEFAULT_TRANSPORT` (an `SmtplibTransport`) is read from this module at call time, so a
+  test can replace it here.
 
-#### send(...) {#lib-mail-send}
+**Location:** src/btx_lib_mail/lib_mail.py
 
-* **Purpose:** The library/CLI facade that turns validated intent (sender,
-  recipients, bodies, attachments) into SMTP activity while honouring the
-  delivery and security policies.
-* **Input:** `mail_from`, `mail_recipients`, `mail_subject`, optional `mail_body`
-  / `mail_body_html`, `smtphosts`, `attachment_file_paths`, and keyword overrides
-  `credentials`, `use_starttls`, `starttls_verify`, `timeout`, the attachment
-  security parameters, `raise_on_missing_attachments` /
-  `raise_on_invalid_recipient`, `config`, and `transport`. Omitted overrides fall
-  back to `config` when given, else to `conf`.
-* **`config: ConfMail | None = None`:** settings used in place of the module-global
-  `conf` for every value not passed explicitly; when given, `conf` is not read at
-  all. Lets a caller hold its own `ConfMail` (or subclass) without mutating the
-  global.
-* **Output:** `True` when every recipient is delivered. Failure raises rather than
-  returning `False`.
-* **Raises:** `ValueError` (no valid recipients / invalid sender),
-  `FileNotFoundError` (missing required attachment), `AttachmentSecurityError`
-  (policy violation in strict mode), `RuntimeError` (every host failed for a
-  recipient).
-* **Location:** src/btx_lib_mail/lib_mail.py
+---
 
-#### Delivery helpers
+### `_config` Module (Settings)
 
-* `_deliver_to_any_host` composes the message once into a `SpooledTemporaryFile`
-  and iterates the host tuple, delegating to the injected `Transport` until one
-  accepts the message, logging one credential-free `WARNING` per failed host (built
-  by `_describe_failure`, no traceback attached) and moving on, or a `DEBUG` line on
-  success. The spool is reused across host attempts. `sender`, `host` and
-  `recipient` logged in either the `DEBUG` line or the `WARNING` (message and
-  `extra` alike) are all run through `_printable` before logging, as defense in
-  depth: `_refuse_credentials_in_host` already refuses a host carrying interior
-  whitespace or a control character before delivery starts, and `send()` validates
-  `sender`/`recipient` before calling this function, so this cleaning guards against
-  whatever reaches this function directly rather than through `send()`'s own
-  validation (tests do exactly that).
-* `_describe_failure(error)` returns a one-line, credential-free description of a
-  delivery failure: for an `smtplib.SMTPResponseException` it is the exception class
-  name plus the server's numeric code and reply text; for any other `OSError`
-  (including one a custom `Transport` raises) it is the class name plus `str(error)`,
-  logged as given; for anything else it is only the class name. The text is run
-  through `_printable` and capped at `_FAILURE_TEXT_LIMIT` (200 characters) so a
-  hostile or chatty server reply cannot forge extra log lines or flood the log.
-* `_printable(text)` replaces every non-printable character (CR, LF, ESC, NUL, ...)
-  in `text` with a space, so a server reply cannot inject control sequences into
-  whatever renders the log record.
-* `Transport` is a protocol (delivery seam); `SmtplibTransport` is the default
-  adapter. It opens the `smtplib.SMTP` session, runs STARTTLS via
-  `_build_starttls_context(verify=...)` when enabled, logs in when credentials are
-  present via `_authenticate`, then streams the message to the socket in
-  `_STREAM_CHUNK_SIZE` chunks: RFC 3030 `BDAT` when the server advertises
-  `CHUNKING`, otherwise the `DATA` phase with `_DotStuffer` incremental
-  dot-stuffing. `send` accepts a `transport=` override for testing or alternative
-  transports.
-* `_authenticate(smtp_connection, username, password)` calls `smtplib.SMTP.login`
-  when both `username` and `password` are ASCII (the stdlib path, which tries
-  CRAM-MD5, PLAIN and LOGIN in turn among the mechanisms the server advertises);
-  otherwise it calls `_login_plain_utf8`,
-  because stdlib `smtplib` encodes every AUTH exchange as ASCII and raises
-  `UnicodeEncodeError` (quoting the whole AUTH string, password included, in its
-  repr) on a non-ASCII credential.
-* `_login_plain_utf8(smtp_connection, username, password)` authenticates with RFC
-  4616 AUTH PLAIN, credentials encoded as UTF-8. Raises
-  `smtplib.SMTPNotSupportedError` when the server offers no AUTH extension or no
-  PLAIN mechanism, and `smtplib.SMTPAuthenticationError` (carrying only the server
-  reply) when the server rejects the credentials or answers an unexpected code.
-* `_build_starttls_context(*, verify)` returns `ssl.create_default_context()`; when
-  `verify` is `False` it clears `check_hostname` and sets `verify_mode` to
-  `CERT_NONE` (encrypted but unverified).
-* `_compose_to_spool` serialises the message (`EmailMessage` + `email.policy.SMTP`
-  CRLF) into a spooled temp file, streaming each attachment's base64 from disk in
-  chunks so a large payload is never buffered whole.
-* **Location:** src/btx_lib_mail/lib_mail.py
+#### `ConfMail` {#lib-mail-confmail}
 
-#### Validators
+**Purpose:** The validated SMTP and attachment-security settings model; `conf` is the
+module-global instance `send()` reads when no `config` is passed.
 
-* `validate_email_address(address)` raises `ValueError` when the address does not
-  match `EMAIL_PATTERN`.
-* `validate_smtp_host(host)` raises `ValueError` for a malformed host, accepting
-  `hostname`, `hostname:port`, `[IPv6]`, and `[IPv6]:port`. It runs two passes in a
-  fixed order. `_validate_port_and_brackets` checks the brackets and the port
-  (`_validate_port`, 1-65535, split off at the last colon); `_validate_host_shape` then
-  refuses, among the hosts the first pass let through, a comma (two hosts in one
-  string), a colon left in the host name (an IPv6 address without brackets, whose last
-  group would read as the port) and an empty host name. The order keeps every message
-  the first pass gives unchanged from 2.x, so a host 2.x refused is refused with the
-  same text; the second pass only refuses hosts 2.x accepted.
-* `_refuse_credentials_in_host(host)` returns `host` unchanged, or raises
-  `ValueError` (without echoing the value) when it carries `@` or `/`: a host string
-  such as `user:password@relay` would put the password into every log line and
-  error text that names the host. It also raises for any INTERIOR whitespace or
-  control character (a newline or an escape sequence could forge a log line or a
-  terminal control sequence); callers run it after `_normalise_host`, which trims
-  OUTER whitespace, so an ordinary `" smtp.example.com "` still validates.
-  `validate_smtp_host` calls it first, and `ConfMail`'s `smtphosts` coercion
-  (`_collect_host_inputs` -> `_checked_hosts`) reaches it through
-  `validate_smtp_host`.
-* `validate_email_address` and `validate_smtp_host` are public; `_parse_smtp_host`
-  reuses `validate_smtp_host` before splitting hostname and port.
-* `_prepare_recipients` validates each address with `validate_email_address`; in
-  tolerant mode (`raise_on_invalid_recipient=False`) the entry that FAILED
-  validation is, by definition, not provably free of control characters, so it is
-  run through `_printable` before it reaches the `WARNING` (message and
-  `extra["recipient"]` alike) or the `ValueError` message raised in strict mode.
-* **Location:** src/btx_lib_mail/lib_mail.py
+**Fields:** `smtphosts`, `raise_on_missing_attachments`, `raise_on_invalid_recipient`,
+`smtp_username`, `smtp_password` (`SecretStr`), `smtp_use_starttls`,
+`smtp_starttls_verify`, `smtp_timeout`, `smtp_local_hostname`,
+`smtp_delivery_deadline`, and the `attachment_*` fields. Defaults and meanings are
+tabled in [docs/api.md](../api.md#public-api-confmail-fields).
 
-#### Attachment security checks (internal)
+**Validation:** hosts through `validate_smtp_host` (a blank entry is dropped);
+`smtp_password` accepts text or a whole int; `smtp_timeout` and `smtp_delivery_deadline`
+positive and finite; `smtp_local_hostname` printable ASCII without spaces; extension and
+directory sets normalised; an empty blocked set without its allowlist refused unless
+`attachment_allow_empty_blocklists`; an unknown key refused (`extra="forbid"`).
+Assignment is validated too. Every refusal is a `ConfigurationError` whose input is
+redacted at the credential fields (`smtp_password`, `smtphosts`).
 
-`_validate_attachment_security` orchestrates, in order: `_check_path_traversal`,
-`_check_symlink`, `_check_sensitive_patterns`, `_check_directory_restrictions`,
-`_check_extension`, and `_check_file_size`. Each raises `AttachmentSecurityError`
-with the matching `AttachmentViolation` category. `_prepare_attachments` applies
-them before reading file bytes, honouring `raise_on_violation` and
-`raise_on_missing`. In tolerant mode (`raise_on_violation=False` /
-`raise_on_missing=False`) it logs one `WARNING` per skipped attachment, running
-the path (and, for a security violation, `exc.reason`, already cleaned by
-`AttachmentSecurityError.__init__`) through `_printable` again, in both the
-message and `extra["attachment_path"]`, as defense in depth; a
-`FileNotFoundError` raised in strict mode is cleaned the same way.
+**Location:** src/btx_lib_mail/_config.py
 
-#### Public constants
+---
 
-`DANGEROUS_EXTENSIONS_POSIX`, `DANGEROUS_EXTENSIONS_WINDOWS`,
-`DANGEROUS_DIRECTORIES_POSIX`, `DANGEROUS_DIRECTORIES_WINDOWS`, and
-`SENSITIVE_PATH_PATTERNS` provide the OS-appropriate blacklists. `EMAIL_PATTERN`
-is the compiled address regex.
+### `_attachments` Module (Attachment Security)
 
-### btx_lib_mail.secret_safety {#module-btx-lib-mail-secret-safety}
+* Constants: `DANGEROUS_EXTENSIONS_POSIX`, `DANGEROUS_EXTENSIONS_WINDOWS` (both blocked
+  by default on every platform, through `default_blocked_extensions`),
+  `DANGEROUS_DIRECTORIES_POSIX`, `DANGEROUS_DIRECTORIES_WINDOWS` (the running platform's
+  set is the default), `SENSITIVE_PATH_PATTERNS` (matched case-insensitively).
+* `AttachmentViolation` - `str` enum: `PATH_TRAVERSAL`, `SYMLINK`, `SENSITIVE_PATTERN`,
+  `DIRECTORY`, `EXTENSION`, `SIZE`, `CHANGED`.
+* `AttachmentSecurityError(BtxMailError)` - `path`, `reason` (control characters
+  replaced), `violation_type`.
+* `AttachmentPayload` - `filename`, `source` (the checked, resolved path), `handle` (the
+  file opened once), `size_limit`.
+* `AttachmentSecurityOptions` - the resolved rules for one call.
+* `prepare_attachments(paths, security, *, raise_on_missing)` - for each path, the path
+  checks (`_validate_attachment_security`: traversal component, final-component symlink,
+  sensitive pattern, directories and extension, all on the resolved path), then
+  `_open_attachment`: `lstat`, open with `O_NOFOLLOW`/`O_NONBLOCK` where the platform
+  has them, `fstat` must show the same device and inode and a regular file, size within
+  the limit. A swapped path is `CHANGED`. Warn mode logs and skips via `log_violation`;
+  every handle is closed on failure, and by `send()` through `close_attachments`.
 
-Credential-safe validation errors for pydantic models that hold secrets.
+**Location:** src/btx_lib_mail/_attachments.py
 
-#### SecretSafeModel {#secret-safety-secretsafemodel}
+---
 
-* **Purpose:** Base class for a pydantic model holding a credential, so every
-  `ValidationError` it raises has had its inputs rebuilt to remove the secret.
-  `ConfMail` is a subclass.
-* **Mechanism:** wraps the model's whole core schema (`__get_pydantic_core_schema__`),
-  so it covers field validation, validated assignment (and assignment to a frozen
-  model, via an explicit `__setattr__` override), model-level validators,
-  `model_validate`, `model_validate_strings`, this model's own `model_validate_json`
-  (an explicit override, also for malformed JSON), `TypeAdapter(Model).validate_python`,
-  and validation of this model nested in a list or in another model.
-* **Class variable:** `credential_fields: ClassVar[frozenset[str]] = frozenset()` -
-  a subclass lists its credential field names here; every alias of those fields is
-  covered automatically. Checked at class definition (`__pydantic_init_subclass__`,
-  `_check_credential_fields`): an undeclared name, a value that is not a set of str,
-  or an annotated `credential_fields` that became a field raises `TypeError`.
-* **Assignment rollback:** the `__setattr__` override saves the instance state
-  (`__dict__`, fields-set, extra) and restores it when the assignment raises anything,
-  because pydantic keeps a new value that a `mode="after"` model validator then refuses.
-  The restore is shallow: a value mutated in place before the raise stays mutated.
-* **Not covered:** malformed JSON handed to `TypeAdapter(Model).validate_json`, and
-  malformed JSON handed to `model_validate_json` of a plain outer model that merely
-  nests a `SecretSafeModel` field - the JSON parser fails before either model's
-  schema runs. An outer model that nests a `SecretSafeModel` field AND defines its
-  own model-level validator must itself inherit `SecretSafeModel` and list the
-  nested field, because its own model-level errors quote its own input.
-* **Location:** src/btx_lib_mail/secret_safety.py
+### `_compose` Module (Message Assembly)
 
-#### redact_validation_error(exc, *, credential_fields, declared_names=frozenset()) {#secret-safety-redact-validation-error}
+* `compose_body_once(content, *, raise_on_violation)` - encodes the recipient-independent
+  part (`MessageContent`: bodies and attachments) once into a `SpooledTemporaryFile` (in
+  memory below 1 MiB, on disk above), CRLF via `email.policy.SMTP`, each attachment's
+  base64 streamed from its open file in `57 * 1024`-byte reads and counted against its
+  size limit. In warn mode a file that grew past the limit is left out and the body
+  composed again.
+* `envelope_header_lines(...)` - one recipient's `Subject`, `From`, `To`, `Date`.
+* `message_for(header_lines, body)` - those header lines plus a copy of the body spool,
+  copied in `STREAM_CHUNK_SIZE` pieces.
+* `check_subject(subject)` - refuses CR or LF (with the email package's own message) and
+  any other control character except TAB.
 
-* **Purpose:** Return a copy of `exc` whose error inputs and `ctx` cannot carry a
-  credential; the function `SecretSafeModel` wraps its schema with, callable
-  directly to redact a `ValidationError` from a plain (non-`SecretSafeModel`) model.
-* **Rule:** an error's input is kept only when it is a plain scalar (`str`, `bytes`,
-  `int`, `float`, `bool`, `None`, `Decimal`, a date/time value, or an `Enum` member
-  whose value is one of these); every other input becomes `REDACTED_INPUT`. An error
-  is always hidden when it is model-level, an `extra_forbidden` error, or at a
-  location in `credential_fields` (or an alias of one). A hidden error keeps no
-  `ctx`, and its message is scrubbed best-effort by walking the input (mapping keys
-  and values, collection members, object attributes, Enum values) and replacing
-  every text it finds, in its verbatim, `repr()`, `ascii()` or JSON-escaped form. A
-  mapping key equal to a name in `declared_names` is not walked (so a message
-  naming a field keeps the name), but a VALUE equal to such a name still is. An
-  input too large or deep to walk within the bound has its whole message replaced.
-  The rebuild never raises; a failure it cannot rebuild faithfully keeps only its
-  type and location, and total failure yields one opaque `redacted_error`.
-* **Usage note:** raise the returned error OUTSIDE the `except` block that caught
-  the original, or the unredacted error survives as `__context__`.
-* **Location:** src/btx_lib_mail/secret_safety.py
+**Location:** src/btx_lib_mail/_compose.py
 
-#### REDACTED_INPUT {#secret-safety-redacted-input}
+---
 
-* **Purpose:** The string (`"[redacted]"`) a hidden error's `input` is replaced by.
-* **Location:** src/btx_lib_mail/secret_safety.py
+### `_transport` Module (Delivery Seam)
 
-### btx_lib_mail.cli {#module-btx-lib-mail-cli}
+* `Transport` - protocol: `deliver(*, host, sender, recipient, message, delivery)`
+  delivers one composed message or raises.
+* `DeliveryOptions` - `credentials` (not in `repr`), `use_starttls`, `starttls_verify`,
+  `timeout`, `local_hostname`, `deadline`.
+* `SmtplibTransport` - opens an `smtplib.SMTP` session (EHLO name: the configured one,
+  else `_default_local_hostname()`, smtplib's rule computed once per process), STARTTLS
+  with `_build_starttls_context(verify=...)`, a `WARNING` when credentials go out with
+  STARTTLS off, AUTH through `_authenticate` (stdlib login for ASCII credentials, RFC 4616
+  AUTH PLAIN in UTF-8 otherwise), then streams the message in `STREAM_CHUNK_SIZE`
+  (64 KiB) pieces: `BDAT` when the server advertises CHUNKING, else `DATA` with
+  `_DotStuffer`. `_session_deadline` bounds the session when `deadline` is set: a
+  watchdog thread shuts the socket down and the failure becomes a `TimeoutError`.
 
-The rich-click adapter that exposes the commands and keeps traceback handling
-consistent across the console script and `python -m`.
+**Location:** src/btx_lib_mail/_transport.py
 
-* **Commands:** `info`, `hello`, `send`, `validate-email`, `validate-smtp-host`,
-  `fail`, plus the root group `cli` and the placeholder `cli_main`.
-* **Root group cli {#cli-root}:** registers the global `--traceback/--no-traceback`
-  flag, mirrors it into `lib_cli_exit_tools.config`, and prints help when invoked
-  without a subcommand (unless `--traceback` was explicitly set).
-* **cli_send_mail {#cli-send-mail}:** the `send` command. Resolves `--host`,
-  `--recipient`, `--sender`, `--subject`, `--body`, `--html-body`,
-  `--attachment`, `--starttls/--no-starttls`,
-  `--starttls-verify/--no-starttls-verify`, `--username`, `--password`,
-  `--timeout`, `--local-hostname`, and the `--attachment-*` security options, falling back to the
-  `BTX_MAIL_*` environment variables (or a local `.env`). Precedence: CLI options,
-  then environment variables, then `.env` entries, then `btx_lib_mail.lib_mail.conf`.
-  The resolved values are assigned, with validation, onto one copy of `conf`, so
-  `ConfMail`'s validators run on CLI input and settings without an option keep
-  their `conf` value; `send` receives that model as `config=` and the command
-  echoes a summary line. A refused value is raised as `ValueError` carrying the
-  validator's own message (exit code `22`); hosts are checked with
-  `validate_smtp_host` first, so a refused host is quoted in the message.
-* **Resolution helpers:** `_configured_value`, `_dotenv_value`, `_unquoted`,
-  `_resolve_list`, `_checked_hosts`, `_resolve_bool`, `_resolve_optional_bool`,
-  `_resolve_float`, `_resolve_int`, `_resolve_extensions`, `_resolve_directories`,
-  `_resolve_credentials`, `_or_default` parse boundary input (CLI string / env /
-  `.env`) into typed values; `_refusals_as_value_error` and `_refusal_message`
-  turn a `ValidationError` into that `ValueError`.
-* **Traceback helpers:** `apply_traceback_preferences`
-  {#cli-apply-traceback-preferences}, `snapshot_traceback_state`
-  {#cli-snapshot-traceback-state}, `restore_traceback_state`
-  {#cli-restore-traceback-state} keep `lib_cli_exit_tools` in sync and restorable.
-* **Entry point main {#cli-main-entry}:** runs the command through
-  `lib_cli_exit_tools`, choosing the traceback character budget, and restores the
-  prior traceback state unless asked not to.
-* **Location:** src/btx_lib_mail/cli.py
+---
 
-### btx_lib_mail.typed_click
+### `_validation` Module (Checks)
 
-Strictly-typed wrappers (`option`, `version_option`, `argument`) over rich-click's
-decorators, whose return type is partially unknown to pyright. A typed `Protocol`
-(`_RichClickDecorators`) plus a runtime no-op `cast` forwards to rich-click's real
-decorators, so `RichOption`/`RichArgument` still render help and no rule is suppressed
-anywhere in the CLI layer.
+* `validate_email_address(address)` - `InvalidInputError` unless `EMAIL_PATTERN` matches.
+* `validate_smtp_host(host)` - accepts `host`, `host:port`, `[IPv6]`, `[IPv6]:port`.
+  Refuses, without echoing the value, a host carrying `@` or `/` or an interior
+  whitespace or control character; then refuses a bad bracket or a port that is not ASCII
+  digits in 1-65535, and after that a comma, an unbracketed IPv6 address or an empty host
+  name.
+* `prepare_recipients`, `prepare_hosts`, `parse_smtp_host`, `collect_host_inputs`,
+  `check_local_hostname`, `check_timeout`, `check_seconds` - the shared checks `send()`
+  and `ConfMail` run.
 
-* **Location:** src/btx_lib_mail/typed_click.py
+**Location:** src/btx_lib_mail/_validation.py
 
-## Behaviour scaffold {#feature-cli-behavior-scaffold}
+---
 
-### btx_lib_mail.behaviors {#module-btx-lib-mail-behaviors}
+### `_common` Module
 
-The placeholder domain helpers backing the CLI scaffold.
+`logger` (`logging.getLogger("btx_lib_mail")`) and `printable(text)`, which replaces
+every non-printable character with a space so no caller-, file- or server-supplied text
+can forge a log line.
 
-* **emit_greeting(stream=None) {#behaviors-emit-greeting}:** writes
-  `CANONICAL_GREETING` plus a newline to the stream (default `sys.stdout`) and
-  flushes when possible.
-* **raise_intentional_failure() {#behaviors-raise-intentional-failure}:** always
-  raises `RuntimeError('I should fail')`, the vehicle for error-path and
-  traceback tests.
-* **noop_main() {#behaviors-noop-main}:** returns `None`; honours tooling that
-  expects a `main` callable.
-* **CANONICAL_GREETING:** the shared greeting line (`"Hello World"`).
-* **Location:** src/btx_lib_mail/behaviors.py
+**Location:** src/btx_lib_mail/_common.py
 
-## Module execution session helpers {#module-main-session-helpers}
+---
 
-### btx_lib_mail.__main__ {#module-btx-lib-mail-main}
+### `errors` Module
 
-Implements `python -m btx_lib_mail`, delegating to `cli.main` so exit semantics
-match the console script.
+`BtxMailError` and its subclasses `InvalidInputError` (`ValueError`),
+`ConfigurationError` (pydantic `ValidationError`), `AttachmentNotFoundError`
+(`FileNotFoundError`) and `DeliveryError` (`RuntimeError`, with `failed_recipients` and
+`hosts`).
 
-* **_open_cli_session() {#module-main-open-cli-session}:** returns a
-  `lib_cli_exit_tools.cli_session` context manager wired with the shared traceback
-  limits.
-* **_command_to_run() {#module-main-command-to-run}:** returns the root
-  `cli.cli` command.
-* **_command_name() {#module-main-command-name}:** returns
-  `__init__conf__.shell_command`.
-* **_module_main() {#module-main-module-main}:** opens the session and runs the
-  command, returning the exit code.
-* **Location:** src/btx_lib_mail/__main__.py
+**Location:** src/btx_lib_mail/errors.py
 
-## Metadata
+---
 
-### btx_lib_mail.__init__conf__
+### `secret_safety` Module {#module-btx-lib-mail-secret-safety}
 
-Static project metadata as plain constants, kept in sync with `pyproject.toml` by
-development automation so runtime code never queries packaging APIs.
+* `SecretSafeModel` - pydantic base whose every validation error is rebuilt without a
+  credential: the core schema is wrapped, and so are assignment, `model_validate*` and
+  construction (a metaclass `__call__`, since an `__init__` override would make pydantic
+  drop `strict=`). `credential_fields` names the fields whose input is always hidden;
+  `validation_error_class` names the `ValidationError` subclass raised (`ConfMail`:
+  `ConfigurationError`). A refused assignment is rolled back.
+* `redact_validation_error(exc, *, credential_fields, declared_names=frozenset(),
+  error_class=ValidationError)` - the rebuild, usable on any pydantic model's error;
+  raise the result outside the `except` block that caught the original.
+* `REDACTED_INPUT` - `"[redacted]"`.
 
-* **Constants:** `name`, `title`, `version`, `homepage`, `author`,
-  `author_email`, `shell_command`, and the layered-config identifiers
-  `LAYEREDCONF_VENDOR`, `LAYEREDCONF_APP`, `LAYEREDCONF_SLUG`.
-* **print_info():** renders the constants for the CLI `info` command.
-* **Location:** src/btx_lib_mail/__init__conf__.py
+Not covered: malformed JSON given to `TypeAdapter(Model).validate_json` or to a plain
+outer model's `model_validate_json`, where the JSON parser fails before the model runs.
 
-## Package surface
+**Location:** src/btx_lib_mail/secret_safety.py
 
-### btx_lib_mail.__init__
+---
 
-Re-exports the public API. `__all__` covers: `AttachmentSecurityError`,
-`AttachmentViolation`, `CANONICAL_GREETING`, `ConfMail`, `DeliveryOptions`,
-`DANGEROUS_DIRECTORIES_POSIX`, `DANGEROUS_DIRECTORIES_WINDOWS`,
-`DANGEROUS_EXTENSIONS_POSIX`, `DANGEROUS_EXTENSIONS_WINDOWS`, `REDACTED_INPUT`,
-`SecretSafeModel`, `SENSITIVE_PATH_PATTERNS`, `Transport`, `conf`,
-`emit_greeting`, `logger`, `noop_main`, `print_info`,
-`raise_intentional_failure`, `redact_validation_error`, `send`,
-`validate_email_address`, `validate_smtp_host`.
+### `cli` Module (Transport Adapter) {#module-btx-lib-mail-cli}
 
-* **Location:** src/btx_lib_mail/__init__.py
+* **Group `cli`:** `--traceback/--no-traceback`, `--json`/`-j`, `--json-bare`, `--version`;
+  stores a `CliContext` (`traceback`, `json_output`, `json_bare`, `transport`) in
+  `ctx.obj`, keeping a transport an embedding caller passed through `obj=`.
+* **Commands:** `info`, `hello`, `send`, `validate-email`, `validate-smtp-host`, `fail`.
+  Each prints through `_emit`, which writes the human line or the JSON envelope.
+* **`send`:** `_Sources` reads the environment, then the file named by `--env-file` /
+  `BTX_MAIL_ENV_FILE` (parsed once by `_read_env_file`, UTF-8, at most 64 KiB); no file is
+  read unless named. Resolved values are assigned onto one copy of `conf`, so
+  `ConfMail`'s checks run before delivery; a refusal is re-raised as `InvalidInputError`
+  with the validator's message (`_refusals_as_value_error`). `--password-file` reads one
+  line (`-` is stdin). `_collect_skipped` (a logger filter) gathers the warn-mode skips for
+  the envelope's `skipped`.
+* **`main(argv)`:** runs the group through `lib_cli_exit_tools.run_cli`; with `--json` or
+  `--json-bare` in argv, `_json_exception_handler` prints a failure as JSON on stdout and
+  returns the exit code the plain run would give. Traceback state is restored afterwards.
+
+**Location:** src/btx_lib_mail/cli.py
+
+### `typed_click` Module (Type Boundary)
+
+Typed wrappers (`option`, `version_option`, `argument`) over rich-click's decorators,
+whose own types are partially unknown to pyright: a typed `Protocol` plus a `cast`
+forwards to the real decorators.
+
+**Location:** src/btx_lib_mail/typed_click.py
+
+### `__main__` Module (Module Entry Point) {#module-btx-lib-mail-main}
+
+`python -m btx_lib_mail` runs `cli.main()`, the function the console scripts run, so exit
+codes, traceback handling and JSON failure reports are identical.
+
+**Location:** src/btx_lib_mail/__main__.py
+
+---
+
+## Behaviour Scaffold {#feature-cli-behavior-scaffold}
+
+### `behaviors` Module
+
+`CANONICAL_GREETING` (`"Hello World"`), `emit_greeting(*, stream=None)`,
+`raise_intentional_failure()` (always `RuntimeError("I should fail")`) and `noop_main()`:
+the placeholder paths the `hello`, `fail` and bare `--traceback` invocations exercise.
+
+**Location:** src/btx_lib_mail/behaviors.py
+
+### `__init__conf__` Module
+
+Static metadata constants kept in sync with `pyproject.toml` (`name`, `title`, `version`,
+`homepage`, `author`, `author_email`, `shell_command`, and the layered-config
+identifiers) and `print_info()`, which renders them for `info`.
+
+**Location:** src/btx_lib_mail/__init__conf__.py
+
+---
+
+## Implementation Details
+
+**Memory:** peak memory while composing is about one 57 KiB read plus the 1 MiB spool
+buffer, and while streaming about one 64 KiB chunk, independent of attachment size
+(pinned by `tests/test_streaming.py` and `tests/test_transfer_memory.py`). The trade is
+temporary disk for a message above 1 MiB, once for the shared body and once per
+recipient's copy.
+
+**Ordering of refusals:** sender, recipients, attachment rules, attachments, hosts,
+delivery options, subject; every one before the first delivery.
+
+**Logging:** every caller-, file- or server-supplied value in a log line or exception
+message goes through `printable`; no log line carries a password.
+
+---
+
+## Testing Approach
+
+* `tests/test_lib_mail.py` - configuration, validators, attachment rules, orchestration
+  through an injected `Transport`.
+* `tests/test_attachment_integrity.py` - open once, encode once, swaps, growth, closed
+  handles, subject and timeout refusals.
+* `tests/test_streaming.py`, `tests/test_transfer_memory.py`, `tests/test_deadline.py` -
+  wire behaviour against a real in-process server (`tests/smtp_test_server.py`, the
+  `data_server` fixture in `tests/conftest.py`), memory bounds, the delivery deadline.
+* `tests/test_cli.py`, `tests/test_cli_send.py`, `tests/test_module_entry.py` - the CLI,
+  driven with `CliContext(transport=...)` or a real server; no test patches the package's
+  own `send`.
+* `tests/test_errors.py`, `tests/test_secret_safety.py`, `tests/test_behaviors.py`,
+  `tests/test_metadata.py`.
+
+Doctests run through `--doctest-modules`; markers `os_agnostic`, `os_windows`, `os_macos`,
+`os_posix`, `os_linux`, `local_only` (real SMTP through `TEST_SMTP_*`). Coverage gate:
+`fail_under = 85`.
+
+---
+
+## Known Limitations
+
+* A symlinked directory along an attachment path is followed (`allow_symlinks` governs
+  the last component); every rule runs on the resolved target.
+* A directory swapped for a symlink between the path checks and the open is not detected
+  by the device/inode comparison, which covers the file itself.
+* SMTPS (implicit TLS on port 465) is not supported; use STARTTLS.
+* `send()` sends a separate message per recipient; there is no Cc or Bcc.
+
+---
+
+## Security Considerations
+
+* Credentials: `SecretStr` in `ConfMail`, hidden from `repr`, `model_dump`, validation
+  errors, `DeliveryOptions` repr and failure logs; a host carrying `user:password@` is
+  refused without echoing it; the CLI offers `--password-file` and reads no implicit
+  `.env`.
+* Transport: STARTTLS on and certificate verification on by default; STARTTLS fails
+  closed when the server does not offer it; credentials sent without TLS are logged as a
+  warning.
+* Input: header injection (CR/LF/NUL in sender, recipient, subject, filename) refused or
+  encoded; dot-stuffing and CRLF normalisation keep the DATA phase unambiguous.
+* Attachments: see the `_attachments` section and
+  [docs/attachment-security.md](../attachment-security.md).

@@ -13,6 +13,7 @@ from pydantic import ConfigDict, Field, SecretStr, field_validator, model_valida
 from ._attachments import (
     default_blocked_directories,
     default_blocked_extensions,
+    normalise_extensions,
 )
 from ._validation import check_local_hostname, check_seconds, check_timeout, collect_host_inputs
 from .errors import ConfigurationError, InvalidInputError
@@ -259,19 +260,7 @@ class ConfMail(SecretSafeModel):
             value = value()
         if not isinstance(value, (frozenset, set, list, tuple)):
             raise InvalidInputError("extensions must be a set, frozenset, list, or tuple of strings")
-        raw_list: list[object] = list(cast("Iterable[object]", value))
-
-        normalised: set[str] = set()
-        for ext in raw_list:
-            if not isinstance(ext, str):
-                raise InvalidInputError(f"extension must be a string, got {type(ext).__name__}")
-            ext_lower = ext.lower().strip()
-            if not ext_lower:
-                continue
-            if not ext_lower.startswith("."):
-                ext_lower = "." + ext_lower
-            normalised.add(ext_lower)
-        return frozenset(normalised)
+        return normalise_extensions(cast("Iterable[object]", value))
 
     @field_validator("attachment_allowed_directories", "attachment_blocked_directories", mode="before")
     @classmethod

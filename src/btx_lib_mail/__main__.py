@@ -6,7 +6,7 @@ traceback handling and `--json` failure reports are identical however the CLI
 is started.
 
 **System Role:** Mirrors the description in
-`docs/systemdesign/module_reference.md#module-main-session-helpers`.
+`docs/systemdesign/module_reference.md#module-btx-lib-mail-main`.
 """
 
 from __future__ import annotations

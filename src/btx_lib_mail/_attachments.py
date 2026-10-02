@@ -13,10 +13,13 @@ import stat
 import sys
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import IO, Final
+from typing import IO, TYPE_CHECKING, Final
 
 from ._common import logger, printable
-from .errors import AttachmentNotFoundError, BtxMailError
+from .errors import AttachmentNotFoundError, BtxMailError, InvalidInputError
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 DANGEROUS_EXTENSIONS_POSIX: Final[frozenset[str]] = frozenset(
     {
@@ -190,6 +193,28 @@ def default_blocked_directories() -> frozenset[pathlib.Path]:
     if sys.platform == "win32":
         return DANGEROUS_DIRECTORIES_WINDOWS
     return DANGEROUS_DIRECTORIES_POSIX
+
+
+def normalise_extensions(values: Iterable[object]) -> frozenset[str]:
+    """Return *values* as lower-case, dot-prefixed extensions; blanks are dropped.
+
+    Used for the `ConfMail` fields and for the `send()` keywords alike, so
+    `{"PDF"}`, `{".pdf"}` and `{" .PDF "}` mean the same set wherever they are given.
+
+    Examples
+    --------
+    >>> sorted(normalise_extensions(["PDF", ".Txt", " ", "exe"]))
+    ['.exe', '.pdf', '.txt']
+    """
+    normalised: set[str] = set()
+    for ext in values:
+        if not isinstance(ext, str):
+            raise InvalidInputError(f"extension must be a string, got {type(ext).__name__}")
+        ext_lower = ext.lower().strip()
+        if not ext_lower:
+            continue
+        normalised.add(ext_lower if ext_lower.startswith(".") else "." + ext_lower)
+    return frozenset(normalised)
 
 
 class AttachmentViolation(str, Enum):

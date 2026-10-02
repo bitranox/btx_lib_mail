@@ -46,12 +46,18 @@
   `x.exe.` and `x.sh ` are refused like `x.exe` and `x.sh`.
 - Sensitive-path patterns match without regard to case on every platform: `.SSH/config` and
   `.AWS/CREDENTIALS` are refused (they are `~/.ssh/config` on macOS and Windows).
+- `lib_mail.py` is split into private modules (`_config`, `_attachments`, `_validation`,
+  `_compose`, `_transport`, `_common`) behind `btx_lib_mail.lib_mail`, which keeps `send()`
+  and re-exports the public names (`__all__`). Importing from `btx_lib_mail` or
+  `btx_lib_mail.lib_mail` is unchanged; a private helper imported from `lib_mail` now lives
+  in its own module.
 - The path-traversal check refuses a `..` path COMPONENT only: `report..final.txt` is now
   accepted, `a/../b` is still refused with the same message.
 - Each attachment is opened once, right after its checks, and compared with what was
   checked (same file, still a regular file, size within the limit); the message body is
   encoded once per `send()` from that open file, and each recipient's message is its own
-  header lines plus a copy of it. Attachments are no longer re-read and re-encoded per
+  header lines followed by that body, read in place. Scratch disk for a large attachment is
+  its encoded size (about 1.37x) once, however many recipients there are. Attachments are no longer re-read and re-encoded per
   recipient, and the files are closed before `send()` returns.
 - A subject containing a control character other than TAB is refused with
   `InvalidInputError` before the first delivery (`mail_subject must not contain control
@@ -68,6 +74,18 @@
 
 ### Fixed
 
+- `send(attachment_blocked_extensions=...)` and `send(attachment_allowed_extensions=...)` are
+  normalised like the `ConfMail` fields (lower case, leading dot): `{".EXE"}` now blocks
+  `x.exe`, and `{"PDF"}` allows `r.pdf`. A keyword set in another spelling let an executable
+  through or refused an allowed file.
+- Each host attempt starts at the first byte of the message. A custom `Transport` that read
+  the message and then failed handed the next host an empty stream.
+- CLI: a `--json` failure reports `failed_recipients` and `hosts` for a `DeliveryError`, and
+  the `skipped` items of that run; JSON mode is read from the options before the subcommand
+  only, so an option value such as `--body --json` no longer switches it on.
+- CLI: an env-file value loses one matching pair of surrounding quotes only; a password that
+  starts or ends with a quote character keeps it.
+- CLI: every command's `--help` shows a plain description instead of docstring markup.
 - `python -m btx_lib_mail` runs the same entry point as the console scripts. It ran a
   separate session before, so a usage error exited `1` there and `2` from `btx-lib-mail`.
 - An attachment path swapped after the checks (for example replaced by a symlink to

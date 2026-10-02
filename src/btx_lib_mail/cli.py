@@ -36,6 +36,7 @@ import logging
 import os
 import sys
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, Final, TypeVar
@@ -47,7 +48,7 @@ from pydantic import SecretStr, ValidationError
 
 from . import __init__conf__
 from .behaviors import CANONICAL_GREETING, emit_greeting, noop_main, raise_intentional_failure
-from .errors import InvalidInputError
+from .errors import DeliveryError, InvalidInputError
 from .lib_mail import ConfMail, Transport, conf, send, validate_email_address, validate_smtp_host
 from .lib_mail import logger as mail_logger
 from .typed_click import argument, option, version_option
@@ -64,6 +65,11 @@ _T = TypeVar("_T")
 _ENV_FILE_MAX_BYTES: Final[int] = 64 * 1024
 # A password file holds one line; more than this is not a password file.
 _PASSWORD_FILE_MAX_CHARS: Final[int] = 4096
+# A quoted value has at least its two quote characters.
+_QUOTED_MIN_LEN: Final[int] = 2
+# The skips of a send that then failed, for main()'s JSON failure report: the command's own
+# frame is gone by the time the exception reaches the handler.
+_FAILED_RUN_SKIPPED: ContextVar[tuple[dict[str, str], ...]] = ContextVar("btx_mail_failed_run_skipped", default=())
 
 
 # ---------------------------------------------------------------------------
@@ -197,8 +203,20 @@ def _refusals_as_value_error() -> Generator[None, None, None]:
 
 
 def _unquoted(value: str) -> str:
-    """Strip whitespace and one layer of surrounding quotes, as env-file values and hosts are read."""
-    return value.strip().strip('"').strip("'")
+    """Strip surrounding whitespace and ONE matching pair of quotes, as env-file values and hosts are read.
+
+    Only a pair is removed, so a password that merely starts or ends with a quote
+    character keeps it.
+
+    Examples
+    --------
+    >>> _unquoted(' "s3cret" '), _unquoted('s3cret"'), _unquoted('""x""')
+    ('s3cret', 's3cret"', '"x"')
+    """
+    stripped = value.strip()
+    if len(stripped) >= _QUOTED_MIN_LEN and stripped[0] == stripped[-1] and stripped[0] in "\"'":
+        return stripped[1:-1]
+    return stripped
 
 
 def _checked_hosts(values: Sequence[str]) -> list[str]:
@@ -356,8 +374,12 @@ def _emit(ctx: click.Context, command: str, data: Mapping[str, Any], human: str,
         click.echo(human)
 
 
-def _error_payload(exc: BaseException) -> dict[str, str]:
-    return {"type": type(exc).__name__, "message": str(exc)}
+def _error_payload(exc: BaseException) -> dict[str, object]:
+    payload: dict[str, object] = {"type": type(exc).__name__, "message": str(exc)}
+    if isinstance(exc, DeliveryError):
+        payload["failed_recipients"] = list(exc.failed_recipients)
+        payload["hosts"] = list(exc.hosts)
+    return payload
 
 
 class _SkipCollector(logging.Filter):
@@ -383,8 +405,12 @@ class _SkipCollector(logging.Filter):
 def _collect_skipped() -> Generator[_SkipCollector, None, None]:
     collector = _SkipCollector()
     mail_logger.addFilter(collector)
+    _FAILED_RUN_SKIPPED.set(())
     try:
         yield collector
+    except BaseException:
+        _FAILED_RUN_SKIPPED.set(tuple(collector.skipped))
+        raise
     finally:
         mail_logger.removeFilter(collector)
 
@@ -767,7 +793,7 @@ def cli_main() -> None:
     noop_main()
 
 
-@cli.command("info", context_settings=CLICK_CONTEXT_SETTINGS)
+@cli.command("info", context_settings=CLICK_CONTEXT_SETTINGS, help="Show the package name, version, homepage and author.")
 @click.pass_context
 def cli_info(ctx: click.Context) -> None:
     """### cli_info() -> None {#cli-info}
@@ -795,7 +821,7 @@ def cli_info(ctx: click.Context) -> None:
     _emit(ctx, "info", data, "")
 
 
-@cli.command("hello", context_settings=CLICK_CONTEXT_SETTINGS)
+@cli.command("hello", context_settings=CLICK_CONTEXT_SETTINGS, help="Print the greeting (a smoke test of the CLI).")
 @click.pass_context
 def cli_hello(ctx: click.Context) -> None:
     """### cli_hello() -> None {#cli-hello}
@@ -814,7 +840,11 @@ def cli_hello(ctx: click.Context) -> None:
     _emit(ctx, "hello", {"greeting": CANONICAL_GREETING}, "")
 
 
-@cli.command("send", context_settings=CLICK_CONTEXT_SETTINGS)
+@cli.command(
+    "send",
+    context_settings=CLICK_CONTEXT_SETTINGS,
+    help="Send one message to each recipient. Unset settings come from BTX_MAIL_* environment variables, then from the --env-file.",
+)
 @option(
     "--host",
     "hosts",
@@ -1128,7 +1158,7 @@ def _apply_attachment_settings(settings: ConfMail, options: _AttachmentOptions, 
     )
 
 
-@cli.command("validate-email", context_settings=CLICK_CONTEXT_SETTINGS)
+@cli.command("validate-email", context_settings=CLICK_CONTEXT_SETTINGS, help="Check that ADDRESS is a syntactically valid email address.")
 @argument("address")
 @click.pass_context
 def cli_validate_email(ctx: click.Context, address: str) -> None:
@@ -1149,7 +1179,7 @@ def cli_validate_email(ctx: click.Context, address: str) -> None:
     _emit(ctx, "validate-email", {"address": address, "valid": True}, f"Valid email address: {address}")
 
 
-@cli.command("validate-smtp-host", context_settings=CLICK_CONTEXT_SETTINGS)
+@cli.command("validate-smtp-host", context_settings=CLICK_CONTEXT_SETTINGS, help="Check that HOST is a valid host[:port] or [IPv6][:port].")
 @argument("host")
 @click.pass_context
 def cli_validate_smtp_host(ctx: click.Context, host: str) -> None:
@@ -1171,7 +1201,7 @@ def cli_validate_smtp_host(ctx: click.Context, host: str) -> None:
     _emit(ctx, "validate-smtp-host", {"host": host, "valid": True}, f"Valid SMTP host: {host}")
 
 
-@cli.command("fail", context_settings=CLICK_CONTEXT_SETTINGS)
+@cli.command("fail", context_settings=CLICK_CONTEXT_SETTINGS, help="Raise an intentional error (to check traceback and exit-code handling).")
 def cli_fail() -> None:
     """### cli_fail() -> None {#cli-fail}
 
@@ -1230,17 +1260,24 @@ def main(
 
 
 def _json_mode(argv: Sequence[str]) -> tuple[bool, bool]:
-    """Return ``(as_json, bare)`` read from *argv*.
+    """Return ``(as_json, bare)`` from the group options in *argv*, before the subcommand.
 
     Read from argv rather than the Click context: an error can escape before the
-    context exists (a malformed option), and its report must still be JSON.
+    context exists (a malformed option), and its report must still be JSON. Only
+    the tokens before the subcommand count, so an option VALUE spelled like the
+    flag (``--body --json``) does not switch JSON on.
     """
-    bare = "--json-bare" in argv
-    return bare or "--json" in argv or "-j" in argv, bare
+    group_options: list[str] = []
+    for token in argv:
+        if token in cli.commands:
+            break
+        group_options.append(token)
+    bare = "--json-bare" in group_options
+    return bare or "--json" in group_options or "-j" in group_options, bare
 
 
 def _command_named(argv: Sequence[str]) -> str | None:
-    """Return the first subcommand name in *argv*, for the failure envelope."""
+    """Return the subcommand name in *argv*, for the failure envelope."""
     return next((token for token in argv if token in cli.commands), None)
 
 
@@ -1258,7 +1295,8 @@ def _json_exception_handler(argv: Sequence[str], *, bare: bool) -> Callable[[Bas
         if isinstance(exc, SystemExit):
             return int(exc.code or 0) if isinstance(exc.code, int) or exc.code is None else 1
         error = _error_payload(exc)
-        click.echo(_dumps(error if bare else {"ok": False, "command": _command_named(argv), "error": error, "skipped": []}))
+        skipped = [dict(item) for item in _FAILED_RUN_SKIPPED.get()]
+        click.echo(_dumps(error if bare else {"ok": False, "command": _command_named(argv), "error": error, "skipped": skipped}))
         if isinstance(exc, click.ClickException):
             return exc.exit_code
         return lib_cli_exit_tools.get_system_exit_code(exc)
