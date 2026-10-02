@@ -133,8 +133,9 @@
   warn mode; NUL, ESC and DEL went into the `Content-Disposition` header raw. Such a name is
   now an attachment security refusal (`FILENAME`), raised in strict mode and logged and
   skipped in warn mode, before any delivery.
-- The source distribution ships only the package, its tests, its docs, `README.md`,
-  `LICENSE`, `CHANGELOG.md` and `pyproject.toml` (an include list). Earlier sdists also
+- The source distribution ships only the package's `.py` files and `py.typed`, the tests,
+  the Markdown docs, `README.md`, `LICENSE`, `CHANGELOG.md` and `pyproject.toml` (an include
+  list), plus the `PKG-INFO` and root `.gitignore` hatchling always adds. Earlier sdists also
   carried repository working files such as `handover.md`, `OPEN-WORK.md` and
   `reset_git_history.sh`.
 

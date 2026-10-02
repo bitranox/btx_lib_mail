@@ -86,17 +86,20 @@ include = ["src/btx_lib_mail/py.typed"]
 
 # An allowlist, never a denylist: hatchling reads only the root .gitignore, so files hidden
 # through .git/info/exclude or a nested .gitignore (session records, review notes) would ship.
-# tests/test_packaging.py builds the sdist and refuses any other top-level entry.
+# tests/test_packaging.py builds the sdist and refuses any other top-level entry, any other file
+# type below src, tests and docs, and anything inside a dot-directory there.
 [tool.hatch.build.targets.sdist]
 include = [
-  "/src/btx_lib_mail",
+  "/src/btx_lib_mail/**/*.py",
+  "/src/btx_lib_mail/py.typed",
   "/tests/*.py",
-  "/docs",
+  "/docs/**/*.md",
   "/README.md",
   "/LICENSE",
   "/CHANGELOG.md",
   "/pyproject.toml",
 ]
+exclude = ["/src/**/.*", "/docs/**/.*"]
 
 [tool.ruff]
 line-length = 160

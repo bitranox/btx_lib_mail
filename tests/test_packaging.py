@@ -65,6 +65,43 @@ def test_the_sdist_ships_only_the_package_under_src(sdist_members: list[str]) ->
     assert under_src == {"btx_lib_mail"}
 
 
+# Below each allowlisted directory only these file types are published. The include list names
+# whole directories, so a stray note or a hidden scratch folder inside one would otherwise ship.
+ALLOWED_SUFFIXES_BELOW = {"src/btx_lib_mail/": (".py", "py.typed"), "tests/": (".py",), "docs/": (".md",)}
+
+
+def _strays_below_the_allowlisted_directories(members: list[str]) -> list[str]:
+    """Return every member under src, tests or docs that is not an allowed file type, or hides in a dot-directory."""
+    strays: list[str] = []
+    for member in members:
+        prefix = next((prefix for prefix in ALLOWED_SUFFIXES_BELOW if member.startswith(prefix)), None)
+        if prefix is None or member.endswith("/"):
+            continue
+        relative = member[len(prefix) :]
+        if any(part.startswith(".") for part in relative.split("/")) or not relative.endswith(ALLOWED_SUFFIXES_BELOW[prefix]):
+            strays.append(member)
+    return strays
+
+
+@pytest.mark.os_agnostic
+def test_the_sdist_ships_only_source_tests_and_markdown_below_its_directories(sdist_members: list[str]) -> None:
+    files_below = [member for member in sdist_members if member.startswith(tuple(ALLOWED_SUFFIXES_BELOW))]
+    assert files_below, "positive control: the sdist carries files under src, tests and docs"
+
+    strays = _strays_below_the_allowlisted_directories(sdist_members)
+
+    assert not strays, f"the sdist ships files that are not part of the package: {strays}"
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    "stray",
+    ["docs/.private/session.md", "src/btx_lib_mail/REVIEW-NOTES.md", "tests/notes.txt", "docs/plans/draft.txt"],
+)
+def test_the_stray_check_catches_a_nested_stray(stray: str) -> None:
+    assert _strays_below_the_allowlisted_directories(["src/btx_lib_mail/lib_mail.py", "docs/api.md", stray]) == [stray]
+
+
 @pytest.mark.os_agnostic
 def test_the_sdist_carries_no_compiled_bytecode(sdist_members: list[str]) -> None:
     compiled = [member for member in sdist_members if "__pycache__" in member or member.endswith(".pyc")]
