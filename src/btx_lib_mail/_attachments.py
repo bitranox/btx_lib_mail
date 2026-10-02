@@ -624,6 +624,21 @@ def _changed_after_check(path: pathlib.Path) -> AttachmentSecurityError:
     )
 
 
+class _UnreadableAttachmentError(Exception):
+    """The checked file exists, but opening it failed (permission, open-file limit, I/O).
+
+    Internal: :func:`_prepare_attachment` reports it like a missing file, so
+    ``raise_on_missing_attachments`` decides between raising and skipping.
+
+    Attributes:
+        code: The symbolic errno name (``EACCES``), or ``"OSError"`` when unknown.
+    """
+
+    def __init__(self, error_number: int | None) -> None:
+        self.code = errno.errorcode.get(error_number, "OSError") if error_number is not None else "OSError"
+        super().__init__(self.code)
+
+
 def _open_attachment(path: pathlib.Path, max_size: int | None) -> IO[bytes] | None:
     """Open the checked, resolved path once and prove it is the file that was checked.
 
@@ -646,6 +661,8 @@ def _open_attachment(path: pathlib.Path, max_size: int | None) -> IO[bytes] | No
         AttachmentSecurityError: ``CHANGED`` when the path became a symlink or
             another file after the checks; ``SIZE`` when the file exceeds
             max_size.
+        _UnreadableAttachmentError: When the regular file exists but the
+            operating system refuses to open it.
     """
     try:
         checked = os.lstat(path)
@@ -662,7 +679,7 @@ def _open_attachment(path: pathlib.Path, max_size: int | None) -> IO[bytes] | No
     except OSError as exc:
         if exc.errno in _NOFOLLOW_ERRNOS:
             raise _changed_after_check(path) from None
-        raise
+        raise _UnreadableAttachmentError(exc.errno) from None
     handle = os.fdopen(descriptor, "rb")
     try:
         opened = os.fstat(handle.fileno())
@@ -764,23 +781,23 @@ def _prepare_attachment(path: pathlib.Path, security: AttachmentSecurityOptions,
     original_path_str = str(path)
     try:
         validated_path = _validate_attachment_security(path, original_path_str, security)
+    except AttachmentSecurityError as exc:
+        if security.raise_on_violation:
+            raise
+        log_violation(exc, original_path_str)
+        return None
+    try:
         handle = _open_attachment(validated_path, security.max_size_bytes)
     except AttachmentSecurityError as exc:
         if security.raise_on_violation:
             raise
         log_violation(exc, original_path_str)
         return None
+    except _UnreadableAttachmentError as exc:
+        return _unavailable(validated_path, f"can not be read ({exc.code})", raise_on_missing=raise_on_missing)
 
     if handle is None:
-        clean_path = printable(str(validated_path))
-        if raise_on_missing:
-            raise AttachmentNotFoundError(f'Attachment File "{clean_path}" can not be found')
-        logger.warning(
-            'Attachment File "%s" can not be found',
-            clean_path,
-            extra={"attachment_path": clean_path, "skipped": "attachment"},
-        )
-        return None
+        return _unavailable(validated_path, "can not be found", raise_on_missing=raise_on_missing)
 
     return AttachmentPayload(
         filename=validated_path.name,
@@ -788,6 +805,54 @@ def _prepare_attachment(path: pathlib.Path, security: AttachmentSecurityOptions,
         handle=handle,
         size_limit=security.max_size_bytes,
     )
+
+
+def _unavailable(path: pathlib.Path, problem: str, *, raise_on_missing: bool) -> None:
+    """Raise or log an attachment that is missing or cannot be read.
+
+    Args:
+        path: The checked path.
+        problem: What went wrong, completing ``Attachment File "<path>" ...``.
+        raise_on_missing: Raise when ``True``; log a warning and skip otherwise.
+
+    Raises:
+        AttachmentNotFoundError: When raise_on_missing is ``True``.
+    """
+    clean_path = printable(str(path))
+    if raise_on_missing:
+        raise AttachmentNotFoundError(f'Attachment File "{clean_path}" {problem}')
+    logger.warning(
+        'Attachment File "%s" %s',
+        clean_path,
+        problem,
+        extra={"attachment_path": clean_path, "skipped": "attachment"},
+    )
+
+
+def coerce_attachment_paths(entries: Iterable[object]) -> tuple[pathlib.Path, ...]:
+    """Return each attachment entry as a path; a ``str`` or a ``pathlib`` path is accepted.
+
+    Args:
+        entries: The caller's attachment entries, typed loosely because the
+            annotation on ``send()`` is not enforced at run time.
+
+    Returns:
+        The entries as ``pathlib.Path`` objects, in order.
+
+    Raises:
+        InvalidInputError: If an entry is neither a ``str`` nor a ``pathlib``
+            path.
+
+    Examples:
+        >>> [path.name for path in coerce_attachment_paths(["/data/a.pdf", pathlib.Path("/data/b.pdf")])]
+        ['a.pdf', 'b.pdf']
+    """
+    paths: list[pathlib.Path] = []
+    for entry in entries:
+        if not isinstance(entry, (str, pathlib.PurePath)):
+            raise InvalidInputError(f"attachment_file_paths entries must be paths, got {type(entry).__name__}")
+        paths.append(pathlib.Path(entry))
+    return tuple(paths)
 
 
 def log_violation(exc: AttachmentSecurityError, original_path_str: str) -> None:

@@ -93,7 +93,7 @@ Key behaviours:
 - Messages are always rendered as UTF-8; attachments retain their binary
   payload via base64 encoding. Failed hosts are logged at WARNING level and the
   helper proceeds to the next configured server before raising.
-- A missing attachment file raises `AttachmentNotFoundError` (a `FileNotFoundError`) and an
+- A missing or unreadable attachment file raises `AttachmentNotFoundError` (a `FileNotFoundError`) and an
   invalid recipient address raises `InvalidInputError` (a `ValueError`) by default (`raise_on_missing_attachments=True`,
   `raise_on_invalid_recipient=True`). Set either to `False` on the config, or pass it to
   `send()`, to log a warning and skip the file or address instead. Neither has a CLI flag

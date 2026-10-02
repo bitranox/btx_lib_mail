@@ -86,6 +86,14 @@
 
 ### Fixed
 
+- An attachment the operating system refuses to open (no read permission, the open-file
+  limit, an I/O error) raised the bare `OSError` (`PermissionError: [Errno 13] ...`), and
+  `raise_on_missing_attachments=False` could not skip it. It is now reported like a missing
+  file: `AttachmentNotFoundError('Attachment File "<path>" can not be read (EACCES)')`, or a
+  warning and a skip when that setting is `False`. (The CLI already refused an unreadable
+  `--attachment` as a usage error.)
+- `send(attachment_file_paths=...)` accepts `str` entries as well as `pathlib.Path`; a `str`
+  raised `AttributeError` before. Any other entry type is refused with `InvalidInputError`.
 - An attachment whose name is not valid Unicode text (an invalid UTF-8 byte in a POSIX name)
   raised a bare `UnicodeEncodeError` while composing, even in warn mode, and a path holding
   NUL raised a bare `ValueError` from `os.lstat`. Both are refused as

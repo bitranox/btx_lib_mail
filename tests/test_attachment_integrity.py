@@ -17,7 +17,18 @@ from typing import IO, TYPE_CHECKING, Any
 
 import pytest
 
-from btx_lib_mail import AttachmentSecurityError, AttachmentViolation, ConfigurationError, ConfMail, InvalidInputError, _attachments, _compose, lib_mail, send
+from btx_lib_mail import (
+    AttachmentNotFoundError,
+    AttachmentSecurityError,
+    AttachmentViolation,
+    ConfigurationError,
+    ConfMail,
+    InvalidInputError,
+    _attachments,
+    _compose,
+    lib_mail,
+    send,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -62,7 +73,7 @@ def _attachment_bytes(raw: bytes) -> bytes:
     return payload
 
 
-def _send(transport: Any, attachment: Path, **overrides: Any) -> bool:
+def _send(transport: Any, attachment: Path | str, **overrides: Any) -> bool:
     arguments: dict[str, Any] = {
         "mail_from": "sender@example.com",
         "mail_recipients": ["one@example.com", "two@example.com", "three@example.com"],
@@ -494,6 +505,52 @@ def test_an_attachment_name_that_is_not_valid_unicode_is_a_filename_refusal(tmp_
         assert len(transport.messages) == 3
         for raw in transport.messages.values():
             assert not [part for part in message_from_bytes(raw).walk() if part.get_filename()]
+
+
+# root reads a mode-000 file anyway; the condition reads geteuid only where it exists.
+_UNREADABLE_FILE_SKIP = sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0)
+
+
+@pytest.mark.os_posix
+@pytest.mark.skipif(_UNREADABLE_FILE_SKIP, reason="needs POSIX permissions and a non-root user")
+@pytest.mark.parametrize("tolerate", [False, True], ids=["raise", "tolerate"])
+def test_an_attachment_that_cannot_be_read_is_reported_like_a_missing_one(tmp_path: Path, tolerate: bool) -> None:
+    report = tmp_path / "report.txt"
+    report.write_bytes(b"quarterly numbers")
+    report.chmod(0)
+    transport = _RecordingTransport()
+
+    try:
+        if tolerate:
+            assert _send(transport, report, raise_on_missing_attachments=False) is True
+            assert len(transport.messages) == 3, "tolerate mode skips the attachment and still sends"
+        else:
+            with pytest.raises(AttachmentNotFoundError, match=r'^Attachment File ".*report\.txt" can not be read \(EACCES\)$'):
+                _send(transport, report)
+            assert transport.messages == {}
+    finally:
+        report.chmod(0o600)
+
+
+@pytest.mark.os_agnostic
+def test_an_attachment_path_given_as_a_string_is_sent(tmp_path: Path) -> None:
+    report = tmp_path / "report.txt"
+    report.write_bytes(b"quarterly numbers")
+    transport = _RecordingTransport()
+
+    assert _send(transport, str(report)) is True
+
+    assert _attachment_bytes(transport.messages["one@example.com"]) == b"quarterly numbers"
+
+
+@pytest.mark.os_agnostic
+def test_an_attachment_entry_that_is_not_a_path_is_refused() -> None:
+    transport = _RecordingTransport()
+
+    with pytest.raises(InvalidInputError, match=r"^attachment_file_paths entries must be paths, got int$"):
+        _send(transport, 5)  # pyright: ignore[reportArgumentType]  # the wrong type is the point
+
+    assert transport.messages == {}
 
 
 @pytest.mark.os_posix

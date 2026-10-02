@@ -34,6 +34,7 @@ from ._attachments import (
     AttachmentSecurityOptions,
     AttachmentViolation,
     close_attachments,
+    coerce_attachment_paths,
     normalise_extensions,
     prepare_attachments,
 )
@@ -66,7 +67,7 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
     mail_body: str = "",
     mail_body_html: str = "",
     smtphosts: Sequence[str] | None = None,
-    attachment_file_paths: Sequence[pathlib.Path] | None = None,
+    attachment_file_paths: Sequence[pathlib.Path | str] | None = None,
     *,
     credentials: tuple[str, str] | None = None,
     use_starttls: bool | None = None,
@@ -107,8 +108,9 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
         mail_body_html: Optional HTML body. Defaults to "".
         smtphosts: Override host list. When `None`, the helper falls back to
             the passed `config.smtphosts`, else the global `conf.smtphosts`.
-        attachment_file_paths: Optional iterable of filesystem paths. Each
-            existing file becomes an attachment.
+        attachment_file_paths: Optional sequence of filesystem paths
+            (``pathlib.Path`` or ``str``). Each
+            existing, readable file becomes an attachment.
         credentials: Override credentials. When omitted,
             `resolved_credentials()` of the passed `config`, else of `conf`,
             is used.
@@ -225,7 +227,7 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
     )
 
     attachments = prepare_attachments(
-        tuple(attachment_file_paths or ()),
+        coerce_attachment_paths(attachment_file_paths or ()),
         security,
         raise_on_missing=resolved_raise_on_missing,
     )
