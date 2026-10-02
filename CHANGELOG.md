@@ -86,6 +86,12 @@
 
 ### Fixed
 
+- A subject holding U+2028 or U+2029, or a subject or body holding a lone surrogate (what an
+  invalid UTF-8 byte in argv decodes to on POSIX), raised a bare `ValueError` or
+  `UnicodeEncodeError` from the email package. Both are now refused before the first delivery
+  with `InvalidInputError`: the separators with the same line-break message as CR and LF, a
+  surrogate with `mail_subject|mail_body|mail_body_html must be valid Unicode text`. A
+  subject with a surrogate was sent before as an undecodable `unknown-8bit` header.
 - `send(attachment_blocked_extensions=...)` and `send(attachment_allowed_extensions=...)` are
   normalised like the `ConfMail` fields (lower case, leading dot): `{".EXE"}` now blocks
   `x.exe`, and `{"PDF"}` allows `r.pdf`. A keyword set in another spelling let an executable

@@ -287,6 +287,40 @@ def test_a_subject_with_another_control_character_is_refused_without_echoing_it(
 
 
 @pytest.mark.os_agnostic
+@pytest.mark.parametrize("separator", [chr(0x2028), chr(0x2029)], ids=["line-separator", "paragraph-separator"])
+def test_a_subject_with_a_unicode_line_separator_is_refused_with_the_email_package_message(separator: str) -> None:
+    transport = _RecordingTransport()
+
+    with pytest.raises(InvalidInputError, match=r"^Header values may not contain linefeed or carriage return characters$"):
+        send("sender@example.com", "one@example.com", f"a{separator}b", smtphosts=["smtp.example.com"], transport=transport)
+
+    assert transport.messages == {}
+
+
+_LONE_SURROGATE = chr(0xDCFF)  # what an invalid UTF-8 byte in argv decodes to on POSIX
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    ("field", "message"),
+    [
+        ("mail_subject", "mail_subject must be valid Unicode text"),
+        ("mail_body", "mail_body must be valid Unicode text"),
+        ("mail_body_html", "mail_body_html must be valid Unicode text"),
+    ],
+)
+def test_text_holding_a_lone_surrogate_is_refused_without_echoing_it(field: str, message: str) -> None:
+    transport = _RecordingTransport()
+    text: dict[str, Any] = {"mail_subject": "Report", field: f"a{_LONE_SURROGATE}b"}
+
+    with pytest.raises(InvalidInputError) as caught:
+        send("sender@example.com", "one@example.com", smtphosts=["smtp.example.com"], transport=transport, **text)
+
+    assert str(caught.value) == message
+    assert transport.messages == {}
+
+
+@pytest.mark.os_agnostic
 def test_a_subject_with_a_tab_is_sent() -> None:
     transport = _RecordingTransport()
 

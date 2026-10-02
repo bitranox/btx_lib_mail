@@ -38,7 +38,7 @@ from ._attachments import (
     prepare_attachments,
 )
 from ._common import logger, printable
-from ._compose import MessageContent, check_subject, compose_body_once, envelope_header_lines, message_for
+from ._compose import MessageContent, check_body, check_subject, compose_body_once, envelope_header_lines, message_for
 from ._config import ConfMail, conf
 from ._transport import DEFAULT_TRANSPORT, DeliveryOptions, SmtplibTransport, Transport
 from ._validation import (
@@ -165,7 +165,8 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
 
     Raises:
         InvalidInputError: If the sender, a recipient (in strict mode), a
-            host, the subject (a control character other than TAB),
+            host, the subject (a line break, a control character other than
+            TAB, or invalid Unicode), the body (invalid Unicode),
             `local_hostname`, `timeout` or `delivery_deadline` is refused, or
             no valid recipient remains. Raised before the first delivery.
             Also a `ValueError`.
@@ -245,6 +246,7 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
             transport=transport if transport is not None else DEFAULT_TRANSPORT,
         )
         check_subject(mail_subject)
+        check_body(plain_body=mail_body, html_body=mail_body_html)
         # Every header block is built before the first delivery, so a header the
         # email package refuses fails the call before any recipient was sent to.
         envelopes = [(recipient, envelope_header_lines(sender=mail_from, recipient=recipient, subject=mail_subject)) for recipient in recipients]

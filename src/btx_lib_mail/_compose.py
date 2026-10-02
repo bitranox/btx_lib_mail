@@ -231,23 +231,65 @@ class _JoinedMessage(io.RawIOBase):
 _SUBJECT_ALLOWED_CONTROLS: Final[frozenset[str]] = frozenset({"\t"})
 
 
-def check_subject(subject: str) -> None:
-    """Refuse a subject carrying a control character, without echoing it.
+_LINE_BREAK_MESSAGE: Final[str] = "Header values may not contain linefeed or carriage return characters"
 
-    CR and LF keep the email package's own message, which ``send()`` raised for
-    them before.
+
+def _check_unicode_text(text: str, *, field_name: str) -> None:
+    """Refuse text that cannot be written as UTF-8, without echoing it.
+
+    A lone surrogate is what an invalid UTF-8 byte in argv or a file name decodes
+    to on POSIX; the email package would raise UnicodeEncodeError for it.
+
+    Args:
+        text: The text to check.
+        field_name: The parameter name the message reports.
+
+    Raises:
+        InvalidInputError: If text holds a lone surrogate.
+    """
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        raise InvalidInputError(f"{field_name} must be valid Unicode text") from None
+
+
+def check_subject(subject: str) -> None:
+    """Refuse a subject the email package would refuse or the recipient would see raw.
+
+    A line break keeps the email package's own message, which ``send()`` raised
+    for it before; that covers CR and LF and the Unicode separators U+2028 and
+    U+2029, which the email package also treats as line breaks. A control
+    character is checked before the separators, so its message stays the one it
+    always had.
 
     Args:
         subject: The message subject to check.
 
     Raises:
-        InvalidInputError: If subject contains CR, LF, or another control
-            character other than TAB.
+        InvalidInputError: If subject contains a line break, a control character
+            other than TAB, or a lone surrogate.
     """
     if "\r" in subject or "\n" in subject:
-        raise InvalidInputError("Header values may not contain linefeed or carriage return characters")
+        raise InvalidInputError(_LINE_BREAK_MESSAGE)
     if any(unicodedata.category(character) == "Cc" and character not in _SUBJECT_ALLOWED_CONTROLS for character in subject):
         raise InvalidInputError("mail_subject must not contain control characters (only TAB is allowed)")
+    if len(subject.splitlines()) > 1:
+        raise InvalidInputError(_LINE_BREAK_MESSAGE)
+    _check_unicode_text(subject, field_name="mail_subject")
+
+
+def check_body(*, plain_body: str, html_body: str) -> None:
+    """Refuse a body that cannot be written as UTF-8, without echoing it.
+
+    Args:
+        plain_body: The plain-text body.
+        html_body: The HTML body.
+
+    Raises:
+        InvalidInputError: If either body holds a lone surrogate.
+    """
+    _check_unicode_text(plain_body, field_name="mail_body")
+    _check_unicode_text(html_body, field_name="mail_body_html")
 
 
 def _build_body_message(plain_body: str, html_body: str) -> EmailMessage:
