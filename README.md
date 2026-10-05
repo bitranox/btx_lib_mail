@@ -161,6 +161,25 @@ Install it into any project:
 It is also available in the central [bitranox-skills](https://github.com/bitranox/bitranox-skills)
 marketplace as `coding-python-send-mail`.
 
+## Architecture
+
+The package is layered, and `make test` enforces it with one import-linter `layers` contract
+(`[tool.importlinter]` in `pyproject.toml`): a module imports only from the layers below its
+own, and the modules sharing a layer do not import each other.
+
+| Layer (top to bottom)         | Responsibility                                                            |
+|-------------------------------|---------------------------------------------------------------------------|
+| `cli`                         | The rich-click commands, settings sources, output modes, exit codes       |
+| `lib_mail`                    | `send()`, the public names, host order and failover, the failure log      |
+| `_compose`                    | The message: headers per recipient, the body and attachments encoded once |
+| `_config`, `_transport`       | `ConfMail`; the `Transport` seam, BDAT/DATA streaming and the deadline    |
+| `_attachments`, `_validation` | Attachment security and the open-once file; address, host, number checks  |
+| `secret_safety`, `errors`     | Credential-safe validation errors; the `BtxMailError` family              |
+| `_common`, `_descriptor_path` | Logger and printable text; the path the system holds for an open file     |
+| `behaviors`                   | Scaffold helpers                                                          |
+
+[Module reference](docs/systemdesign/module_reference.md) describes each module.
+
 ## Documentation
 
 - [Installation](docs/installation.md) - pip, pipx, uv, source builds; Python 3.10+ baseline
