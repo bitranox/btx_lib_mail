@@ -412,10 +412,23 @@ def _resolved_directories(directories: frozenset[pathlib.Path]) -> frozenset[pat
     else:
         # Python 3.13+ returns a loop unresolved, still a symlink: refused the
         # same way, rather than kept as a rule no file can ever match.
-        if not any(_is_symlink(directory) for directory in resolved):
+        if not any(_resolves_to_a_link(directory) for directory in resolved):
             return resolved
         code = "ELOOP"
     raise InvalidInputError(f"an attachment directory can not be resolved ({code})")
+
+
+def _resolves_to_a_link(directory: pathlib.Path) -> bool:
+    """Whether a resolved rule is still a symlink, the way Python 3.13+ returns a loop.
+
+    A rule the process may not examine (``EACCES`` on a parent) is compared as
+    written, as it was before this check: no attachment the process can read lies
+    under it.
+    """
+    try:
+        return _is_symlink(directory)
+    except _UnreadableAttachmentError:
+        return False
 
 
 def _errno_name(error_number: int | None) -> str:

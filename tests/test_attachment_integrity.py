@@ -998,6 +998,25 @@ def test_a_directory_rule_that_is_a_symlink_loop_is_refused_as_unresolvable(tmp_
     assert transport.recipients == []
 
 
+@pytest.mark.os_posix
+@pytest.mark.skipif(_UNREADABLE_FILE_SKIP, reason="needs POSIX permissions and a non-root user")
+def test_a_directory_rule_the_process_cannot_examine_is_compared_as_written(tmp_path: Path) -> None:
+    """The symlink-loop check raised the private unreadable-path error for a rule under a directory it cannot search."""
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    rule = locked / "rule"
+    report = tmp_path / "report.txt"
+    report.write_text("x")
+    transport = RecordingTransport()
+    locked.chmod(0)
+    try:
+        assert _send(transport, report, attachment_blocked_directories=frozenset({rule}))
+    finally:
+        locked.chmod(0o700)
+
+    assert len(transport.recipients) == 3
+
+
 @pytest.mark.os_agnostic
 def test_a_directory_rule_holding_nul_is_refused_by_conf_mail() -> None:
     """NUL was accepted into the setting and broke every later send() with a bare ValueError."""
