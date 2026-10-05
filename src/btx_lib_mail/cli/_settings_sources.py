@@ -175,7 +175,7 @@ def read_env_file(path: Path | None) -> dict[str, str]:
     except UnicodeDecodeError as exc:
         raise _env_file_refusal(path, "is not UTF-8 text") from exc
     values: dict[str, str] = {}
-    for line in text.splitlines():
+    for line in _lines(text):
         stripped = line.strip()
         if not stripped or stripped.startswith("#") or "=" not in stripped:
             continue
@@ -312,8 +312,21 @@ def _read_password_file(handle: IO[str] | None) -> str | None:
         raise click.BadParameter("is not UTF-8 text", param_hint="--password-file") from None
     if len(content) > _PASSWORD_FILE_MAX_CHARS:
         raise click.BadParameter(f"a password file holds one line of at most {_PASSWORD_FILE_MAX_CHARS} characters", param_hint="--password-file")
-    lines = content.splitlines()
-    return lines[0] if lines else None
+    return _lines(content)[0] if content else None
+
+
+def _lines(text: str) -> list[str]:
+    r"""Split text at ``\n`` only, dropping one ``\r`` before it.
+
+    ``str.splitlines()`` also breaks at FS, GS, RS, FF, NEL, U+2028 and U+2029,
+    which no editor or shell writes as a line end; splitting there would cut a
+    password holding one short without a word.
+
+    Examples:
+        >>> _lines("a\x1db\r\nc")
+        ['a\x1db', 'c']
+    """
+    return [line.removesuffix("\r") for line in text.split("\n")]
 
 
 def resolve_password(*, password: str | None, password_file: IO[str] | None, sources: Sources) -> str | None:

@@ -110,7 +110,7 @@ For each setting, the first of these that sets it wins:
 4. the value on `btx_lib_mail.conf`.
 
 An empty value in the environment or the file counts as unset. The env file holds
-`KEY=value` lines; blank lines, `#` comments and lines without `=` are skipped, a value
+`KEY=value` lines (a line ends at LF, with one CR before it dropped); blank lines, `#` comments and lines without `=` are skipped, a value
 loses surrounding whitespace and ONE matching pair of quotes (`"x"` or `'x'`; a lone quote
 character stays), the first occurrence of a key wins, and the file must be UTF-8 and at most 64 KiB. It may be
 a regular file, a pipe or a character device, so `--env-file /dev/null` ignores `./.env` and
@@ -120,7 +120,7 @@ case; a value that cannot be parsed (`BTX_MAIL_SMTP_TIMEOUT=abc`, `BTX_MAIL_SMTP
 is a usage error, exit code `2`.
 
 Authentication needs both a username and a password; with only one of them the mail is
-sent without authenticating. `--password-file` reads the first line of a UTF-8 file of at most
+sent without authenticating. `--password-file` reads the first line (up to the first LF, one CR before it dropped) of a UTF-8 file of at most
 4096 characters; an empty first line counts as no password, so `BTX_MAIL_SMTP_PASSWORD`
 applies. `--attachment-allowed-dir` and `--attachment-blocked-dir` split each value on
 commas, like `--host` and `--recipient`.

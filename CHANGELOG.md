@@ -212,6 +212,10 @@
   was delivered twice, with one host `send()` raised `DeliveryError` for a message the server
   kept. Once the reply to `DATA` or `BDAT LAST` is `250`, the message counts as delivered and
   the answer to `QUIT` changes nothing.
+- A value in `./.env`, and the password `--password-file` reads, ended at every break
+  `str.splitlines()` knows: FS, GS, RS, FF, NEL, U+2028 and U+2029 as well as LF and CR. A
+  password holding one was cut short without a word and refused at AUTH. A line ends at LF
+  now, with one CR before it dropped.
 - A first host that could not be reached was tried first again for every recipient, so with
   the default 30-second timeout each recipient waited 30 seconds before the next host was
   used. Within one `send()` call, a host that failed for a reason other than a reply about the

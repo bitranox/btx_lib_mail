@@ -970,3 +970,31 @@ def test_command_help_is_plain_text_not_docstring_markup(cli_runner: CliRunner, 
     assert result.exit_code == 0
     assert "###" not in _flat(result.output)
     assert "**Purpose:**" not in _flat(result.output)
+
+
+# Characters str.splitlines() breaks a line at although no editor or shell ends a line there.
+_NOT_LINE_ENDS = [chr(0x1D), chr(0x0C), chr(0x85), chr(0x2028)]
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("inside", _NOT_LINE_ENDS, ids=["GS", "FF", "NEL", "LS"])
+def test_a_password_file_line_ends_only_at_a_newline(cli_runner: CliRunner, tmp_path: Path, inside: str) -> None:
+    """The password used to stop at any str.splitlines() boundary: silently wrong, refused at AUTH."""
+    password_file = tmp_path / "password"
+    password_file.write_bytes(f"ab{inside}cd\r\nignored\n".encode())
+
+    result, transport = _invoke(cli_runner, ["send", *_ROUTE, *_MESSAGE, "--username", "user", "--password-file", str(password_file)])
+
+    assert result.exit_code == 0, result.output
+    assert transport.only.options.credentials == ("user", f"ab{inside}cd")
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("inside", _NOT_LINE_ENDS, ids=["GS", "FF", "NEL", "LS"])
+def test_an_env_file_value_runs_to_the_newline(tmp_path: Path, inside: str) -> None:
+    env_file = tmp_path / "settings.env"
+    env_file.write_bytes(f"BTX_MAIL_SMTP_PASSWORD=ab{inside}cd\r\nBTX_MAIL_SENDER=a@example.com\n".encode())
+
+    values = _settings_sources.read_env_file(env_file)
+
+    assert values == {"BTX_MAIL_SMTP_PASSWORD": f"ab{inside}cd", "BTX_MAIL_SENDER": "a@example.com"}
