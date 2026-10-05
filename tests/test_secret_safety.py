@@ -1881,3 +1881,9 @@ def test_a_failure_whose_text_does_not_carry_the_password_keeps_it() -> None:
     described = lib_mail._describe_failure(ConnectionError("connection reset by peer"), credentials=(_USER, _PASSWORD))
 
     assert described == "ConnectionError: connection reset by peer"
+
+
+@pytest.mark.os_agnostic
+def test_an_empty_password_leaves_the_failure_text_alone() -> None:
+    """An empty password is in every text; checking for it would drop every failure's text."""
+    assert lib_mail._describe_failure(ConnectionError("connection reset by peer"), credentials=("user", "")) == "ConnectionError: connection reset by peer"

@@ -998,3 +998,34 @@ def test_an_env_file_value_runs_to_the_newline(tmp_path: Path, inside: str) -> N
     values = _settings_sources.read_env_file(env_file)
 
     assert values == {"BTX_MAIL_SMTP_PASSWORD": f"ab{inside}cd", "BTX_MAIL_SENDER": "a@example.com"}
+
+
+@pytest.mark.os_agnostic
+def test_an_empty_password_file_sets_no_credentials(cli_runner: CliRunner, tmp_path: Path) -> None:
+    password_file = tmp_path / "password"
+    password_file.write_bytes(b"")
+
+    result, transport = _invoke(cli_runner, ["send", *_ROUTE, *_MESSAGE, "--username", "user", "--password-file", str(password_file)])
+
+    assert result.exit_code == 0, result.output
+    assert transport.only.options.credentials is None
+
+
+def _open_descriptor_count() -> int | None:
+    for listing in ("/proc/self/fd", "/dev/fd"):
+        if Path(listing).is_dir():
+            return sum(1 for _ in Path(listing).iterdir())
+    return None
+
+
+@pytest.mark.os_agnostic
+def test_an_env_file_that_is_a_directory_is_refused_without_leaking_its_descriptor(tmp_path: Path) -> None:
+    if sys.platform == "win32" or _open_descriptor_count() is None:
+        pytest.skip("needs a directory that opens as a descriptor and a listing of open descriptors")
+    before = _open_descriptor_count()
+
+    for _ in range(20):
+        with pytest.raises(click.UsageError):
+            _settings_sources.read_env_file(tmp_path)
+
+    assert _open_descriptor_count() == before

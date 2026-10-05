@@ -6,12 +6,15 @@
 from __future__ import annotations
 
 import contextlib
+import gc
 import io
 import math
+import smtplib
 import socket
 import ssl
 import threading
 import time
+import warnings
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -109,8 +112,12 @@ def test_without_a_deadline_a_dripping_server_keeps_the_session_open(drip_server
     worker = threading.Thread(target=lambda: _attempt(drip_server.port, deadline=None), daemon=True)
     worker.start()
     worker.join(timeout=4 * _DEADLINE)
+    still_open = worker.is_alive()
+    drip_server.close()  # ends the drip, so the session ends and the worker with it
+    worker.join(timeout=_SOCKET_TIMEOUT)
 
-    assert worker.is_alive(), "the session should still be blocked on the dripping reply"
+    assert still_open, "the session should still be blocked on the dripping reply"
+    assert not worker.is_alive()
 
 
 def _attempt(port: int, *, deadline: float | None) -> None:
@@ -272,7 +279,7 @@ def test_a_deadline_bounds_a_greeting_that_drips() -> None:
 
     assert len(outcome) == 1
     assert isinstance(outcome[0], TimeoutError)
-    assert elapsed < _SOCKET_TIMEOUT
+    assert elapsed < 4 * _DEADLINE
 
 
 @pytest.mark.os_agnostic
@@ -519,3 +526,27 @@ def test_the_longest_accepted_timeout_and_deadline_still_deliver() -> None:
         server.close()
 
     assert server.stored == 1
+
+
+@pytest.mark.os_agnostic
+def test_a_failed_session_closes_its_socket() -> None:
+    """A session that fails after connecting (here STARTTLS is not offered) must not leave its socket to the collector."""
+    server = _SessionServer()
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            with pytest.raises(smtplib.SMTPNotSupportedError):
+                SmtplibTransport().deliver(
+                    host=f"127.0.0.1:{server.port}",
+                    sender="sender@example.com",
+                    recipient="recipient@example.com",
+                    message=io.BytesIO(b"Subject: s\r\n\r\nbody\r\n"),
+                    delivery=DeliveryOptions(
+                        credentials=None, use_starttls=True, starttls_verify=True, timeout=_SOCKET_TIMEOUT, local_hostname="client.example.com"
+                    ),
+                )
+            gc.collect()
+    finally:
+        server.close()
+
+    assert [warning for warning in caught if issubclass(warning.category, ResourceWarning)] == []

@@ -55,6 +55,8 @@ def _reset_conf_mail() -> Generator[None, None, None]:  # pyright: ignore[report
     finally:
         for key, value in snapshot.model_dump().items():
             setattr(lib_mail.conf, key, value)
+        # Each setattr above marks its field as set; the global conf ends as it began.
+        object.__setattr__(lib_mail.conf, "__pydantic_fields_set__", set(snapshot.model_fields_set))
 
 
 def test_conf_mail_accepts_single_host() -> None:
@@ -2321,6 +2323,7 @@ def test_split_header_lines_equal_folding_all_four_together() -> None:
         ({"attachment_max_size_bytes": "100"}, "attachment_max_size_bytes must be int, got str"),
         ({"attachment_max_size_bytes": True}, "attachment_max_size_bytes must be int, got bool"),
         ({"attachment_max_size_bytes": -5}, "attachment_max_size_bytes must be positive, got -5"),
+        ({"attachment_max_size_bytes": 0}, "attachment_max_size_bytes must be positive, got 0"),
         ({"attachment_allow_symlinks": "false"}, "attachment_allow_symlinks must be True or False, got str"),
         ({"attachment_raise_on_security_violation": 0}, "attachment_raise_on_security_violation must be True or False, got int"),
         ({"raise_on_missing_attachments": "no"}, "raise_on_missing_attachments must be True or False, got str"),
@@ -2335,6 +2338,7 @@ def test_split_header_lines_equal_folding_all_four_together() -> None:
         ({"credentials": ("user", None)}, "credentials must be a (user, password) pair of str"),
         ({"credentials": ("user", b"pw")}, "credentials must be a (user, password) pair of str"),
         ({"credentials": "ab"}, "credentials must be a (user, password) pair of str"),
+        ({"credentials": ("user", "pw", "extra")}, "credentials must be a (user, password) pair of str"),
         ({"config": {"smtphosts": ["smtp.example.com"]}}, "config must be a ConfMail, got dict"),
     ],
     ids=[
@@ -2345,6 +2349,7 @@ def test_split_header_lines_equal_folding_all_four_together() -> None:
         "max-size-str",
         "max-size-bool",
         "max-size-negative",
+        "max-size-zero",
         "symlinks-str",
         "raise-on-violation-int",
         "raise-on-missing-str",
@@ -2359,6 +2364,7 @@ def test_split_header_lines_equal_folding_all_four_together() -> None:
         "credentials-none-password",
         "credentials-bytes-password",
         "credentials-str",
+        "credentials-three",
         "config-dict",
     ],
 )
@@ -2463,6 +2469,43 @@ def test_a_refused_host_is_quoted_only_in_part(host: str) -> None:
     message = str(caught.value)
     assert len(message) < 500
     assert f"({len(host)} characters)" in message
+
+
+@pytest.mark.os_agnostic
+def test_credentials_given_as_a_list_pair_reach_the_transport_as_a_tuple() -> None:
+    transport = RecordingTransport()
+
+    lib_mail.send(**_with(credentials=["user", "pw"], transport=transport))
+
+    assert transport.deliveries[0].options.credentials == ("user", "pw")
+
+
+_PADDED_PORT = "0" * 4000 + "25"
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    "host",
+    [":" + _PADDED_PORT, "a..b:" + _PADDED_PORT, "-a.b:" + _PADDED_PORT, "h:" + chr(0x0660) * 4000 + chr(0x0662) + chr(0x0665)],
+    ids=["missing-name", "empty-label", "label-hyphen", "non-ascii-port"],
+)
+def test_a_refusal_reached_through_a_long_port_quotes_the_host_in_part(host: str) -> None:
+    """A port padded with zeros keeps the host valid up to the refusal, so every refusal site must cut it."""
+    with pytest.raises(InvalidInputError) as caught:
+        lib_mail.validate_smtp_host(host)
+
+    assert len(str(caught.value)) < 500
+    assert f"({len(host)} characters)" in str(caught.value)
+
+
+@pytest.mark.os_agnostic
+def test_a_refused_host_of_exactly_the_quote_limit_is_quoted_whole() -> None:
+    host = "[" + "h" * 299
+
+    with pytest.raises(InvalidInputError) as caught:
+        lib_mail.validate_smtp_host(host)
+
+    assert str(caught.value) == f'missing closing bracket in "{host}"'
 
 
 @pytest.mark.os_agnostic

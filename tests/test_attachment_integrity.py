@@ -1056,3 +1056,46 @@ def test_a_closed_descriptor_names_no_path() -> None:
     os.close(write_end)
 
     assert _descriptor_path.descriptor_path(read_end) is None
+
+
+@pytest.mark.os_agnostic
+def test_an_allowed_directory_given_through_a_link_admits_what_lies_in_its_target(tmp_path: Path) -> None:
+    """The allowlist is resolved like the attachment, so a link and its target name the same place."""
+    real = tmp_path / "real"
+    real.mkdir()
+    report = real / "report.txt"
+    report.write_text("x")
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(real, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"cannot create a directory symlink here: {exc}")
+    transport = RecordingTransport()
+
+    _send(transport, report, attachment_allowed_directories=frozenset({link}))
+
+    assert len(transport.recipients) == 3
+
+
+@pytest.mark.os_agnostic
+def test_a_blocked_entry_naming_the_file_itself_blocks_it(tmp_path: Path) -> None:
+    report = tmp_path / "report.txt"
+    report.write_text("x")
+
+    with pytest.raises(AttachmentSecurityError) as caught:
+        _send(RecordingTransport(), report, attachment_blocked_directories=frozenset({report}))
+
+    assert caught.value.violation_type is AttachmentViolation.DIRECTORY
+
+
+@pytest.mark.os_agnostic
+def test_a_refusal_names_the_nearest_blocked_directory(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    report = vault / "report.txt"
+    report.write_text("x")
+
+    with pytest.raises(AttachmentSecurityError) as caught:
+        _send(RecordingTransport(), report, attachment_blocked_directories=frozenset({tmp_path, vault}))
+
+    assert f'under blocked directory "{vault.resolve()}"' in caught.value.reason
