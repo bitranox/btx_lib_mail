@@ -247,3 +247,33 @@ on stdlib:
 Wire behaviour is proven end to end in `tests/test_streaming.py` (DATA + BDAT round-trips, dot-stuffing edge cases,
 STARTTLS+AUTH), and the memory bounds in `tests/test_streaming.py` (composing) and `tests/test_transfer_memory.py`
 (streaming).
+
+# Code Quality
+
+## When a review loop stops
+
+A code-quality review (`/bitranox:process-review-enhance-code-quality`) of this repo ends when a full
+sweep finds no SEVERE and no MEDIUM finding that a realistic caller can reach: the library API used
+as documented, the CLI, a configuration file or the environment. A finding only a crafted input,
+an attacker racing a microsecond window, or a platform path alias can reach is fixed when the fix
+is cheap, and otherwise recorded below as accepted, with the reason. "A sweep finds nothing" is not
+the exit: adversarial reviewers with an open charter always find something, and each round of fixes
+seeds new findings of its own.
+
+Deliberately accepted items - do not flag in future reviews unless the stated reason no longer holds:
+
+- **Warn-mode recomposition is quadratic when attachments grow while being read**: each attachment
+  that grows past its size limit during the send makes `compose_body_once` encode every attachment
+  before it again (100 growing attachments at 256 KiB encode 25.9 times their bytes). It needs files
+  changing under the call, and strict mode, the default, refuses at the first one. Re-open if warn
+  mode becomes the default or a caller meets it.
+- **The directory blocklist does not cover path aliases**: it compares resolved paths, so a Windows
+  loopback share (`\\localhost\C$\Windows`) or a Linux bind mount reaches a blocked directory under
+  another name. Resolving every alias is not possible from the path alone; a hard boundary is
+  `attachment_allowed_directories`.
+- **A handle number freed by a Windows deadline cut can be taken by another thread's new socket**
+  between the C-level close and the placeholder socket that holds it: a window of microseconds,
+  never observed (every cut measured ended with WinError 10038).
+- **A KeyboardInterrupt inside the watchdog's join** leaves the session's duplicate socket to the
+  garbage collector: the window is microseconds (up to 50 ms when the deadline passed before the
+  socket existed), and nothing leaks past collection.
