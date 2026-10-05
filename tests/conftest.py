@@ -92,9 +92,13 @@ def strip_ansi() -> Callable[[str], str]:
     return _strip
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def preserve_traceback_state() -> Iterator[None]:
-    """Snapshot and restore the entire ``lib_cli_exit_tools`` configuration."""
+    """Snapshot and restore the entire ``lib_cli_exit_tools`` configuration around every test.
+
+    Several CLI tests turn ``--traceback`` on; without this the flag stays set for every test
+    after them, so a test's outcome would depend on what ran before it.
+    """
 
     snapshot = _snapshot_cli_config()
     try:

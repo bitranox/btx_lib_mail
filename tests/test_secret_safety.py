@@ -142,6 +142,7 @@ def test_a_failing_log_handler_does_not_chain_the_original_delivery_exception(ca
     handler.setFormatter(_FailingFormatter())
     logger = logging.getLogger("btx_lib_mail")
     logger.addHandler(handler)
+    original_level = logger.level
     logger.setLevel(logging.WARNING)
     original = logging.raiseExceptions
     logging.raiseExceptions = True
@@ -150,6 +151,7 @@ def test_a_failing_log_handler_does_not_chain_the_original_delivery_exception(ca
             _send_through(RefusingTransport(_PLANTED_TRANSPORT_ERROR))
     finally:
         logger.removeHandler(handler)
+        logger.setLevel(original_level)
         logging.raiseExceptions = original
     captured = capsys.readouterr()
     assert "PLANTED-FORMATTER-BOOM" in captured.err, "positive control: the broken handler's own failure is reported"
@@ -1713,3 +1715,28 @@ def test_an_accepted_assignment_lands_on_the_live_instance() -> None:
 
     assert settings.blocked == frozenset({".bat"})
     assert "blocked" in settings.model_fields_set
+
+
+class _AssertingToken(SecretSafeModel):
+    credential_fields: ClassVar[frozenset[str]] = frozenset({"token"})
+    token: str
+
+    @field_validator("token")
+    @classmethod
+    def _long_enough(cls, value: str) -> str:
+        assert len(value) >= 8, "token too short"
+        return value
+
+
+@pytest.mark.os_agnostic
+def test_a_hidden_assertion_error_survives_pickling() -> None:
+    """A hidden assertion_error gets its ctx back from its message, so pickle can rebuild it."""
+    with pytest.raises(ValidationError) as caught:
+        _AssertingToken(token="Qx7#pw")
+    error = caught.value
+    assert error.errors()[0]["type"] == "assertion_error", "positive control: the assert validator refused it"
+
+    restored = pickle.loads(pickle.dumps(error))  # noqa: S301 - round-trips an object this test just built
+
+    assert str(restored) == str(error)
+    assert "Qx7#pw" not in str(restored)

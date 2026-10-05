@@ -116,6 +116,7 @@ def test_the_sdist_carries_no_compiled_bytecode(sdist_members: list[str]) -> Non
 # ---------------------------------------------------------------------------
 
 PLANTED_STRAYS = (
+    ".env",
     "handover.md",
     ".private/review.md",
     "docs/.private/session.md",
@@ -129,10 +130,14 @@ _COPIED_DIRECTORIES = ("src", "tests", "docs")
 
 
 def _copy_of_the_tree(destination: Path) -> Path:
-    """Copy the root files and the src, tests and docs trees: everything an sdist could pick up."""
+    """Copy the root files and the src, tests and docs trees: everything an sdist could pick up.
+
+    A real ``.env`` holds tokens and stays out of the copy (pytest keeps its temp directories);
+    a dummy one is planted among the strays instead.
+    """
     destination.mkdir()
     for entry in PROJECT_ROOT.iterdir():
-        if entry.is_file():
+        if entry.is_file() and not entry.name.startswith(".env"):
             shutil.copyfile(entry, destination / entry.name)
     for directory in _COPIED_DIRECTORIES:
         shutil.copytree(PROJECT_ROOT / directory, destination / directory, ignore=shutil.ignore_patterns("__pycache__"))

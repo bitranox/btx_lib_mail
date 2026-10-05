@@ -2224,13 +2224,25 @@ def test_credentials_that_cannot_be_encoded_are_refused_before_any_connection(cr
         ("[1:1:1]:25", 'not an IP address in brackets in "[1:1:1]:25"'),
         ("-bad-.example.com", 'a host name label must not start or end with "-" in "-bad-.example.com"'),
         ("mail-.example.com", 'a host name label must not start or end with "-" in "mail-.example.com"'),
+        ("-bad.example.com", 'a host name label must not start or end with "-" in "-bad.example.com"'),
         ("a..example.com", 'empty host name label in "a..example.com"'),
         (".example.com", 'empty host name label in ".example.com"'),
         ("x" * 64 + ".example.com", "a host name label has 64 characters, more than the 63 allowed"),
         (".".join(["a" * 63] * 4) + ".com", "SMTP host name has 259 characters, more than the 253 allowed"),
         ("a" * 1_000_000, "SMTP host name has 1000000 characters, more than the 253 allowed"),
     ],
-    ids=["bracket-letters", "bracket-short-ipv6", "label-hyphens", "label-trailing-hyphen", "empty-label", "leading-dot", "label-64", "name-259", "name-1mb"],
+    ids=[
+        "bracket-letters",
+        "bracket-short-ipv6",
+        "label-hyphens",
+        "label-trailing-hyphen",
+        "label-leading-hyphen",
+        "empty-label",
+        "leading-dot",
+        "label-64",
+        "name-259",
+        "name-1mb",
+    ],
 )
 def test_a_host_that_can_never_resolve_is_refused_by_validate_smtp_host(host: str, message: str) -> None:
     with pytest.raises(InvalidInputError) as caught:

@@ -37,6 +37,7 @@ class _DripServer:
         self._listener = socket.create_server(("127.0.0.1", 0))
         self.port = self._listener.getsockname()[1]
         self._stop = threading.Event()
+        self._drips: list[threading.Thread] = []
         self._thread = threading.Thread(target=self._serve, daemon=True)
         self._thread.start()
 
@@ -49,7 +50,9 @@ class _DripServer:
                 continue
             except OSError:
                 return  # close() shut the listener
-            threading.Thread(target=self._drip, args=(connection,), daemon=True).start()
+            drip = threading.Thread(target=self._drip, args=(connection,), daemon=True)
+            self._drips.append(drip)
+            drip.start()
 
     def _drip(self, connection: socket.socket) -> None:
         with connection:
@@ -64,9 +67,12 @@ class _DripServer:
                 return
 
     def close(self) -> None:
+        # The drip threads are joined too, so none outlives its test into the next one.
         self._stop.set()
         self._listener.close()
         self._thread.join(timeout=2)
+        for drip in self._drips:
+            drip.join(timeout=2)
 
 
 @pytest.fixture

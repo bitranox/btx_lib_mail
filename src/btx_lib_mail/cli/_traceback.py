@@ -41,9 +41,11 @@ def apply_traceback_preferences(enabled: bool) -> None:  # noqa: FBT001 - public
         enabled: `True` enables verbose, colourised tracebacks; `False` restores compact summaries.
 
     Examples:
+        >>> saved = snapshot_traceback_state()
         >>> apply_traceback_preferences(True)
         >>> (lib_cli_exit_tools.config.traceback, lib_cli_exit_tools.config.traceback_force_color)
         (True, True)
+        >>> restore_traceback_state(saved)
     """
     lib_cli_exit_tools.config.traceback = bool(enabled)
     lib_cli_exit_tools.config.traceback_force_color = bool(enabled)
