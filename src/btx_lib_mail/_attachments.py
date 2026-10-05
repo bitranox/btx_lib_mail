@@ -17,6 +17,7 @@ from enum import Enum
 from typing import IO, Final, cast
 
 from ._common import is_valid_unicode, logger, printable
+from ._descriptor_path import descriptor_path
 from .errors import AttachmentNotFoundError, BtxMailError, InvalidInputError
 
 DANGEROUS_EXTENSIONS_POSIX: Final[frozenset[str]] = frozenset(
@@ -687,7 +688,7 @@ class _UnreadableAttachmentError(Exception):
         super().__init__(self.code)
 
 
-def _open_attachment(path: pathlib.Path, max_size: int | None) -> IO[bytes] | None:
+def _open_attachment(path: pathlib.Path, security: AttachmentSecurityOptions) -> IO[bytes] | None:
     """Open the checked, resolved path once and prove it is the file that was checked.
 
     Reading the file again later by name (once per recipient, as before) lets
@@ -695,11 +696,14 @@ def _open_attachment(path: pathlib.Path, max_size: int | None) -> IO[bytes] | No
     grown past the limit - reach the message. The file is opened here once,
     compared with what was checked (same device and inode, still a regular
     file, size within the limit), and that open file is what the message body
-    is encoded from.
+    is encoded from. ``O_NOFOLLOW`` guards only the last component, so the
+    path the kernel holds for the open file is judged too
+    (:func:`_check_descriptor_path`): a parent directory swapped for a link
+    cannot lead the open into a blocked directory.
 
     Args:
         path: The already-checked, resolved path to open.
-        max_size: The size limit in force, or None for no limit.
+        security: The security options the path was checked against.
 
     Returns:
         The opened file, or ``None`` when path does not exist or is not a
@@ -732,11 +736,52 @@ def _open_attachment(path: pathlib.Path, max_size: int | None) -> IO[bytes] | No
         opened = os.fstat(handle.fileno())
         if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (checked.st_dev, checked.st_ino):
             raise _changed_after_check(path)
-        _check_size(path, opened.st_size, max_size)
+        _check_descriptor_path(handle.fileno(), path, security)
+        _check_size(path, opened.st_size, security.max_size_bytes)
     except BaseException:
         handle.close()
         raise
     return handle
+
+
+def _check_descriptor_path(descriptor: int, path: pathlib.Path, security: AttachmentSecurityOptions) -> None:
+    """Refuse an open file whose own path would not pass the checks path passed.
+
+    The kernel reports the path the descriptor actually names. Equal to the
+    checked path is the common case; a different one (a parent swapped for a
+    link, or another name of a hard-linked file) is judged by the same path
+    checks, so a file the policy permits is still sent and one it refuses is
+    not. Where the system cannot say, the device and inode comparison is the
+    remaining guard.
+
+    Raises:
+        AttachmentSecurityError: ``CHANGED`` when the opened file's path fails
+            a check.
+    """
+    opened_path = descriptor_path(descriptor)
+    if opened_path is None or _case_as_the_file_system_does(os.path.normcase(opened_path)) == _case_as_the_file_system_does(os.path.normcase(str(path))):
+        return
+    try:
+        _check_resolved_path(pathlib.Path(opened_path), security)
+    except AttachmentSecurityError:
+        raise _changed_after_check(path) from None
+
+
+def _check_resolved_path(resolved_path: pathlib.Path, security: AttachmentSecurityOptions) -> None:
+    """Run the checks that judge a resolved path: its name, patterns, directory and extension."""
+    # The resolved name is the one the message carries (see _prepare_attachment).
+    _check_filename(resolved_path)
+    _check_sensitive_patterns(resolved_path)
+    _check_directory_restrictions(
+        resolved_path,
+        security.allowed_directories,
+        security.blocked_directories,
+    )
+    _check_extension(
+        resolved_path,
+        security.allowed_extensions,
+        security.blocked_extensions,
+    )
 
 
 def _validate_attachment_security(
@@ -767,19 +812,7 @@ def _validate_attachment_security(
     _check_nul(path)
     _check_path_traversal(path, original_path_str)
     resolved_path = _check_symlink(path=path, allow_symlinks=security.allow_symlinks)
-    # The resolved name is the one the message carries (see _prepare_attachment).
-    _check_filename(resolved_path)
-    _check_sensitive_patterns(resolved_path)
-    _check_directory_restrictions(
-        resolved_path,
-        security.allowed_directories,
-        security.blocked_directories,
-    )
-    _check_extension(
-        resolved_path,
-        security.allowed_extensions,
-        security.blocked_extensions,
-    )
+    _check_resolved_path(resolved_path, security)
     return resolved_path
 
 
@@ -838,7 +871,7 @@ def _prepare_attachment(path: pathlib.Path, security: AttachmentSecurityOptions,
     except _UnreadableAttachmentError as exc:
         return _unavailable(path, f"can not be read ({exc.code})", raise_on_missing=raise_on_missing)
     try:
-        handle = _open_attachment(validated_path, security.max_size_bytes)
+        handle = _open_attachment(validated_path, security)
     except AttachmentSecurityError as exc:
         if security.raise_on_violation:
             raise

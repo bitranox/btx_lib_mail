@@ -42,7 +42,10 @@ of sensitive files, dangerous executables, or oversized payloads.
    compared with what was checked (same file, still a regular file); the message
    body is encoded once from that open file and every recipient receives those
    bytes. A path swapped after the checks for a symlink or another file is refused
-   as `CHANGED`; swapped for a directory or a FIFO, it is reported like a missing
+   as `CHANGED`, and so is one whose parent directory was swapped for a link into a
+   place the checks refuse: the path the operating system reports for the open file
+   (`/proc/self/fd` on Linux, `F_GETPATH` on macOS, `GetFinalPathNameByHandleW` on
+   Windows) is checked again; swapped for a directory or a FIFO, it is reported like a missing
    file (`AttachmentNotFoundError`). Swapping or deleting the file while delivery
    runs changes nothing that is sent. The files are closed before `send()` returns.
 8. **File Name**  -  A file name holding a control character (CR, LF, NUL, ESC, DEL

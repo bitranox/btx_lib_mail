@@ -181,14 +181,14 @@ def test_a_symlink_at_the_checked_path_is_refused_as_changed(tmp_path: Path) -> 
     link.symlink_to(target)
 
     with pytest.raises(AttachmentSecurityError) as caught:
-        _attachments._open_attachment(link, None)
+        _attachments._open_attachment(link, _security())
 
     assert caught.value.violation_type is AttachmentViolation.CHANGED
 
 
 @pytest.mark.os_agnostic
 def test_a_directory_at_the_checked_path_is_reported_as_missing(tmp_path: Path) -> None:
-    assert _attachments._open_attachment(tmp_path, None) is None
+    assert _attachments._open_attachment(tmp_path, _security()) is None
 
 
 def _unclosed_file_warnings(action: Callable[[], object]) -> list[str]:
@@ -754,3 +754,74 @@ def test_a_path_swapped_for_another_regular_file_after_the_check_is_refused_as_c
     assert swapped, "positive control: the swap ran inside the open"
     assert caught.value.violation_type is AttachmentViolation.CHANGED
     assert transport.messages == {}
+
+
+def _security(**overrides: Any) -> _attachments.AttachmentSecurityOptions:
+    values: dict[str, Any] = {
+        "allowed_extensions": None,
+        "blocked_extensions": frozenset(),
+        "allowed_directories": None,
+        "blocked_directories": frozenset(),
+        "max_size_bytes": None,
+        "allow_symlinks": False,
+        "raise_on_violation": True,
+        "max_count": None,
+    }
+    values.update(overrides)
+    return _attachments.AttachmentSecurityOptions(**values)
+
+
+def _swap_for_link(directory: Path, target: Path) -> None:
+    """Replace *directory* by a symlink to *target*; skip where the OS refuses to create one."""
+    directory.rename(directory.with_name(directory.name + "-old"))
+    try:
+        directory.symlink_to(target, target_is_directory=True)
+    except OSError as exc:  # Windows without the symlink privilege
+        pytest.skip(f"cannot create a directory symlink here: {exc}")
+
+
+@pytest.mark.os_agnostic
+def test_a_parent_directory_swapped_after_the_checks_is_refused_as_changed(tmp_path: Path) -> None:
+    """O_NOFOLLOW guards only the last component; a parent swapped for a link must not lead the open elsewhere.
+
+    ``shared/notes.txt`` passes the checks; then ``shared`` becomes a link to the blocked
+    ``vault``, so opening the checked path by name would read ``vault/notes.txt``.
+    """
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "notes.txt").write_bytes(b"TOPSECRET")
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "notes.txt").write_bytes(b"benign")
+    security = _security(blocked_directories=frozenset({vault}))
+    checked = _attachments._validate_attachment_security(shared / "notes.txt", str(shared / "notes.txt"), security)
+    _swap_for_link(shared, vault)
+
+    with pytest.raises(AttachmentSecurityError) as caught:
+        _attachments._open_attachment(checked, security)
+
+    assert caught.value.violation_type is AttachmentViolation.CHANGED
+
+
+@pytest.mark.os_agnostic
+def test_a_parent_directory_swapped_for_an_equally_permitted_one_still_sends_what_the_policy_allows(tmp_path: Path) -> None:
+    """The open is judged by the policy, not by the spelling: a file the checks would pass is sent.
+
+    Positive control for the refusal above: the descriptor names another path, the path checks
+    are run on that one, and it passes them.
+    """
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "notes.txt").write_bytes(b"also fine")
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "notes.txt").write_bytes(b"benign")
+    security = _security()
+    checked = _attachments._validate_attachment_security(shared / "notes.txt", str(shared / "notes.txt"), security)
+    _swap_for_link(shared, other)
+
+    handle = _attachments._open_attachment(checked, security)
+
+    assert handle is not None
+    with handle:
+        assert handle.read() == b"also fine"

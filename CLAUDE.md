@@ -37,6 +37,7 @@ src/btx_lib_mail/
   _compose.py          # message assembly: shared body encoded once, per-recipient header lines
   _transport.py        # Transport protocol, DeliveryOptions, SmtplibTransport (BDAT/DATA), deadline
   _common.py           # logger, printable(), is_valid_unicode()
+  _descriptor_path.py  # descriptor_path(): the path the kernel holds for an open file (per OS)
   errors.py            # BtxMailError and its subclasses
   secret_safety.py     # SecretSafeModel, redact_validation_error: credential-safe pydantic errors
   typed_click.py       # typed Protocol facade over rich-click's partially-typed decorators
@@ -118,7 +119,7 @@ tests/
 - `bandit` security scanning
 - `import-linter` enforces one layers contract (a module imports only from layers below it; modules in one layer
   are independent): `cli` > `lib_mail` > `_compose` > `_config | _transport` > `_attachments | _validation` >
-  `_common | secret_safety | errors` > `behaviors`
+  `_common | _descriptor_path | secret_safety | errors` > `behaviors`
 
 ## Public API
 
@@ -173,7 +174,7 @@ Attachments are validated against multiple security checks:
 4. **Directory Restrictions**  -  System directories blocked by default
 5. **Extension Filtering**  -  POSIX and Windows dangerous extensions (`.sh`, `.exe`, etc.) blocked on every platform
 6. **Size Limits**  -  Default 25 MiB (`attachment_max_size_bytes`), also enforced while reading
-7. **One open file**  -  each file opened once after its checks; a swapped path is refused as `CHANGED`
+7. **One open file**  -  each file opened once after its checks; a swapped path (or parent directory) is refused as `CHANGED`
 8. **File name**  -  a control character (Unicode `Cc`), a bidirectional formatting character or invalid Unicode in the name, or NUL in the path, is refused as `FILENAME`
 
 ### Configuration Fields (ConfMail)

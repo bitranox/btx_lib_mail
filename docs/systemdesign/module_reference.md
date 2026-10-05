@@ -16,7 +16,7 @@ docs/attachment-security.md, docs/streaming.md, docs/installation.md, CHANGELOG.
 * src/btx_lib_mail/__init__.py (public API surface)
 * src/btx_lib_mail/lib_mail.py (`send()` and the public face of the mail modules)
 * src/btx_lib_mail/_config.py, _attachments.py, _validation.py, _compose.py,
-  _transport.py, _common.py (private modules behind `lib_mail`)
+  _transport.py, _common.py, _descriptor_path.py (private modules behind `lib_mail`)
 * src/btx_lib_mail/errors.py (`BtxMailError` and its subclasses)
 * src/btx_lib_mail/secret_safety.py (credential-safe pydantic validation errors)
 * src/btx_lib_mail/cli/ (package), typed_click.py, __main__.py (command-line adapter)
@@ -70,7 +70,9 @@ lib_mail                                    (send() and the public re-exports)
 _compose                                    (message assembly)
 _config | _transport                        (ConfMail and conf | Transport, SmtplibTransport)
 _attachments | _validation                  (attachment security | address and host checks)
-_common | secret_safety | errors            (logger and printable | SecretSafeModel | exceptions)
+_common | _descriptor_path | secret_safety | errors
+                                            (logger and printable | the path of an open file |
+                                             SecretSafeModel | exceptions)
 behaviors                                   (scaffold helpers)
 ```
 
@@ -206,7 +208,9 @@ redacted at the credential fields (`smtp_password`, `smtphosts`).
   extension), then
   `_open_attachment`: `lstat`, open with `O_NOFOLLOW`/`O_NONBLOCK` where the platform
   has them, `fstat` must show the same device and inode and a regular file, size within
-  the limit. A swapped path is `CHANGED`; an open the OS refuses is reported like a missing
+  the limit, and the path the kernel reports for the open file (`_check_descriptor_path`,
+  through `_descriptor_path.descriptor_path`) passes the same path checks when it differs
+  from the checked one. A swapped path is `CHANGED`; an open the OS refuses is reported like a missing
   file (`can not be read (EACCES)`). Warn mode logs and skips via `log_violation`;
   every handle is closed on failure, and by `send()` through `close_attachments`.
 
