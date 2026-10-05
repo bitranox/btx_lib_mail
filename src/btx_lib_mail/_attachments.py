@@ -166,6 +166,32 @@ macOS and Windows, exactly on other platforms.
 # there; on Linux it is a different file that no SSH client reads.
 _PATHS_IGNORE_CASE: Final[bool] = sys.platform in ("darwin", "win32")
 
+# The longest path Windows can name; longer than any POSIX PATH_MAX. Past it, Python on
+# Windows raises a bare ValueError from every file system call instead of an OSError.
+_LONGEST_PATH: Final[int] = 32767
+
+# A path is quoted whole in a message or log line up to this many characters (Linux's
+# PATH_MAX); a longer one, which no file can have there, shows its start and length.
+_QUOTE_LIMIT: Final[int] = 4096
+
+# What is kept of a longer one. Cleaned, it stays well under _QUOTE_LIMIT, so quoting an
+# already quoted text (a pickled AttachmentSecurityError rebuilt) leaves it unchanged.
+_QUOTE_HEAD: Final[int] = 256
+
+
+def _quoted(text: str) -> str:
+    """Return text cleaned for a message or log line, whole up to ``_QUOTE_LIMIT`` characters, else its start and length.
+
+    Examples:
+        >>> _quoted("/srv/report.pdf")
+        '/srv/report.pdf'
+        >>> _quoted("/srv/" + "a" * 5000).endswith("a... (5005 characters)")
+        True
+    """
+    if len(text) <= _QUOTE_LIMIT:
+        return printable(text)
+    return f"{printable(text[:_QUOTE_HEAD])}... ({len(text)} characters)"
+
 
 def default_blocked_extensions() -> frozenset[str]:
     """Return the dangerous extensions of every platform.
@@ -226,10 +252,13 @@ def normalise_extensions(values: Iterable[object]) -> frozenset[str]:
 
 
 def normalise_directories(values: Iterable[object]) -> frozenset[pathlib.Path]:
-    """Return values as a set of paths; each must be a ``str`` or a ``pathlib`` path.
+    """Return values as a set of paths; each must be a ``str`` or a ``pathlib`` path; blank strings are dropped.
 
     Used for the `ConfMail` fields and for the `send()` keywords alike, so a list of
-    strings means the same directories wherever it is given.
+    strings means the same directories wherever it is given. A blank string is what
+    splitting an empty setting yields (``"".split(",") == [""]``); kept, it would name
+    the working directory, replacing the default blocked directories with it or
+    allowing all of it.
 
     Args:
         values: Directory entries.
@@ -239,11 +268,14 @@ def normalise_directories(values: Iterable[object]) -> frozenset[pathlib.Path]:
 
     Raises:
         InvalidInputError: If any value is neither a ``str`` nor a ``pathlib`` path,
-            or holds NUL (no directory can be named so, and resolving it raises).
+            holds NUL, or is longer than ``_LONGEST_PATH`` characters (no
+            directory can be named so, and resolving it raises).
 
     Examples:
         >>> sorted(path.name for path in normalise_directories(["/srv/a", pathlib.Path("/srv/b")]))
         ['a', 'b']
+        >>> normalise_directories(["", "  "])
+        frozenset()
     """
     normalised: set[pathlib.Path] = set()
     for directory in values:
@@ -251,6 +283,10 @@ def normalise_directories(values: Iterable[object]) -> frozenset[pathlib.Path]:
             raise InvalidInputError(f"directory must be a string or Path, got {type(directory).__name__}")
         if "\x00" in str(directory):
             raise InvalidInputError("directory must not contain NUL")
+        if len(str(directory)) > _LONGEST_PATH:
+            raise InvalidInputError(f"directory must not be longer than {_LONGEST_PATH} characters")
+        if isinstance(directory, str) and not directory.strip():
+            continue
         normalised.add(pathlib.Path(directory))
     return frozenset(normalised)
 
@@ -304,12 +340,12 @@ class AttachmentSecurityError(BtxMailError):
             violation_type: Category of the violation.
         """
         # `reason` is built with an f-string at every call site and usually
-        # embeds `path` (filesystem-supplied), so it is cleaned once here:
+        # embeds `path` (filesystem-supplied), so it is cleaned (and bounded) once here:
         # this also cleans `self.args` (via `super().__init__`), so neither
         # `str(exc)` nor the default `repr(exc)` (which renders `self.args`
         # unclean-through-`__str__`) can carry a forged line, whether this
         # exception is logged or propagated to the caller in strict mode.
-        clean_reason = printable(reason)
+        clean_reason = _quoted(reason)
         super().__init__(clean_reason)
         self.path = path
         self.reason = clean_reason
@@ -327,7 +363,7 @@ class AttachmentSecurityError(BtxMailError):
         """
         # .value keeps the message text stable across Python versions, where
         # f-string formatting of a `str, Enum` member is inconsistent.
-        return f"Attachment security violation ({self.violation_type.value}): {self.reason} [path={printable(str(self.path))}]"
+        return f"Attachment security violation ({self.violation_type.value}): {self.reason} [path={_quoted(str(self.path))}]"
 
 
 @dataclass(frozen=True)
@@ -419,15 +455,22 @@ def _resolved_directories(directories: frozenset[pathlib.Path]) -> frozenset[pat
 
 
 def _resolves_to_a_link(directory: pathlib.Path) -> bool:
-    """Whether a resolved rule is still a symlink loop, the way Python 3.13+ returns one.
+    """Whether a resolved rule, or a directory above it, is still a symlink: where Python 3.13+ stops at a loop.
 
-    A loop in a parent of the rule makes examining it fail with ``ELOOP``, which
-    is a loop too. A rule the process may not examine for another reason
-    (``EACCES`` on a parent) is compared as written, as it was before this check:
-    no attachment the process can read lies under it.
+    Resolving follows every link it can, so a link left anywhere on the resolved
+    path is one it could not follow. The rule itself is not enough to look at: a
+    loop in a parent makes examining the rule fail with ``ELOOP`` on Linux but
+    ``ENOENT`` on Windows, and only the parent shows the loop on both. A path the
+    process may not examine for another reason (``EACCES`` on a parent) is
+    compared as written, as it was before this check: no attachment the process
+    can read lies under it.
     """
+    return any(_is_a_link_or_in_a_loop(path) for path in (directory, *directory.parents))
+
+
+def _is_a_link_or_in_a_loop(path: pathlib.Path) -> bool:
     try:
-        return _is_symlink(directory)
+        return _is_symlink(path)
     except _UnreadableAttachmentError as exc:
         return exc.code == "ELOOP"
 
@@ -610,6 +653,19 @@ def _filename_as_sent(name: str) -> str | None:
     header = EmailMessage()
     header.add_header("Content-Disposition", "attachment", filename=name)
     return header.get_filename()
+
+
+def _check_length(path: pathlib.Path) -> None:
+    """Report a path longer than ``_LONGEST_PATH`` as unreadable (``ENAMETOOLONG``), before any file system call sees it.
+
+    Linux reports such a path as ``ENAMETOOLONG``; Python on Windows raises a bare
+    ``ValueError`` instead, so the outcome is decided here, the same everywhere.
+
+    Raises:
+        _UnreadableAttachmentError: If the path is too long.
+    """
+    if len(str(path)) > _LONGEST_PATH:
+        raise _UnreadableAttachmentError(errno.ENAMETOOLONG)
 
 
 def _check_nul(path: pathlib.Path) -> None:
@@ -967,10 +1023,11 @@ def _validate_attachment_security(
     Raises:
         AttachmentSecurityError: If any check fails. File existence is not
             checked here.
-        _UnreadableAttachmentError: When the path cannot be examined, or is
-            a symlink loop.
+        _UnreadableAttachmentError: When the path cannot be examined, is
+            longer than any operating system can name, or is a symlink loop.
     """
     _check_nul(path)
+    _check_length(path)
     _check_path_traversal(path, original_path_str)
     resolved_path = _check_symlink(path=path, allow_symlinks=security.allow_symlinks)
     _check_resolved_path(resolved_path, security)
@@ -1066,7 +1123,7 @@ def _unavailable(path: pathlib.Path, problem: str, *, raise_on_missing: bool) ->
     Raises:
         AttachmentNotFoundError: When raise_on_missing is ``True``.
     """
-    clean_path = printable(str(path))
+    clean_path = _quoted(str(path))
     if raise_on_missing:
         raise AttachmentNotFoundError(f'Attachment File "{clean_path}" {problem}')
     logger.warning(
@@ -1129,7 +1186,7 @@ def log_violation(exc: AttachmentSecurityError, original_path_str: str) -> None:
         "Attachment security violation: %s",
         printable(exc.reason),
         extra={
-            "attachment_path": printable(original_path_str),
+            "attachment_path": _quoted(original_path_str),
             "violation_type": exc.violation_type.value,
             "skipped": "attachment",
         },

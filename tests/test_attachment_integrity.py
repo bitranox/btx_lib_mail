@@ -1062,6 +1062,26 @@ def test_a_directory_rule_holding_nul_is_refused_by_send() -> None:
     assert transport.recipients == []
 
 
+# Longer than any operating system can name; resolving it on Windows raised a bare ValueError ("path too long for Windows").
+_TOO_LONG_DIRECTORY = "/srv/" + "d" * 40_000
+
+
+@pytest.mark.os_agnostic
+def test_a_directory_rule_too_long_to_name_is_refused_by_conf_mail() -> None:
+    with pytest.raises(ConfigurationError, match="directory must not be longer than 32767 characters"):
+        ConfMail.model_validate({"attachment_blocked_directories": [_TOO_LONG_DIRECTORY]})
+
+
+@pytest.mark.os_agnostic
+def test_a_directory_rule_too_long_to_name_is_refused_by_send() -> None:
+    transport = RecordingTransport()
+
+    with pytest.raises(InvalidInputError, match=r"^directory must not be longer than 32767 characters$"):
+        _send(transport, "unused", attachment_file_paths=[], attachment_allowed_directories=frozenset({_TOO_LONG_DIRECTORY}))
+
+    assert transport.recipients == []
+
+
 @pytest.mark.os_agnostic
 def test_a_live_file_whose_name_ends_in_deleted_is_judged_by_its_own_name(tmp_path: Path) -> None:
     """Linux marks an unlinked file "<path> (deleted)"; the marker was cut from a live file that is really named so."""

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import gc
 import io
 import math
@@ -528,6 +529,28 @@ def test_a_host_name_whose_first_address_refuses_is_delivered_through_the_next(
     _deliver(port, deadline=_SOCKET_TIMEOUT)
 
     assert len(handler.messages) == 1
+
+
+@pytest.mark.os_agnostic
+def test_a_connected_socket_is_closed_when_its_duplicate_cannot_be_made(monkeypatch: pytest.MonkeyPatch) -> None:
+    """smtplib had not stored the socket yet, so a failed dup() left it open until garbage collection."""
+
+    # The descriptor table is the external edge: full, as at the process's open-file limit.
+    def no_descriptor_left(_self: socket.socket) -> socket.socket:
+        raise OSError(errno.EMFILE, "Too many open files")
+
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        monkeypatch.setattr(socket.socket, "dup", no_descriptor_left)
+        # Held until the end: the traceback keeps the failed frame alive, so only an explicit close ends the connection.
+        with pytest.raises(OSError, match="Too many open files") as raised:
+            _deliver(listener.getsockname()[1], deadline=_SOCKET_TIMEOUT)
+        monkeypatch.undo()
+        peer, _address = listener.accept()
+        with peer:
+            peer.settimeout(2)
+            assert peer.recv(1) == b"", "the client's socket is still open"
+
+    assert raised.value.errno == errno.EMFILE
 
 
 @pytest.mark.os_agnostic

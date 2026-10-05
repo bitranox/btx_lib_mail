@@ -68,7 +68,7 @@ Key behaviours:
   validating, and leave out keys that belong to something else: the `send()`
   keyword names (`use_starttls`, `timeout`, `credentials`) are not field names,
   so passing them to `ConfMail` fails instead of being dropped.
-- `smtphosts` may be a string (single host), list, or tuple; items can include
+- `smtphosts` may be a string (single host), list, tuple, set or frozenset; items can include
   an explicit `host:port` override. Each entry is checked with
   `validate_smtp_host` when the model is built or assigned, so a port outside
   1-65535 or not plain ASCII digits (`+25`, `2_5`), an unclosed IPv6 bracket, an IPv6 address without

@@ -5,10 +5,12 @@ from __future__ import annotations
 # Tests reach into module internals (dot-stuffer, spool composer) by design, and
 # aiosmtpd ships no type stubs, so its server/handler objects are untyped here.
 # pyright: reportPrivateUsage=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false
+import contextlib
 import hashlib
 import io
 import smtplib
 import socket
+import threading
 import time
 from email import message_from_bytes
 from typing import IO, TYPE_CHECKING, Any, cast
@@ -16,7 +18,7 @@ from typing import IO, TYPE_CHECKING, Any, cast
 import pytest
 from click.testing import CliRunner
 
-from btx_lib_mail import DeliveryError, _compose, _transport, lib_mail
+from btx_lib_mail import DeliveryError, DeliveryOptions, _compose, _transport, lib_mail
 from btx_lib_mail import cli as cli_mod
 
 if TYPE_CHECKING:
@@ -453,6 +455,56 @@ def test_bdat_rejection_fails_the_send() -> None:
     finally:
         controller.stop()
     assert handler.bdat_command_count >= 1
+
+
+def _answer_ehlo_with(listener: socket.socket, reply: bytes) -> None:
+    """Greet one client, answer its EHLO with reply, then hang up."""
+    connection, _address = listener.accept()
+    with connection, contextlib.suppress(OSError):  # the client may hang up first
+        connection.sendall(b"220 server.example.com ready\r\n")
+        connection.recv(1024)
+        connection.sendall(reply)
+
+
+@pytest.mark.os_agnostic
+def test_a_reply_that_never_ends_is_refused_at_the_line_limit() -> None:
+    """smtplib kept every continuation line, so a server, or anyone on the path before STARTTLS, could exhaust the client's memory."""
+    # A thousand lines and then a hang-up: without the limit the reply ends as a disconnect, not in memory exhaustion.
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        server = threading.Thread(target=_answer_ehlo_with, args=(listener, b"250-more\r\n" * 1000), daemon=True)
+        server.start()
+        with pytest.raises(smtplib.SMTPResponseException) as raised:
+            _transport.SmtplibTransport().deliver(
+                host=f"127.0.0.1:{listener.getsockname()[1]}",
+                sender="sender@example.com",
+                recipient="recipient@example.com",
+                message=io.BytesIO(b"Subject: s\r\n\r\nbody\r\n"),
+                delivery=DeliveryOptions(
+                    credentials=None, use_starttls=False, starttls_verify=False, timeout=5.0, local_hostname="client.example.com", deadline=None
+                ),
+            )
+        server.join(timeout=5)
+
+    assert raised.value.smtp_code == 500
+    assert raised.value.smtp_error == "Reply too long."
+
+
+@pytest.mark.os_agnostic
+def test_a_reply_of_exactly_the_line_limit_is_read_whole() -> None:
+    limit = _transport._MAX_REPLY_LINES
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        server = threading.Thread(target=_answer_ehlo_with, args=(listener, b"250-more\r\n" * (limit - 1) + b"250 last\r\n"), daemon=True)
+        server.start()
+        connection = _transport._SessionSMTP(local_hostname="client.example.com", timeout=5.0)
+        try:
+            connection.connect("127.0.0.1", listener.getsockname()[1])
+            code, text = connection.ehlo()
+        finally:
+            connection.close()
+        server.join(timeout=5)
+
+    assert code == 250
+    assert text.split(b"\n") == [b"more"] * (limit - 1) + [b"last"]
 
 
 # ---------------------------------------------------------------------------

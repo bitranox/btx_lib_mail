@@ -1030,6 +1030,26 @@ class TestEmptyBlockedSetIsRefused:
         assert "attachment_allow_empty_blocklists" in message
 
     @pytest.mark.os_agnostic
+    @pytest.mark.parametrize(("field", "non_empty"), _EMPTY_BLOCKED_CASES)
+    @pytest.mark.parametrize("blanks", [[""], ["", "  "]], ids=["one-blank", "two-blanks"])
+    def test_a_list_of_blank_entries_from_a_config_source_is_refused_as_empty(self, field: str, non_empty: list[str], blanks: list[str]) -> None:
+        """Splitting an empty setting gives [""]; a blank directory became the working directory and replaced the OS defaults."""
+        with pytest.raises(ValidationError, match="attachment_allow_empty_blocklists"):
+            ConfMail.model_validate({field: blanks})
+
+    @pytest.mark.os_agnostic
+    @pytest.mark.parametrize(
+        ("field", "given", "kept"),
+        [
+            pytest.param("attachment_allowed_extensions", ["", ".pdf"], {".pdf"}, id="extensions"),
+            pytest.param("attachment_allowed_directories", ["", "/srv/out"], {Path("/srv/out")}, id="directories"),
+            pytest.param("attachment_allowed_directories", [""], set[Path](), id="directories-only-blank"),
+        ],
+    )
+    def test_a_blank_allowlist_entry_is_dropped_rather_than_allowing_the_working_directory(self, field: str, given: list[str], kept: set[object]) -> None:
+        assert getattr(ConfMail.model_validate({field: given}), field) == kept
+
+    @pytest.mark.os_agnostic
     @pytest.mark.parametrize(
         ("blocked", "allowed", "allowed_value"),
         [

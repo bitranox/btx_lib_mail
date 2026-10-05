@@ -19,7 +19,7 @@ import threading
 import time
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
-from typing import IO, TYPE_CHECKING, Final, Protocol
+from typing import IO, TYPE_CHECKING, Final, Protocol, cast
 
 from ._common import logger, printable
 from ._validation import parse_smtp_host
@@ -272,6 +272,14 @@ _MIN_CONNECT_SECONDS: Final[float] = 0.001
 # the Windows clock tick (about 15.6 ms) between the timeout and the clock reading.
 _CLOCK_SLACK_SECONDS: Final[float] = 0.05
 
+# smtplib's own limit on one reply line; a longer line is refused as it is there.
+_MAX_REPLY_LINE_BYTES: Final[int] = 8192
+
+# Most lines one reply may carry. smtplib reads continuation lines for as long as the
+# server sends them, so one reply, plaintext before STARTTLS, could fill the client's
+# memory; an EHLO reply has a few dozen at most.
+_MAX_REPLY_LINES: Final[int] = 100
+
 # One entry of socket.getaddrinfo(): family, socket kind, protocol, canonical name, address.
 _AddressInfo = tuple[socket.AddressFamily, socket.SocketKind, int, str, "tuple[str, int] | tuple[str, int, int, int] | tuple[int, bytes]"]
 
@@ -316,6 +324,53 @@ class _SessionSMTP(smtplib.SMTP):
             self.handle_guard.close()
             self.handle_guard = None
 
+    def getreply(self) -> tuple[int, bytes]:
+        """Read one reply as smtplib does, refusing one with more than ``_MAX_REPLY_LINES`` lines.
+
+        The delivery deadline bounds how long a reply may take, not how much of
+        it is kept, so a server sending continuation lines without end could
+        otherwise exhaust the client's memory.
+
+        Returns:
+            The reply code (-1 when it is not a number) and the reply text, its
+            lines joined by newlines.
+
+        Raises:
+            smtplib.SMTPServerDisconnected: If the connection ends mid-reply.
+            smtplib.SMTPResponseException: If a line or the reply is too long;
+                the session is closed first.
+        """
+        if self.file is None:
+            self.file = self.sock.makefile("rb") if self.sock is not None else None
+        lines: list[bytes] = []
+        while len(lines) < _MAX_REPLY_LINES:
+            line = self._reply_line()
+            lines.append(line[4:].strip(b" \t\r\n"))
+            try:
+                code = int(line[:3])
+            except ValueError:
+                return -1, b"\n".join(lines)
+            if line[3:4] != b"-":
+                return code, b"\n".join(lines)
+        self.close()
+        raise smtplib.SMTPResponseException(500, "Reply too long.")
+
+    def _reply_line(self) -> bytes:
+        """Read one reply line, closing the session when it cannot be read or is too long."""
+        reader = cast("IO[bytes] | None", self.file)
+        try:
+            line = reader.readline(_MAX_REPLY_LINE_BYTES + 1) if reader is not None else b""
+        except OSError as error:
+            self.close()
+            raise smtplib.SMTPServerDisconnected(f"Connection unexpectedly closed: {error}") from error
+        if not line:
+            self.close()
+            raise smtplib.SMTPServerDisconnected("Connection unexpectedly closed")
+        if len(line) > _MAX_REPLY_LINE_BYTES:
+            self.close()
+            raise smtplib.SMTPResponseException(500, "Line too long.")
+        return line
+
     # smtplib's own hook for the TCP connect (SMTP_SSL and LMTP override it too).
     def _get_socket(self, host: str, port: int, timeout: float) -> socket.socket:
         # starttls() names the server for TLS by self._host, which connect() sets
@@ -325,9 +380,14 @@ class _SessionSMTP(smtplib.SMTP):
         if self.ends_at is None:
             return socket.create_connection((host, port), timeout, self.source_address)
         connection_socket = self._connect_in_time_left(host, port, timeout=timeout, ends_at=self.ends_at)
-        # The reads and writes after the connect keep the socket timeout.
-        connection_socket.settimeout(timeout)
-        self.cut_handle = connection_socket.dup()
+        try:
+            # The reads and writes after the connect keep the socket timeout.
+            connection_socket.settimeout(timeout)
+            self.cut_handle = connection_socket.dup()
+        except BaseException:
+            # smtplib has not stored the socket yet, so nothing else would close it.
+            connection_socket.close()
+            raise
         return connection_socket
 
     def _connect_in_time_left(self, host: str, port: int, *, timeout: float, ends_at: float) -> socket.socket:

@@ -5,6 +5,7 @@ Every refusal happens before the first delivery and names the limit, never the o
 
 from __future__ import annotations
 
+import pickle
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -12,7 +13,16 @@ import pytest
 from log_capture import everything_logged
 from transport_doubles import RecordingTransport
 
-from btx_lib_mail import ConfigurationError, ConfMail, InvalidInputError, send, validate_email_address
+from btx_lib_mail import (
+    AttachmentNotFoundError,
+    AttachmentSecurityError,
+    AttachmentViolation,
+    ConfigurationError,
+    ConfMail,
+    InvalidInputError,
+    send,
+    validate_email_address,
+)
 from btx_lib_mail.cli import CliContext, cli
 
 if TYPE_CHECKING:
@@ -390,3 +400,46 @@ def test_the_cli_sends_within_both_ceilings(cli_runner: CliRunner, tmp_path: Pat
 
     assert result.exit_code == 0, result.output
     assert transport.recipients == ["one@example.com"]
+
+
+# A path no file can have (Linux's PATH_MAX is 4096) was quoted whole: a megabyte of path made a megabyte of message.
+_OVERLONG_NAME = "a" * 1_000_000
+
+
+@pytest.mark.os_agnostic
+def test_an_overlong_attachment_path_is_quoted_by_its_start_and_length(tmp_path: Path) -> None:
+    long_path = tmp_path / f"{_OVERLONG_NAME}.txt"
+
+    with pytest.raises(AttachmentNotFoundError) as raised:
+        _send(RecordingTransport(), attachment_file_paths=[long_path], attachment_blocked_directories=frozenset())
+
+    message = str(raised.value)
+    assert len(message) < 4096
+    assert f"... ({len(str(long_path))} characters)" in message
+    assert message.endswith("can not be read (ENAMETOOLONG)")  # the same on Windows, whose lstat raised a bare ValueError
+
+
+@pytest.mark.os_agnostic
+def test_an_overlong_attachment_path_is_logged_by_its_start_and_length(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    long_path = tmp_path / f"{_OVERLONG_NAME}.txt"
+
+    _send(
+        RecordingTransport(),
+        attachment_file_paths=[long_path],
+        attachment_blocked_directories=frozenset(),
+        config=ConfMail(raise_on_missing_attachments=False),
+    )
+
+    logged = everything_logged(caplog)
+    assert f"... ({len(str(long_path))} characters)" in logged
+    assert len(logged) < 16384
+
+
+@pytest.mark.os_agnostic
+def test_a_security_refusal_quotes_an_overlong_path_by_its_start_and_length_and_pickles_unchanged(tmp_path: Path) -> None:
+    long_path = tmp_path / f"{_OVERLONG_NAME}.exe"
+    error = AttachmentSecurityError(long_path, f'extension ".exe" is blocked: "{long_path}"', AttachmentViolation.EXTENSION)
+
+    assert len(str(error)) < 2 * 4096
+    assert str(error).count(f"... ({len(str(long_path))} characters)") == 1  # [path=...]; the reason is cut by its own length
+    assert str(pickle.loads(pickle.dumps(error))) == str(error)  # noqa: S301 - round-trips an object this test just built

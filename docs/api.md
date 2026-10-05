@@ -127,7 +127,9 @@ passed positionally; every other one is keyword-only.
 | `attachment_raise_on_security_violation` | `bool \| None`            | `None`  | Override security violation behaviour. `None` uses the config in use's value (`True` by default).                                                                                              |
 
 An empty `attachment_blocked_extensions` or `attachment_blocked_directories` set means
-"block nothing"; it is not a way to ask for the OS defaults. `ConfMail` therefore refuses
+"block nothing"; it is not a way to ask for the OS defaults. A blank entry in any of the four
+extension and directory sets is dropped, so `[""]` (what splitting an empty setting yields) is
+an empty set: a blank directory would otherwise name the working directory. `ConfMail` therefore refuses
 such an empty set, at construction and on assignment, unless the matching allowlist
 (`attachment_allowed_extensions` / `attachment_allowed_directories`) is set or
 `attachment_allow_empty_blocklists=True` opts into blocking nothing. A configuration loader

@@ -121,6 +121,20 @@
 
 ### Fixed
 
+- A server reply is refused, and the session closed, once it carries more than 100 lines. smtplib
+  read continuation lines for as long as the server sent them, so a hostile server, or anyone on
+  the path before STARTTLS, could exhaust the client's memory; the delivery deadline bounds time,
+  not memory.
+- A blank entry in `attachment_blocked_directories` or `attachment_allowed_directories` is
+  dropped, as a blank extension already was. `[""]`, what splitting an empty setting yields, named
+  the working directory: it replaced the default blocked directories without tripping the
+  empty-blocklist refusal, and on the allowed side permitted the whole working directory.
+- An attachment path longer than 4096 characters is quoted in messages and log lines by its first
+  256 characters and its length, rather than whole.
+- On Windows, an attachment path or a directory rule longer than 32767 characters raised a bare
+  `ValueError` ("path too long for Windows"). Such an attachment now "can not be read
+  (ENAMETOOLONG)" on every platform, as Linux already reported it, and such a directory rule is
+  refused where it is given (`directory must not be longer than 32767 characters`).
 - An attachment whose file name really ends in ` (deleted)` was judged, on Linux, as the path
   without that suffix, so a permitted file could be refused (or an unrelated path checked).
   The suffix the kernel appends to an unlinked file is now cut only when the open file has no
@@ -267,8 +281,9 @@
   attachment compared with every one: 100 attachments against 5000 blocked directories took
   7.7 seconds. They are resolved once per call that has an attachment, and each attachment
   is checked against its own ancestors (0.05 seconds). A rule that cannot be resolved (a
-  relative one whose working directory is gone, or a symlink loop, which raised a bare
-  `RuntimeError` before Python 3.13 and was kept as an inert rule from 3.13 on) is an
+  relative one whose working directory is gone, or a symlink loop at the rule or above it,
+  which raised a bare `RuntimeError` before Python 3.13 and was kept as an inert rule from 3.13
+  on, from 3.12 on Windows) is an
   `InvalidInputError` naming `ELOOP` or the errno on every version; a call without
   attachments does not resolve the rules at all.
 - A directory rule holding NUL was accepted by `ConfMail` and the `send()` keywords and
