@@ -25,7 +25,8 @@
   `BTX_MAIL_SMTP_DELIVERY_DEADLINE`: an upper bound in seconds for one SMTP session. The
   socket timeout bounds each read or write, so a server answering one byte at a time kept a
   session open indefinitely; past the deadline the socket is shut down and the host counts
-  as failed (`TimeoutError`). Unset by default.
+  as failed (`TimeoutError`). It runs from the TCP connect, so a greeting that drips is
+  bounded too, to the server's reply to `QUIT`. Unset by default.
 - CLI: `--json`/`-j` and `--json-bare` on the command group. Every subcommand prints one JSON
   document (`{"ok", "command", "data", "skipped"}`); a failure prints
   `{"ok": false, "command", "error": {"type", "message"}}` instead of a traceback, with the
@@ -206,6 +207,11 @@
   kin) passed the file-name check, so `report<U+202E>fdp.xlsm`, a type not on the
   blocklist, displayed as `reportmslx.pdf` in a mail client. Such a name is refused as
   `FILENAME` now.
+- A server that took the message and then answered `QUIT` with anything but `221`, or lost
+  the connection during `QUIT`, made the host count as failed: with a second host the message
+  was delivered twice, with one host `send()` raised `DeliveryError` for a message the server
+  kept. Once the reply to `DATA` or `BDAT LAST` is `250`, the message counts as delivered and
+  the answer to `QUIT` changes nothing.
 - The attachment header decodes an RFC 2047 encoded word in the file name, so a file named
   `=?utf-8?b?aW52b2ljZS5leGU=?=`, which has no extension to block, reached the recipient as
   `invoice.exe`. A name the message would carry as another name is refused as `FILENAME` now.

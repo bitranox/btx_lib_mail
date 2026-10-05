@@ -203,32 +203,62 @@ class SmtplibTransport:
         """
         hostname, port = parse_smtp_host(host)
         local_hostname = delivery.local_hostname or _default_local_hostname()
-        with (
-            smtplib.SMTP(hostname, port=port or 0, local_hostname=local_hostname, timeout=delivery.timeout) as smtp_connection,
-            _session_deadline(smtp_connection, delivery.deadline),
-        ):
-            smtp_connection.ehlo_or_helo_if_needed()
-            if delivery.use_starttls:
-                smtp_connection.starttls(context=_build_starttls_context(verify=delivery.starttls_verify))
-                # RFC 3207: server capabilities must be re-fetched after TLS.
-                smtp_connection.ehlo()
-            if delivery.credentials is not None:
-                if not delivery.use_starttls:
-                    # Allowed (an internal relay may offer no TLS), but never silently.
-                    logger.warning(
-                        'sending SMTP credentials to host "%s" without TLS (STARTTLS is off)',
-                        printable(host),
-                        extra={"host": printable(host)},
-                    )
-                username, password = delivery.credentials
-                _authenticate(smtp_connection, username, password)
-            smtp_connection.ehlo_or_helo_if_needed()
+        # Not connected yet: the greeting is read while connecting, and that read
+        # belongs inside the deadline. No `with`: its exit turns a QUIT reply other
+        # than 221 into a failure, after the server has already taken the message.
+        smtp_connection = smtplib.SMTP(local_hostname=local_hostname, timeout=delivery.timeout)
+        try:
+            with _session_deadline(smtp_connection, delivery.deadline):
+                smtp_connection.connect(hostname, port or 0)
+                _prepare_session(smtp_connection, host=host, delivery=delivery)
+                _send_message(smtp_connection, sender=sender, recipient=recipient, message=message)
+                _quit_quietly(smtp_connection)
+        finally:
+            smtp_connection.close()
 
-            message.seek(0)
-            if smtp_connection.has_extn("chunking"):
-                _send_via_bdat(smtp_connection, sender, recipient, message)
-            else:
-                _send_via_data(smtp_connection, sender, recipient, message)
+
+def _prepare_session(smtp_connection: smtplib.SMTP, *, host: str, delivery: DeliveryOptions) -> None:
+    """Greet, secure and authenticate a connected session."""
+    smtp_connection.ehlo_or_helo_if_needed()
+    if delivery.use_starttls:
+        smtp_connection.starttls(context=_build_starttls_context(verify=delivery.starttls_verify))
+        # RFC 3207: server capabilities must be re-fetched after TLS.
+        smtp_connection.ehlo()
+    if delivery.credentials is not None:
+        if not delivery.use_starttls:
+            # Allowed (an internal relay may offer no TLS), but never silently.
+            logger.warning(
+                'sending SMTP credentials to host "%s" without TLS (STARTTLS is off)',
+                printable(host),
+                extra={"host": printable(host)},
+            )
+        username, password = delivery.credentials
+        _authenticate(smtp_connection, username, password)
+    smtp_connection.ehlo_or_helo_if_needed()
+
+
+def _send_message(smtp_connection: smtplib.SMTP, *, sender: str, recipient: str, message: IO[bytes]) -> None:
+    """Send one message over a prepared session, with BDAT where the server offers CHUNKING."""
+    message.seek(0)
+    if smtp_connection.has_extn("chunking"):
+        _send_via_bdat(smtp_connection, sender, recipient, message)
+    else:
+        _send_via_data(smtp_connection, sender, recipient, message)
+
+
+def _quit_quietly(smtp_connection: smtplib.SMTP) -> None:
+    """Say QUIT after the server accepted the message; how it answers changes nothing.
+
+    The message is delivered once the final reply to DATA or BDAT LAST is 250.
+    Counting a refused or lost QUIT as a failed host would send the message
+    again through the next host, or report as failed a message the server kept.
+    """
+    with suppress(smtplib.SMTPException, OSError):
+        smtp_connection.quit()
+
+
+# How often the deadline watchdog looks for a socket that a running connect has not made yet.
+_SOCKET_POLL_SECONDS: Final[float] = 0.05
 
 
 @contextmanager
@@ -257,13 +287,19 @@ def _session_deadline(smtp_connection: smtplib.SMTP, seconds: float | None) -> G
         yield
         return
     expired = threading.Event()
+    finished = threading.Event()
 
     def cut() -> None:
         expired.set()
-        connection_socket = smtp_connection.sock
-        if connection_socket is not None:
-            with suppress(OSError):
-                connection_socket.shutdown(socket.SHUT_RDWR)
+        # The deadline can pass while the TCP connect is still running, before the
+        # socket exists; wait for it, or the greeting read after it is unbounded.
+        while not finished.is_set():
+            connection_socket = smtp_connection.sock
+            if connection_socket is not None:
+                with suppress(OSError):
+                    connection_socket.shutdown(socket.SHUT_RDWR)
+                return
+            finished.wait(_SOCKET_POLL_SECONDS)
 
     watchdog = threading.Timer(seconds, cut)
     watchdog.daemon = True
@@ -275,6 +311,7 @@ def _session_deadline(smtp_connection: smtplib.SMTP, seconds: float | None) -> G
             raise TimeoutError(f"SMTP session did not finish within the delivery deadline of {seconds} seconds") from error
         raise
     finally:
+        finished.set()
         watchdog.cancel()
 
 

@@ -96,7 +96,9 @@ send(..., transport=MyTransport())
 
 `delivery` is the resolved `DeliveryOptions` (`credentials`, `use_starttls`,
 `starttls_verify`, `timeout`, `local_hostname`, `deadline`). A transport raises on any
-failure so `send()` can try the next host; an `OSError` it raises is logged with its text,
+failure so `send()` can try the next host, and returns once the server has accepted the
+message (the default transport ignores how the server answers `QUIT`, since raising then
+would make `send()` deliver the message again); an `OSError` it raises is logged with its text,
 anything else by type name only, so never put a credential into an `OSError`'s text.
 
 The CLI takes a transport the same way, through its typed context object, which lets an
