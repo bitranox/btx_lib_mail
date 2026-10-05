@@ -12,6 +12,7 @@ import math
 import smtplib
 import socket
 import ssl
+import sys
 import threading
 import time
 import warnings
@@ -505,6 +506,57 @@ def test_the_deadline_bounds_every_address_a_host_name_resolves_to(monkeypatch: 
     assert elapsed < 2 * _DEADLINE
 
 
+_REAL_CONNECT = socket.socket.connect
+
+
+def _refuse_with_os_timeout(monkeypatch: pytest.MonkeyPatch, port: int) -> None:
+    """Make a connect to port fail at once with TimeoutError, as the OS's own SYN-retry limit does."""
+
+    def connect(self: socket.socket, address: Any) -> None:
+        if address[1] == port:
+            raise TimeoutError(110, "Connection timed out")
+        _REAL_CONNECT(self, address)
+
+    monkeypatch.setattr(socket.socket, "connect", connect)
+
+
+@pytest.mark.os_agnostic
+def test_an_os_connect_timeout_before_a_working_address_is_not_called_the_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The first address timing out left the flag set, so the second's own failure read as the deadline."""
+    with socket.create_server(("127.0.0.1", 0)) as hangs_up, socket.create_server(("127.0.0.1", 0)) as unused:
+        hangup_port, timed_out_port = hangs_up.getsockname()[1], unused.getsockname()[1]
+        first = socket.getaddrinfo("127.0.0.1", timed_out_port, 0, socket.SOCK_STREAM)
+        second = socket.getaddrinfo("127.0.0.1", hangup_port, 0, socket.SOCK_STREAM)
+
+        def two_addresses(*_args: Any, **_kwargs: Any) -> list[Any]:
+            return first + second
+
+        monkeypatch.setattr(socket, "getaddrinfo", two_addresses)
+        _refuse_with_os_timeout(monkeypatch, timed_out_port)
+
+        def hang_up() -> None:
+            connection, _address = hangs_up.accept()
+            connection.close()
+
+        closer = threading.Thread(target=hang_up, daemon=True)
+        closer.start()
+        with pytest.raises(smtplib.SMTPServerDisconnected):
+            _deliver(hangup_port, deadline=3.0)
+        closer.join(timeout=2)
+
+
+@pytest.mark.os_agnostic
+def test_an_os_connect_timeout_well_inside_the_deadline_is_not_called_the_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A timeout the OS raised long before the time left ran out is the connect's own failure."""
+    with socket.create_server(("127.0.0.1", 0)) as unused:
+        port = unused.getsockname()[1]
+        _refuse_with_os_timeout(monkeypatch, port)
+        with pytest.raises(TimeoutError) as raised:
+            _deliver(port, deadline=3.0)
+
+    assert "delivery deadline" not in str(raised.value)
+
+
 @pytest.mark.os_agnostic
 def test_a_name_lookup_that_outlasts_the_deadline_starts_no_connect(monkeypatch: pytest.MonkeyPatch) -> None:
     """A lookup cannot be interrupted, but no connect is attempted once it has used up the deadline."""
@@ -629,6 +681,29 @@ def test_a_connect_started_with_no_time_left_fails_as_the_deadline() -> None:
     with _unanswered_port() as port, pytest.raises(TimeoutError, match="delivery deadline of 30 seconds"), _transport._session_deadline(connection, 30):
         connection.ends_at = time.monotonic() - 1  # the watchdog's timer is still 30 seconds away
         connection.connect("127.0.0.1", port)
+
+
+@pytest.mark.os_windows
+@pytest.mark.skipif(sys.platform != "win32", reason="only Windows closes the live socket to wake a silent read")
+def test_the_handle_number_a_cut_frees_is_kept_from_other_sockets_until_the_session_closes() -> None:
+    """OpenSSL keeps the closed handle number, and Windows gave it to the next new socket, whose bytes a waking read then took."""
+    connection = _transport._SessionSMTP(local_hostname="client.example.com", timeout=_SOCKET_TIMEOUT)
+    connection.ends_at = time.monotonic() + 30  # a session with a deadline keeps a duplicate to cut
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        connection.sock = connection._get_socket("127.0.0.1", listener.getsockname()[1], _SOCKET_TIMEOUT)
+        live_handle = connection.sock.fileno()
+
+        assert _transport._cut_session(connection)
+        guard = connection.handle_guard
+        assert guard is not None, "positive control: the cut took a placeholder"
+        with socket.socket() as newcomer:
+            assert guard.fileno() == live_handle
+            assert newcomer.fileno() != live_handle
+
+        connection.close()
+
+    assert connection.handle_guard is None
+    assert guard.fileno() == -1
 
 
 @pytest.mark.os_agnostic

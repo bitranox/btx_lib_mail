@@ -267,6 +267,11 @@ _SOCKET_POLL_SECONDS: Final[float] = 0.05
 # timeout rather than as a non-blocking connect.
 _MIN_CONNECT_SECONDS: Final[float] = 0.001
 
+# A connect that times out within this of the time it was given ran out of that time;
+# well before it, the operating system gave up on its own (its SYN retry limit). Covers
+# the Windows clock tick (about 15.6 ms) between the timeout and the clock reading.
+_CLOCK_SLACK_SECONDS: Final[float] = 0.05
+
 # One entry of socket.getaddrinfo(): family, socket kind, protocol, canonical name, address.
 _AddressInfo = tuple[socket.AddressFamily, socket.SocketKind, int, str, "tuple[str, int] | tuple[str, int, int, int] | tuple[int, bytes]"]
 
@@ -287,6 +292,8 @@ class _SessionSMTP(smtplib.SMTP):
             made when a session with a deadline connects.
         connect_ran_out: True when the TCP connect timed out on the time
             left before the deadline rather than on the socket timeout.
+        handle_guard: On Windows, a placeholder socket holding the handle
+            number the deadline closed, until the session itself is closed.
     """
 
     def __init__(self, *, local_hostname: str, timeout: float) -> None:
@@ -300,6 +307,14 @@ class _SessionSMTP(smtplib.SMTP):
         self.ends_at: float | None = None
         self.cut_handle: socket.socket | None = None
         self.connect_ran_out = False
+        self.handle_guard: socket.socket | None = None
+
+    def close(self) -> None:
+        """Close the session, then release the handle number the deadline closed."""
+        super().close()
+        if self.handle_guard is not None:
+            self.handle_guard.close()
+            self.handle_guard = None
 
     # smtplib's own hook for the TCP connect (SMTP_SSL and LMTP override it too).
     def _get_socket(self, host: str, port: int, timeout: float) -> socket.socket:
@@ -343,16 +358,22 @@ class _SessionSMTP(smtplib.SMTP):
                 self.connect_ran_out = True
                 raise TimeoutError("no time left before the delivery deadline to connect") from None
             connect_timeout = max(min(timeout, time_left), _MIN_CONNECT_SECONDS)
+            started = time.monotonic()
             try:
-                return self._open_connection(address_info, timeout=connect_timeout)
+                connection_socket = self._open_connection(address_info, timeout=connect_timeout)
             except TimeoutError as error:
-                # Decided here, not by the clock afterwards: the watchdog can still be
+                # Decided here, not by the watchdog's clock afterwards: it can still be
                 # a clock tick away (Windows), and then nothing else says why it ended.
-                self.connect_ran_out = connect_timeout < timeout
+                used_its_time = time.monotonic() - started >= connect_timeout - _CLOCK_SLACK_SECONDS
+                self.connect_ran_out = connect_timeout < timeout and used_its_time
                 last_error = error
+                continue
             except OSError as error:
                 self.connect_ran_out = False
                 last_error = error
+                continue
+            self.connect_ran_out = False
+            return connection_socket
         raise last_error
 
     def _open_connection(self, address_info: _AddressInfo, *, timeout: float) -> socket.socket:
@@ -456,13 +477,20 @@ def _cut_session(smtp_connection: _SessionSMTP) -> bool:
     live_socket = smtp_connection.sock
     if live_socket is None or live_socket.fileno() == -1:
         return False
-    with suppress(OSError):
-        handle.close()
     # socket.close() leaves the handle open while smtplib's makefile() reader
     # holds a reference to it, which is exactly while a read is blocked; the
     # C-level close releases it regardless.
     with suppress(OSError):
         _socket.socket.close(live_socket)
+    # OpenSSL still holds that handle number after a STARTTLS session's close, and
+    # Windows hands a freed number to the next new socket, so a read waking up
+    # would take another connection's bytes. A placeholder takes the number first
+    # and keeps it until the session is closed. The reader wakes only once the
+    # duplicate is closed too, after this.
+    with suppress(OSError):
+        smtp_connection.handle_guard = socket.socket()
+    with suppress(OSError):
+        handle.close()
     return True
 
 
