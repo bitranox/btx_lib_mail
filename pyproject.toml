@@ -4,7 +4,7 @@ version = "3.1.0"
 description = "Send email from Python or the shell: streamed large attachments (bounded memory), RFC 3030 BDAT/CHUNKING, STARTTLS, multi-host failover, and attachment security."
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["rich-click>=1.9.9", "lib_cli_exit_tools>=2.3.4", "pydantic>=2.13.5"]
+dependencies = ["rich-click>=1.9.9", "lib_cli_exit_tools>=2.4.0", "pydantic>=2.13.5"]
 license = { text = "MIT" }
 authors = [{ name = "bitranox", email = "bitranox@gmail.com" }]
 keywords = ["email", "smtp", "mail", "attachments", "bdat", "starttls", "streaming", "cli"]
