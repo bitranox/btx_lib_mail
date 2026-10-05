@@ -331,7 +331,11 @@ credential out of a `pydantic.ValidationError`:
   its letters), or an annotated `credential_fields` that pydantic turns into a field
   raises `TypeError` at class definition. A validated assignment is validated on a copy and
   installed only when it passes, so a value a model-level validator refuses never reaches the
-  instance, not even for a moment another thread could read it in.
+  instance, not even for a moment another thread could read it in. Model validators run on
+  that copy; the private attributes they set on it are installed with the fields. Validated
+  assignments are serialised process-wide, so a validator must not wait for another
+  thread's assignment to a `SecretSafeModel`. A private attribute (`_name`) is assigned
+  directly.
   `ConfMail` is one such subclass
   (`credential_fields = frozenset({"smtp_password", "smtphosts"})`; `smtphosts` is
   included because a host string carrying `user:password@` is refused there, and that

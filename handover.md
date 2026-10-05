@@ -1,4 +1,4 @@
-# Handover - btx_lib_mail, 2026-10-05 (sweep 5 fixed, sweep 6 reviewed and unfixed)
+# STALE - read 2026-10-05, work continued
 
 Read `OPEN-WORK.md` first. Open: ranks 21, 22, 30, 40 (USER; 22 and 30 held by the owner until
 release, 40 deferred) and 50 (FOUND, sibling repos).

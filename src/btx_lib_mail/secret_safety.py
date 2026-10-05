@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from collections.abc import Collection, Iterator, Mapping, Set
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
@@ -85,6 +86,12 @@ _MAX_VISITS: Final = 1000
 _NO_CHILDREN: Final[tuple[object, ...]] = ()
 # Marks an exhausted member iterator; no input can be this object.
 _EXHAUSTED: Final = object()
+
+# Serialises validated assignments to every SecretSafeModel: each is validated
+# on a copy and swapped in whole, so two concurrent assignments to one instance
+# would otherwise each install a copy lacking the other's field. Re-entrant,
+# because a validator may assign to another model.
+_ASSIGNMENT_LOCK: Final = threading.RLock()
 
 _FAILED_TITLE: Final = "ValidationError"
 _FAILED_TYPE: Final = "redacted_error"
@@ -534,12 +541,17 @@ class SecretSafeModel(BaseModel, metaclass=_SecretSafeMeta):
     raises ``TypeError`` at class definition, because each would otherwise
     protect nothing.
 
-    A validated assignment that fails is rolled back: pydantic applies the new
-    value before a model-level ``mode="after"`` validator runs and keeps it when
-    that validator raises (whatever it raises), so this model restores the
-    previous field values, fields-set and extra values before re-raising. The
-    restore is shallow: a validator that mutates a field value in place before
-    raising is not undone.
+    A validated assignment runs on a copy of the instance and is installed only
+    when it passes: pydantic applies the new value before a model-level
+    ``mode="after"`` validator runs, so validated in place a refused value would
+    be visible to another thread until it was rolled back. The copy is shallow:
+    a validator that mutates a field value in place before raising is not
+    undone. Model validators therefore see the copy, not the instance assigned
+    to; the field values, fields-set, extra values and private attributes they
+    leave on it are what is installed. Validated assignments are serialised
+    process-wide, so a validator must not wait for another thread's assignment
+    to a ``SecretSafeModel``. A private attribute (a name starting with ``_``)
+    is assigned directly.
 
     ``validation_error_class`` (a ClassVar, ``ValidationError`` by default)
     names the class of every error this model raises. Set it to a subclass of
@@ -630,9 +642,15 @@ class SecretSafeModel(BaseModel, metaclass=_SecretSafeMeta):
                 ValidationError: The assignment failed; the model is left as
                     it was and the error is redacted.
             """
-            if name not in type(self).model_fields and self.__pydantic_extra__ is None:
+            # pydantic never validates a name starting with "_" (a private
+            # attribute), even when extra="allow" would take any other name.
+            if name.startswith("_") or (name not in type(self).model_fields and self.__pydantic_extra__ is None):
                 super().__setattr__(name, value)  # a private or class attribute: nothing to validate
                 return
+            with _ASSIGNMENT_LOCK:
+                self._assign_through_a_copy(name, value)
+
+        def _assign_through_a_copy(self, name: str, value: Any) -> None:
             # pydantic writes the new value before a mode="after" model validator
             # runs, and the global conf is shared: validated on a copy, a refused
             # value never reaches the live instance, where another thread could
@@ -643,21 +661,19 @@ class SecretSafeModel(BaseModel, metaclass=_SecretSafeMeta):
             except ValidationError as exc:
                 original = exc
             else:
-                self._restore_assignment_state(candidate._assignment_state())
+                self._install_state_of(candidate)
                 return
             raise type(self)._redacted(original)
 
-        def _assignment_state(self) -> tuple[dict[str, Any], set[str], dict[str, Any] | None]:
-            extra = self.__pydantic_extra__
-            return dict(self.__dict__), set(self.__pydantic_fields_set__), None if extra is None else dict(extra)
-
-        def _restore_assignment_state(self, saved: tuple[dict[str, Any], set[str], dict[str, Any] | None]) -> None:
+        def _install_state_of(self, candidate: SecretSafeModel) -> None:
             # One swap per attribute, so a reader on another thread never sees
             # a half-written __dict__ (the global conf is shared).
-            values, fields_set, extra = saved
-            object.__setattr__(self, "__dict__", values)
-            object.__setattr__(self, "__pydantic_fields_set__", fields_set)
-            object.__setattr__(self, "__pydantic_extra__", extra)
+            extra = candidate.__pydantic_extra__
+            private = candidate.__pydantic_private__
+            object.__setattr__(self, "__dict__", dict(candidate.__dict__))
+            object.__setattr__(self, "__pydantic_fields_set__", set(candidate.__pydantic_fields_set__))
+            object.__setattr__(self, "__pydantic_extra__", None if extra is None else dict(extra))
+            object.__setattr__(self, "__pydantic_private__", None if private is None else dict(private))
 
         @classmethod
         def model_validate_json(cls, *args: Any, **kwargs: Any) -> Any:

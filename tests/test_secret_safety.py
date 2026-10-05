@@ -33,6 +33,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    PrivateAttr,
     SecretStr,
     TypeAdapter,
     ValidationError,
@@ -1740,3 +1741,91 @@ def test_a_hidden_assertion_error_survives_pickling() -> None:
 
     assert str(restored) == str(error)
     assert "Qx7#pw" not in str(restored)
+
+
+class _WithPrivate(SecretSafeModel):
+    model_config = ConfigDict(validate_assignment=True)
+    name: str = "x"
+    _cache: int = PrivateAttr(default=0)
+
+
+class _AllowsExtraWithPrivate(SecretSafeModel):
+    model_config = ConfigDict(extra="allow", validate_assignment=True)
+    name: str = "x"
+    _cache: int = PrivateAttr(default=0)
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("model_class", [_WithPrivate, _AllowsExtraWithPrivate], ids=["extra-ignored", "extra-allowed"])
+def test_a_private_attribute_assignment_lands(model_class: type[_WithPrivate | _AllowsExtraWithPrivate]) -> None:
+    """With extra="allow" a private name went down the validated path, onto a copy, and was dropped."""
+    model = model_class()
+
+    model._cache = 5
+
+    assert model._cache == 5
+
+
+class _DerivesPrivate(SecretSafeModel):
+    model_config = ConfigDict(validate_assignment=True)
+    amount: int = 0
+    _double: int = PrivateAttr(default=0)
+
+    @model_validator(mode="after")
+    def _derive(self) -> _DerivesPrivate:
+        self._double = self.amount * 2
+        return self
+
+
+@pytest.mark.os_agnostic
+def test_a_private_attribute_an_after_validator_sets_during_an_assignment_lands() -> None:
+    model = _DerivesPrivate()
+
+    model.amount = 21
+
+    assert model._double == 42
+
+
+class _PausesOnce(SecretSafeModel):
+    """Holds the first assignment of ``first`` inside its after-validator until released."""
+
+    model_config = ConfigDict(validate_assignment=True)
+    first: int = 0
+    second: int = 0
+    entered: ClassVar[threading.Event] = threading.Event()
+    release: ClassVar[threading.Event] = threading.Event()
+
+    @model_validator(mode="after")
+    def _pause(self) -> _PausesOnce:
+        if self.first == 1 and not _PausesOnce.entered.is_set():
+            _PausesOnce.entered.set()
+            _PausesOnce.release.wait(timeout=5)
+        return self
+
+
+@pytest.mark.os_agnostic
+def test_two_threads_assigning_different_fields_both_land() -> None:
+    """Each assignment swapped in a whole copy, so the one finishing last dropped the other's field."""
+    _PausesOnce.entered.clear()
+    _PausesOnce.release.clear()
+    model = _PausesOnce()
+
+    def assign_first() -> None:
+        model.first = 1
+
+    def assign_second() -> None:
+        model.second = 2
+
+    paused = threading.Thread(target=assign_first)
+    paused.start()
+    assert _PausesOnce.entered.wait(timeout=5), "positive control: the first assignment reached its validator"
+    other = threading.Thread(target=assign_second)
+    other.start()
+    other.join(timeout=0.5)
+    _PausesOnce.release.set()
+    paused.join(timeout=5)
+    other.join(timeout=5)
+
+    assert not paused.is_alive()
+    assert not other.is_alive()
+    assert (model.first, model.second) == (1, 2)
