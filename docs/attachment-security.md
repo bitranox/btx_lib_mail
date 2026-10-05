@@ -25,8 +25,9 @@ of sensitive files, dangerous executables, or oversized payloads.
 5. **Extension Filtering**  -  Dangerous extensions (`.sh`, `.exe`, `.bat`, `.py`,
    etc.) are blocked by default on every platform: the default is the union of the
    POSIX and Windows lists, because the RECIPIENT's system decides what an attachment
-   runs as. The extension is read after trailing dots and spaces are dropped (Windows
-   saves `x.exe.` as `x.exe`) and compared without case; an extension set given to `send()` or
+   runs as. The extension is read from the name the message carries (the header drops
+   surrounding whitespace, a trailing no-break space included) after trailing dots and
+   spaces are dropped (Windows saves `x.exe.` as `x.exe`), and compared without case; an extension set given to `send()` or
    `ConfMail` is normalised the same way (`{"EXE"}` and `{".exe"}` are one set). Use
    `attachment_allowed_extensions` for whitelist mode or
    `attachment_blocked_extensions` to customize the blacklist.
@@ -52,7 +53,9 @@ of sensitive files, dangerous executables, or oversized payloads.
    or any other Unicode `Cc` character), a bidirectional formatting character
    (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069, which can make
    `report<U+202E>fdp.xlsm` display as `reportmslx.pdf`), or one that is not valid
-   Unicode text (an invalid UTF-8 byte in a POSIX name), is refused as `FILENAME`:
+   Unicode text (an invalid UTF-8 byte in a POSIX name), or one the message would carry as
+   another name (an RFC 2047 encoded word: `=?utf-8?b?aW52b2ljZS5leGU=?=` arrives as
+   `invoice.exe`), is refused as `FILENAME`:
    the name becomes the attachment's `Content-Disposition` header, and a POSIX file
    system allows all of them in a name. A path holding NUL anywhere is refused the same way,
    before any file system call.

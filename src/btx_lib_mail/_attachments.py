@@ -13,6 +13,7 @@ import sys
 import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from email.message import EmailMessage
 from enum import Enum
 from typing import IO, Final, cast
 
@@ -486,7 +487,9 @@ def _check_filename(path: pathlib.Path) -> None:
     Raises:
         AttachmentSecurityError: If the file name contains a control
             character or a bidirectional formatting character (which can make
-            ``.xlsm`` display as ``.pdf``), or is not valid Unicode text.
+            ``.xlsm`` display as ``.pdf``), is not valid Unicode text, or
+            would reach the recipient as another name (an RFC 2047 encoded
+            word).
 
     Examples:
         >>> _check_filename(pathlib.Path("/data/Bericht März.pdf"))
@@ -513,6 +516,32 @@ def _check_filename(path: pathlib.Path) -> None:
             reason=f'file name is not valid Unicode text: "{path}"',
             violation_type=AttachmentViolation.FILENAME,
         )
+    # The header drops surrounding whitespace; the extension check judges that trimmed name.
+    if _filename_as_sent(path.name) != path.name.strip():
+        raise AttachmentSecurityError(
+            path=path,
+            reason=f'file name would reach the recipient as another name (an RFC 2047 encoded word): "{path}"',
+            violation_type=AttachmentViolation.FILENAME,
+        )
+
+
+def _filename_as_sent(name: str) -> str | None:
+    """Return the file name a recipient reads from the header ``_compose`` writes for name.
+
+    The email package decodes an RFC 2047 encoded word in the ``filename``
+    parameter, so ``=?utf-8?b?aW52b2ljZS5leGU=?=`` (no suffix to block) arrives
+    as ``invoice.exe``. Every other file name check judges ``name``; only a
+    name that arrives unchanged was the one they judged.
+
+    Examples:
+        >>> _filename_as_sent("=?utf-8?b?aW52b2ljZS5leGU=?=")
+        'invoice.exe'
+        >>> _filename_as_sent("Bericht März.pdf")
+        'Bericht März.pdf'
+    """
+    header = EmailMessage()
+    header.add_header("Content-Disposition", "attachment", filename=name)
+    return header.get_filename()
 
 
 def _check_nul(path: pathlib.Path) -> None:
@@ -621,7 +650,8 @@ def _check_extension(
     Raises:
         AttachmentSecurityError: If the extension is not allowed.
     """
-    ext = _effective_suffix(path.name)
+    # Judged on the name the recipient reads: the header drops a trailing no-break space.
+    ext = _effective_suffix(_filename_as_sent(path.name) or path.name)
 
     if allowed is not None:
         # Whitelist mode: only allowed extensions pass

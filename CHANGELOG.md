@@ -206,6 +206,11 @@
   kin) passed the file-name check, so `report<U+202E>fdp.xlsm`, a type not on the
   blocklist, displayed as `reportmslx.pdf` in a mail client. Such a name is refused as
   `FILENAME` now.
+- The attachment header decodes an RFC 2047 encoded word in the file name, so a file named
+  `=?utf-8?b?aW52b2ljZS5leGU=?=`, which has no extension to block, reached the recipient as
+  `invoice.exe`. A name the message would carry as another name is refused as `FILENAME` now.
+  The header also drops a trailing no-break space, which the extension check kept: `x.exe`
+  followed by U+00A0 was sent as `x.exe`. The extension is judged on the name as sent now.
 - A `ConfigurationError` whose hidden input came from a validator (a host carrying
   credentials, a non-string password) and every `AttachmentSecurityError` failed to pickle
   or deep-copy (`TypeError`), so neither crossed a process pool or a copy of the state that

@@ -700,6 +700,44 @@ def test_an_attachment_name_holding_a_bidi_control_is_refused(tmp_path: Path, co
 
 
 @pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    "name",
+    ["=?utf-8?b?aW52b2ljZS5leGU=?=", "report =?utf-8?q?x.exe?= ", "=?iso-8859-1?q?Bericht=2Epdf?= =?utf-8?b?LmV4ZQ==?="],
+    ids=["whole-name", "inside-the-name", "two-words"],
+)
+def test_a_file_name_the_message_would_carry_differently_is_refused(name: str) -> None:
+    """The header decodes an RFC 2047 encoded word, so the name the checks saw is not the one sent.
+
+    ``=?utf-8?b?aW52b2ljZS5leGU=?=`` has no suffix to block, and the recipient gets ``invoice.exe``.
+    """
+    with pytest.raises(AttachmentSecurityError) as caught:
+        _attachments._check_filename(Path("/data") / name)
+
+    assert caught.value.violation_type is AttachmentViolation.FILENAME
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("name", ["a=?utf-8?q?x?=.pdf", "=?bad.pdf", 'say "hi"; again.pdf', "Bericht März.pdf"])
+def test_a_file_name_the_message_carries_unchanged_passes(name: str) -> None:
+    _attachments._check_filename(Path("/data") / name)
+
+
+@pytest.mark.os_agnostic
+def test_an_encoded_word_file_name_is_not_sent(tmp_path: Path) -> None:
+    if sys.platform == "win32":
+        pytest.skip("Windows does not allow '?' in a file name")
+    disguised = tmp_path / "=?utf-8?b?aW52b2ljZS5leGU=?="
+    disguised.write_bytes(b"MZ")
+    transport = RecordingTransport()
+
+    with pytest.raises(AttachmentSecurityError) as caught:
+        _send(transport, disguised)
+
+    assert caught.value.violation_type is AttachmentViolation.FILENAME
+    assert transport.messages == {}
+
+
+@pytest.mark.os_agnostic
 def test_an_attachment_name_holding_a_zero_width_joiner_is_sent(tmp_path: Path) -> None:
     # A format character that only joins glyphs (emoji sequences) cannot reorder the name.
     report = tmp_path / f"family-{chr(0x1F468)}{chr(0x200D)}{chr(0x1F469)}.txt"

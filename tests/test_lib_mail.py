@@ -1690,7 +1690,8 @@ class TestDefaultSecuritySettings:
         assert blocked >= lib_mail.DANGEROUS_EXTENSIONS_WINDOWS
 
     @pytest.mark.os_agnostic
-    @pytest.mark.parametrize("name", ["tool.exe", "run.bat", "x.sh.", "x.exe ", "x.sh. . ", "X.EXE"])
+    # A trailing no-break space survived the suffix check and the header dropped it: x.exe arrived.
+    @pytest.mark.parametrize("name", ["tool.exe", "run.bat", "x.sh.", "x.exe ", "x.sh. . ", "X.EXE", "x.exe" + chr(0xA0)])
     def test_default_blocklist_refuses_an_executable_name(self, tmp_path: Path, name: str) -> None:
         if sys.platform == "win32" and name != name.rstrip(". "):
             pytest.skip("Windows cannot create a file whose name ends in a dot or space")
