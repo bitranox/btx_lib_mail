@@ -27,6 +27,7 @@ from btx_lib_mail import (
     InvalidInputError,
     _attachments,
     _compose,
+    _descriptor_path,
     lib_mail,
     send,
 )
@@ -990,3 +991,59 @@ def test_a_directory_rule_holding_nul_is_refused_by_send() -> None:
         _send(transport, "unused", attachment_file_paths=[], attachment_allowed_directories=frozenset({"/srv/a\x00b"}))
 
     assert transport.recipients == []
+
+
+@pytest.mark.os_agnostic
+def test_a_live_file_whose_name_ends_in_deleted_is_judged_by_its_own_name(tmp_path: Path) -> None:
+    """Linux marks an unlinked file "<path> (deleted)"; the marker was cut from a live file that is really named so."""
+    build = tmp_path / "build.sh (deleted)"
+    build.write_text("echo hi")
+    transport = RecordingTransport()
+
+    _send(transport, build)
+
+    assert len(transport.recipients) == 3
+
+
+@pytest.mark.os_agnostic
+def test_a_file_unlinked_right_after_its_open_is_still_judged_by_its_own_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    if sys.platform == "win32":
+        pytest.skip("Windows refuses to delete a file that is open")
+    report = tmp_path / "report.txt"
+    report.write_bytes(b"numbers")
+    real_open = os.open
+    unlinked: list[bool] = []
+
+    def open_then_unlink(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        descriptor = real_open(path, flags, *args, **kwargs)
+        if not unlinked and os.fspath(path) == os.fspath(report.resolve()):
+            report.unlink()
+            unlinked.append(True)
+        return descriptor
+
+    monkeypatch.setattr(os, "open", open_then_unlink)  # the unlink must land between the open and the check
+    transport = RecordingTransport()
+
+    _send(transport, report, attachment_allowed_extensions={".txt"})
+
+    assert unlinked, "positive control: the file was unlinked while open"
+    assert len(transport.recipients) == 3
+
+
+@pytest.mark.os_agnostic
+def test_a_pipe_names_no_path() -> None:
+    read_end, write_end = os.pipe()
+    try:
+        assert _descriptor_path.descriptor_path(read_end) is None
+    finally:
+        os.close(read_end)
+        os.close(write_end)
+
+
+@pytest.mark.os_agnostic
+def test_a_closed_descriptor_names_no_path() -> None:
+    read_end, write_end = os.pipe()
+    os.close(read_end)
+    os.close(write_end)
+
+    assert _descriptor_path.descriptor_path(read_end) is None

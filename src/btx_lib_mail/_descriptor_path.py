@@ -17,6 +17,9 @@ __all__ = ["descriptor_path"]
 # Longest path GetFinalPathNameByHandleW can return (the extended-length limit).
 _WINDOWS_MAX_PATH = 32_768
 
+# What Linux appends to the /proc/self/fd link of a file that has been unlinked.
+_UNLINKED_MARK = " (deleted)"
+
 
 def descriptor_path(descriptor: int) -> str | None:
     """Return the path the kernel holds for an open descriptor, or None when it cannot say.
@@ -82,6 +85,9 @@ else:
     def _lookup(descriptor: int) -> str | None:
         found = str(pathlib.Path(f"/proc/self/fd/{descriptor}").readlink())
         # A file unlinked since the open reads "<path> (deleted)"; that path is still the
-        # one to judge. A pipe or socket reads "pipe:[...]" and names no path at all.
-        found = found.removesuffix(" (deleted)")
+        # one to judge. Only a file with no link left is marked so: a live file can be
+        # named "... (deleted)" itself. A pipe or socket reads "pipe:[...]" and names no
+        # path at all.
+        if found.endswith(_UNLINKED_MARK) and os.fstat(descriptor).st_nlink == 0:
+            found = found.removesuffix(_UNLINKED_MARK)
         return found if found.startswith("/") else None
