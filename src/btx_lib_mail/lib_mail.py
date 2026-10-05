@@ -19,6 +19,7 @@ configuration flow and delivery flow separated.
 
 from __future__ import annotations
 
+import base64
 import smtplib
 from dataclasses import dataclass, field
 from typing import IO, TYPE_CHECKING, Final, TypeVar
@@ -63,6 +64,7 @@ from ._validation import (
     validate_smtp_host,
 )
 from .errors import DeliveryError, InvalidInputError
+from .secret_safety import REDACTED_INPUT
 
 if TYPE_CHECKING:
     import pathlib
@@ -502,7 +504,7 @@ def _directories_or(explicit: object, *, setting: _DirectorySetting, field_name:
 _FAILURE_TEXT_LIMIT: Final[int] = 200
 
 
-def _describe_failure(error: BaseException) -> str:
+def _describe_failure(error: BaseException, *, credentials: tuple[str, str] | None = None) -> str:
     """Return a one-line, credential-free description of a delivery failure.
 
     The per-host failure log used to attach the whole exception. An
@@ -512,10 +514,14 @@ def _describe_failure(error: BaseException) -> str:
     `smtplib.SMTPException` is one): for the stdlib transport it comes from
     the OS, the TLS layer or the server reply. A custom `Transport` can raise
     an `OSError` with any text, and that text is logged as given. Anything
-    else is logged by type name only.
+    else is logged by type name only. A server that echoes the rejected AUTH
+    line quotes the password in a form of its own, so the password and its
+    AUTH PLAIN and AUTH LOGIN encodings are replaced in the text.
 
     Args:
         error: The exception raised while delivering to one host.
+        credentials: The ``(user, password)`` in use, whose password is
+            replaced wherever the text repeats it.
 
     Returns:
         A one-line, credential-free description, truncated to `_FAILURE_TEXT_LIMIT` characters.
@@ -530,10 +536,30 @@ def _describe_failure(error: BaseException) -> str:
     if isinstance(error, smtplib.SMTPResponseException):
         reply = error.smtp_error
         text = reply.decode("utf-8", "replace") if isinstance(reply, bytes) else str(reply)
-        return printable(f"{name} {error.smtp_code} {text}")[:_FAILURE_TEXT_LIMIT]
+        return printable(_without_password(f"{name} {error.smtp_code} {text}", credentials))[:_FAILURE_TEXT_LIMIT]
     if isinstance(error, OSError):
-        return printable(f"{name}: {error}")[:_FAILURE_TEXT_LIMIT]
+        return printable(_without_password(f"{name}: {error}", credentials))[:_FAILURE_TEXT_LIMIT]
     return name
+
+
+def _without_password(text: str, credentials: tuple[str, str] | None) -> str:
+    """Replace the password, and the base64 forms SMTP AUTH sends it in, wherever text repeats them.
+
+    Examples:
+        >>> _without_password("535 AUTH PLAIN AHUAcHc= rejected", ("u", "pw"))
+        '535 AUTH PLAIN [redacted] rejected'
+    """
+    if credentials is None or not credentials[1]:
+        return text
+    user, password = credentials
+    forms = (
+        base64.b64encode(f"\0{user}\0{password}".encode()).decode("ascii"),  # AUTH PLAIN
+        base64.b64encode(password.encode()).decode("ascii"),  # AUTH LOGIN
+        password,
+    )
+    for form in forms:
+        text = text.replace(form, REDACTED_INPUT)
+    return text
 
 
 def _deliver_to_any_host(*, sender: str, recipient: str, message: IO[bytes], plan: _DeliveryPlan) -> bool:
@@ -585,7 +611,7 @@ def _deliver_to_any_host(*, sender: str, recipient: str, message: IO[bytes], pla
             clean_host = printable(host)
             warning_call = (
                 'can not send mail to "%s" via host "%s": %s',
-                (clean_recipient, clean_host, _describe_failure(error)),
+                (clean_recipient, clean_host, _describe_failure(error, credentials=plan.delivery.credentials)),
                 {
                     "sender": printable(sender),
                     "recipient": clean_recipient,

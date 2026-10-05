@@ -6,9 +6,11 @@ positive control proving the thing searched was actually produced.
 
 from __future__ import annotations
 
+import ast
+
 # Tests reach module internals (the failure describer, the transport seam) on purpose.
 # pyright: reportPrivateUsage=false
-import ast
+import base64
 import io
 import json
 import logging
@@ -42,7 +44,17 @@ from pydantic_core import PydanticCustomError
 from transport_doubles import RecordingTransport, RefusingTransport
 
 import btx_lib_mail
-from btx_lib_mail import REDACTED_INPUT, ConfigurationError, ConfMail, SecretSafeModel, _validation, lib_mail, redact_validation_error, secret_safety
+from btx_lib_mail import (
+    REDACTED_INPUT,
+    ConfigurationError,
+    ConfMail,
+    DeliveryError,
+    SecretSafeModel,
+    _validation,
+    lib_mail,
+    redact_validation_error,
+    secret_safety,
+)
 from btx_lib_mail.secret_safety import _MAX_VISITS
 
 if TYPE_CHECKING:
@@ -1641,3 +1653,21 @@ def test_a_refused_key_holding_control_characters_cannot_forge_lines_in_the_erro
     assert not any(character in text for character in (chr(13), chr(27)))
     assert not any(line.startswith("INFO") for line in text.splitlines())
     assert "smtp_hostz" in text
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("password", ["hunter2-ascii", "pässwört-ünïcode"], ids=["ascii", "non-ascii"])
+def test_a_server_echoing_the_auth_line_does_not_put_the_credential_in_the_log(caplog: pytest.LogCaptureFixture, password: str) -> None:
+    """A reply quoting the rejected AUTH PLAIN token (base64 of NUL user NUL password) was logged as it came."""
+    user = "mailer@example.com"
+    token = base64.b64encode(f"\0{user}\0{password}".encode()).decode()
+    login_line = base64.b64encode(password.encode()).decode()
+    reply = f"5.7.8 rejected: AUTH PLAIN {token} / {login_line} / {password}".encode()
+    transport = RefusingTransport(smtplib.SMTPAuthenticationError(535, reply))
+
+    with caplog.at_level(logging.WARNING, logger="btx_lib_mail"), pytest.raises(DeliveryError):
+        lib_mail.send("sender@example.com", "one@example.com", "s", smtphosts=["smtp.example.com"], credentials=(user, password), transport=transport)
+
+    assert "5.7.8 rejected" in caplog.text, "positive control: the reply is logged"
+    assert login_line not in caplog.text
+    assert_never_logged(caplog, password, user=user)
