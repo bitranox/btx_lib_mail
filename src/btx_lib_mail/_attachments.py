@@ -527,10 +527,10 @@ def _check_filename(path: pathlib.Path) -> None:
 
     Examples:
         >>> _check_filename(pathlib.Path("/data/Bericht März.pdf"))
-        >>> _check_filename(pathlib.Path("/d/a\nb"))  # doctest: +ELLIPSIS
+        >>> _check_filename(pathlib.Path("a\nb"))  # doctest: +ELLIPSIS
         Traceback (most recent call last):
             ...
-        btx_lib_mail._attachments.AttachmentSecurityError: ...contains a control character: "/d/a b" [path=/d/a b]
+        btx_lib_mail._attachments.AttachmentSecurityError: ...contains a control character: "a b" [path=a b]
     """
     if any(unicodedata.category(character) == "Cc" for character in path.name):
         raise AttachmentSecurityError(

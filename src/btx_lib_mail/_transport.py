@@ -13,6 +13,7 @@ import functools
 import smtplib
 import socket
 import ssl
+import sys
 import threading
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
@@ -298,6 +299,12 @@ def _session_deadline(smtp_connection: smtplib.SMTP, seconds: float | None) -> G
             if connection_socket is not None:
                 with suppress(OSError):
                     connection_socket.shutdown(socket.SHUT_RDWR)
+                if sys.platform == "win32":
+                    # Windows wakes a blocked recv on close, not on shutdown, when the
+                    # peer sends nothing at all. POSIX may reuse a closed descriptor
+                    # under the reading thread, so there shutdown alone does it.
+                    with suppress(OSError):
+                        connection_socket.close()
                 return
             finished.wait(_SOCKET_POLL_SECONDS)
 
