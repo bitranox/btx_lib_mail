@@ -117,14 +117,18 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
         mail_subject: Subject line; UTF-8 is supported.
         mail_body: Optional plain-text body. Defaults to "".
         mail_body_html: Optional HTML body. Defaults to "".
-        smtphosts: Override host list. When `None`, the helper falls back to
-            the passed `config.smtphosts`, else the global `conf.smtphosts`.
+        smtphosts: Override hosts: one host string, or a list, tuple, set or
+            frozenset of them. `None` or an empty value (`[]`, `()`, `""`)
+            falls back to the passed `config.smtphosts`, else the global
+            `conf.smtphosts`; any other type (a generator, `0`) is refused.
         attachment_file_paths: Optional sequence of filesystem paths
-            (``pathlib.Path`` or ``str``). Each
-            existing, readable file becomes an attachment.
-        credentials: Override credentials. When omitted,
-            `resolved_credentials()` of the passed `config`, else of `conf`,
-            is used.
+            (``pathlib.Path`` or ``str``). Each existing, readable file
+            becomes an attachment. A generator (``Path.glob()``) is read
+            only one entry past ``attachment_max_count``.
+        credentials: Override `(user, password)` pair of `str`, neither
+            holding NUL. `None` or an empty pair falls back to
+            `resolved_credentials()` of the passed `config`, else of `conf`;
+            any other value, falsy or not, is refused.
         use_starttls: Override STARTTLS preference. When `None`, the helper
             uses `smtp_use_starttls` of the passed `config`, else `conf`.
         starttls_verify: Override STARTTLS certificate verification. When
