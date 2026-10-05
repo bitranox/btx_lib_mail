@@ -998,6 +998,25 @@ def test_a_directory_rule_that_is_a_symlink_loop_is_refused_as_unresolvable(tmp_
     assert transport.recipients == []
 
 
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("kind", ["blocked", "allowed"])
+def test_a_directory_rule_under_a_symlink_loop_is_refused_as_unresolvable(tmp_path: Path, kind: str) -> None:
+    """A loop in a PARENT of the rule made lstat raise ELOOP, which the loop check read as "not a loop" on 3.13+."""
+    loop = tmp_path / "self"
+    try:
+        loop.symlink_to(loop)
+    except OSError:
+        pytest.skip("this platform or account cannot create a symlink")
+    report = tmp_path / "report.txt"
+    report.write_text("x")
+    transport = RecordingTransport()
+    rule = {f"attachment_{kind}_directories": frozenset({loop / "sub"})}
+
+    with pytest.raises(InvalidInputError, match=r"^an attachment directory can not be resolved \(ELOOP\)$"):
+        _send(transport, report, **rule)
+    assert transport.recipients == []
+
+
 @pytest.mark.os_posix
 @pytest.mark.skipif(_UNREADABLE_FILE_SKIP, reason="needs POSIX permissions and a non-root user")
 def test_a_directory_rule_the_process_cannot_examine_is_compared_as_written(tmp_path: Path) -> None:

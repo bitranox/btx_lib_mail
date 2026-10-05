@@ -419,16 +419,17 @@ def _resolved_directories(directories: frozenset[pathlib.Path]) -> frozenset[pat
 
 
 def _resolves_to_a_link(directory: pathlib.Path) -> bool:
-    """Whether a resolved rule is still a symlink, the way Python 3.13+ returns a loop.
+    """Whether a resolved rule is still a symlink loop, the way Python 3.13+ returns one.
 
-    A rule the process may not examine (``EACCES`` on a parent) is compared as
-    written, as it was before this check: no attachment the process can read lies
-    under it.
+    A loop in a parent of the rule makes examining it fail with ``ELOOP``, which
+    is a loop too. A rule the process may not examine for another reason
+    (``EACCES`` on a parent) is compared as written, as it was before this check:
+    no attachment the process can read lies under it.
     """
     try:
         return _is_symlink(directory)
-    except _UnreadableAttachmentError:
-        return False
+    except _UnreadableAttachmentError as exc:
+        return exc.code == "ELOOP"
 
 
 def _errno_name(error_number: int | None) -> str:
