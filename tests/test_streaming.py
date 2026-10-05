@@ -5,9 +5,11 @@ from __future__ import annotations
 # Tests reach into module internals (dot-stuffer, spool composer) by design, and
 # aiosmtpd ships no type stubs, so its server/handler objects are untyped here.
 # pyright: reportPrivateUsage=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false
+import hashlib
 import io
 import smtplib
 import socket
+import time
 from email import message_from_bytes
 from typing import IO, TYPE_CHECKING, Any, cast
 
@@ -90,6 +92,53 @@ def bdat_server() -> Iterator[tuple[Controller, _ChunkingHandler]]:
 # ---------------------------------------------------------------------------
 # Incremental dot-stuffing (DATA phase, RFC 5321 section 4.5.2)
 # ---------------------------------------------------------------------------
+
+
+def _hash_bytes(label: str, count: int) -> bytes:
+    """Return count reproducible, well-mixed bytes derived from label."""
+    blocks = (hashlib.sha256(f"{label}:{index}".encode()).digest() for index in range(count // 32 + 1))
+    return b"".join(blocks)[:count]
+
+
+def _dot_stuffed_whole(stream: bytes) -> bytes:
+    """Reference: dot-stuff a whole stream at once, one line at a time."""
+    lines = stream.split(b"\n")
+    return b"\n".join(b"." + line if line.startswith(b".") else line for line in lines)
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("seed", range(20))
+def test_dot_stuffer_matches_the_whole_stream_reference_however_it_is_chunked(seed: int) -> None:
+    """Dots, CRs and LFs land on every side of a chunk edge, including empty chunks."""
+    alphabet = b"..\r\n\nab"
+    stream = bytes(alphabet[byte % len(alphabet)] for byte in _hash_bytes(f"stream-{seed}", 4000))
+    stuffer = _transport._DotStuffer()
+    raw_cuts = _hash_bytes(f"cuts-{seed}", 120)
+    cuts = sorted(int.from_bytes(raw_cuts[i : i + 2], "big") % (len(stream) + 1) for i in range(0, len(raw_cuts), 2))
+    pieces = [stream[start:end] for start, end in zip([0, *cuts], [*cuts, len(stream)], strict=True)]
+
+    assert b"".join(stuffer.feed(piece) for piece in pieces) == _dot_stuffed_whole(stream)
+
+
+@pytest.mark.os_agnostic
+def test_an_empty_chunk_keeps_the_line_start_state() -> None:
+    stuffer = _transport._DotStuffer()
+
+    pieces = [stuffer.feed(b"a\r\n"), stuffer.feed(b""), stuffer.feed(b".x\r\n")]
+
+    assert pieces == [b"a\r\n", b"", b"..x\r\n"]
+
+
+@pytest.mark.os_agnostic
+def test_dot_stuffing_a_large_attachment_is_not_a_per_byte_loop() -> None:
+    """A per-byte loop took over a second for 32 MiB here, longer than sending it on a fast link."""
+    chunk = (b"QUJD" * 19 + b"\r\n.x\r\n") * 800  # base64-like lines, some dot-led; about 64 KiB
+    stuffer = _transport._DotStuffer()
+    started = time.perf_counter()
+    for _ in range(32 * 1024 * 1024 // len(chunk)):
+        stuffer.feed(chunk)
+
+    assert time.perf_counter() - started < 0.5
 
 
 @pytest.mark.os_agnostic
