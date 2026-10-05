@@ -1956,3 +1956,33 @@ def test_a_failure_whose_text_does_not_carry_the_password_keeps_it() -> None:
 def test_an_empty_password_leaves_the_failure_text_alone() -> None:
     """An empty password is in every text; checking for it would drop every failure's text."""
     assert lib_mail._describe_failure(ConnectionError("connection reset by peer"), credentials=("user", "")) == "ConnectionError: connection reset by peer"
+
+
+# Sweep 9 reviewer B: each test below fails on the mutant it was written against.
+
+
+_SHORT_DUMMY = "DUMMY-PLANTED-5b"
+
+_LONG_DUMMY = _SHORT_DUMMY + "-suffix-7e1"
+
+
+class _QuotesTheLongerInput(SecretSafeModel):
+    credential_fields = frozenset({"long"})
+    short: str = ""
+    long: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _rule(cls, data: Any) -> Any:
+        raise ValueError(f"rejected {data['long']}")
+
+
+@pytest.mark.os_agnostic
+def test_a_text_that_begins_with_another_input_text_is_scrubbed_whole() -> None:
+    """The longer form is replaced first; replacing the shorter first left the longer one's tail in the message."""
+    with pytest.raises(ValidationError) as caught:
+        _QuotesTheLongerInput(short=_SHORT_DUMMY, long=_LONG_DUMMY)
+
+    rendered = str(caught.value) + json.dumps(caught.value.errors(include_url=False), default=str)
+    assert "suffix-7e1" not in rendered
+    assert _SHORT_DUMMY not in rendered

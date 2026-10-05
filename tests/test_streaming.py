@@ -10,6 +10,7 @@ import hashlib
 import io
 import smtplib
 import socket
+import ssl
 import threading
 import time
 from email import message_from_bytes
@@ -32,6 +33,7 @@ from smtp_test_server import ChunkingHandler as _ChunkingHandler
 from smtp_test_server import CollectingHandler as _CollectingHandler
 from smtp_test_server import run_server as _run_server
 from smtp_test_server import self_signed_cert
+from transport_doubles import RecordingTransport
 
 
 def _compose_message(
@@ -894,3 +896,105 @@ def test_the_cli_announces_the_local_hostname(
 
     assert result.exit_code == 0, result.output
     assert handler.ehlo_names == ["cli.example.test"]
+
+
+# Sweep 9 reviewer B: each test below fails on the mutant it was written against.
+
+
+def _message_ending_in_a_one_byte_chunk() -> bytes:
+    """A CRLF message one byte longer than a stream chunk: the last chunk is the LF alone."""
+    size = _transport.STREAM_CHUNK_SIZE + 1
+    message = bytearray(b"Subject: tail\r\nFrom: sender@example.com\r\nTo: rcpt@example.com\r\n\r\n")
+    line = b"z" * 76 + b"\r\n"
+    while len(message) + len(line) + 2 <= size:
+        message += line
+    message += b"z" * (size - len(message) - 2) + b"\r\n"
+    assert len(message) == size
+    assert message[-2:] == b"\r\n"
+    return bytes(message)
+
+
+@pytest.mark.os_agnostic
+def test_a_data_message_whose_last_chunk_is_one_byte_ends_without_a_blank_line(data_server: tuple[Any, _CollectingHandler]) -> None:
+    """The end-of-data line must follow the message's own final CRLF, not a second one."""
+    controller, handler = data_server
+    raw = _message_ending_in_a_one_byte_chunk()
+    delivery = DeliveryOptions(credentials=None, use_starttls=False, starttls_verify=True, timeout=10.0)
+
+    _transport.SmtplibTransport().deliver(
+        host=f"127.0.0.1:{controller.port}", sender="sender@example.com", recipient="rcpt@example.com", message=io.BytesIO(raw), delivery=delivery
+    )
+
+    assert handler.messages == [raw]
+
+
+class _ForwardingHandler(_CollectingHandler):
+    """Accepts every recipient with 251 (RFC 5321: user not local; will forward)."""
+
+    async def handle_RCPT(self, server: Any, session: Any, envelope: Any, address: str, rcpt_options: list[str]) -> str:
+        envelope.rcpt_tos.append(address)
+        return "251 2.1.5 user not local; will forward"
+
+
+@pytest.fixture
+def forwarding_server() -> Iterator[tuple[Any, _ForwardingHandler]]:
+    handler = _ForwardingHandler()
+    controller = _run_server(handler)
+    try:
+        yield controller, handler
+    finally:
+        controller.stop()
+
+
+@pytest.mark.os_agnostic
+def test_a_recipient_accepted_with_251_is_delivered(forwarding_server: tuple[Any, _ForwardingHandler]) -> None:
+    controller, handler = forwarding_server
+
+    assert lib_mail.send("sender@example.com", "rcpt@example.com", "s", "b", smtphosts=[f"127.0.0.1:{controller.port}"], use_starttls=False)
+
+    assert handler.rcpts == ["rcpt@example.com"]
+    assert len(handler.messages) == 1
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    ("plain", "html", "expected"),
+    [("plain only", "", "text/plain"), ("", "<p>html only</p>", "text/html"), ("both", "<p>both</p>", "multipart/alternative")],
+    ids=["plain", "html", "both"],
+)
+def test_the_body_has_an_alternative_part_only_when_both_bodies_are_given(plain: str, html: str, expected: str) -> None:
+    """A plain-only message with an empty HTML alternative shows as a blank mail in clients that prefer HTML."""
+    transport = RecordingTransport()
+
+    lib_mail.send("sender@example.com", "one@example.com", "s", plain, html, smtphosts=["smtp.example.com"], transport=transport)
+
+    message = message_from_bytes(transport.only.raw)
+    assert message.get_content_type() == expected
+    assert all(part.get_payload(decode=True) for part in message.walk() if not part.is_multipart())
+
+
+@pytest.mark.os_agnostic
+def test_a_non_ascii_password_authenticates_after_starttls(tmp_path: Path) -> None:
+    """RFC 3207: the capabilities are fetched again after TLS; AUTH is offered only then."""
+    cert_file, key_file = self_signed_cert(tmp_path)
+    tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    tls_context.load_cert_chain(certfile=cert_file, keyfile=key_file)
+    seen: list[bool] = []
+    handler = _CollectingHandler()
+    controller = _run_server(handler, tls_context=tls_context, authenticator=_utf8_authenticator(seen), auth_required=True)
+    try:
+        lib_mail.send(
+            "sender@example.com",
+            "rcpt@example.com",
+            "s",
+            "b",
+            smtphosts=[f"127.0.0.1:{controller.port}"],
+            use_starttls=True,
+            starttls_verify=False,
+            credentials=("user", _UTF8_DUMMY),
+        )
+    finally:
+        controller.stop()
+
+    assert seen == [True]
+    assert len(handler.messages) == 1

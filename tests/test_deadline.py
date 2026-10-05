@@ -845,3 +845,74 @@ def test_a_failed_session_closes_its_socket() -> None:
         server.close()
 
     assert [warning for warning in caught if issubclass(warning.category, ResourceWarning)] == []
+
+
+# Sweep 9 reviewer B: each test below fails on the mutant it was written against.
+
+
+class _Clock:
+    """A monotonic clock the test moves; the clock is the external edge the deadline reads."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+@pytest.mark.os_agnostic
+def test_a_later_address_that_connects_clears_the_ran_out_mark(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The first address ran out of its time (inside the clock slack), the second connected: nothing ran out."""
+    clock = _Clock()
+    with socket.create_server(("127.0.0.1", 0)) as listening, socket.create_server(("127.0.0.1", 0)) as silent:
+        good_port, slow_port = listening.getsockname()[1], silent.getsockname()[1]
+        addresses = socket.getaddrinfo("127.0.0.1", slow_port, 0, socket.SOCK_STREAM) + socket.getaddrinfo("127.0.0.1", good_port, 0, socket.SOCK_STREAM)
+
+        def connect(self: socket.socket, address: Any) -> None:
+            if address[1] == slow_port:
+                given = self.gettimeout()
+                assert given is not None
+                clock.now += given - 0.02  # used its time, within the slack, with time left for the next address
+                raise TimeoutError("timed out")
+            _REAL_CONNECT(self, address)
+
+        def resolve(*_args: Any, **_kwargs: Any) -> list[Any]:
+            return addresses
+
+        monkeypatch.setattr(socket, "getaddrinfo", resolve)
+        monkeypatch.setattr(socket.socket, "connect", connect)
+        monkeypatch.setattr(time, "monotonic", clock)
+        session = _transport._SessionSMTP(local_hostname="client.example.com", timeout=5.0)
+        connected = session._connect_in_time_left("127.0.0.1", good_port, timeout=5.0, ends_at=clock.now + 0.5)
+        connected.close()
+
+    assert session.connect_ran_out is False
+
+
+@pytest.mark.os_agnostic
+def test_an_os_timeout_on_a_later_address_counts_only_its_own_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A slow refusal on the first address must not make the second's instant OS timeout read as the deadline."""
+    clock = _Clock()
+    with socket.create_server(("127.0.0.1", 0)) as first, socket.create_server(("127.0.0.1", 0)) as second:
+        refusing_port, timing_out_port = first.getsockname()[1], second.getsockname()[1]
+        addresses = socket.getaddrinfo("127.0.0.1", refusing_port, 0, socket.SOCK_STREAM) + socket.getaddrinfo(
+            "127.0.0.1", timing_out_port, 0, socket.SOCK_STREAM
+        )
+
+        def connect(self: socket.socket, address: Any) -> None:
+            if address[1] == refusing_port:
+                clock.now += 0.3  # refused, slowly
+                raise ConnectionRefusedError(111, "Connection refused")
+            raise TimeoutError(110, "Connection timed out")  # the OS gave up at once
+
+        def resolve(*_args: Any, **_kwargs: Any) -> list[Any]:
+            return addresses
+
+        monkeypatch.setattr(socket, "getaddrinfo", resolve)
+        monkeypatch.setattr(socket.socket, "connect", connect)
+        monkeypatch.setattr(time, "monotonic", clock)
+        session = _transport._SessionSMTP(local_hostname="client.example.com", timeout=5.0)
+        with pytest.raises(TimeoutError):
+            session._connect_in_time_left("127.0.0.1", refusing_port, timeout=5.0, ends_at=clock.now + 0.6)
+
+    assert session.connect_ran_out is False

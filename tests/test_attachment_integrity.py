@@ -7,9 +7,11 @@ from __future__ import annotations
 # pyright: reportPrivateUsage=false
 import contextlib
 import gc
+import logging
 import math
 import os
 import sys
+import threading
 import warnings
 from email import message_from_bytes
 from pathlib import Path
@@ -1179,3 +1181,180 @@ def test_a_refusal_names_the_nearest_blocked_directory(tmp_path: Path) -> None:
         _send(RecordingTransport(), report, attachment_blocked_directories=frozenset({tmp_path, vault}))
 
     assert f'under blocked directory "{vault.resolve()}"' in caught.value.reason
+
+
+# Sweep 9 reviewer B: each test below fails on the mutant it was written against.
+
+
+@pytest.mark.os_agnostic
+def test_every_recipient_gets_the_attachment_bytes_encoded_once_for_the_call(tmp_path: Path) -> None:
+    """The body is encoded once per call: a file appended to after the first delivery does not change the second."""
+    report = tmp_path / "report.txt"
+    report.write_text("first version\n")
+
+    def append() -> None:
+        with report.open("a") as handle:
+            handle.write("appended after the first delivery\n")
+
+    transport = RecordingTransport(on_first_delivery=append)
+    lib_mail.send(
+        "sender@example.com",
+        ["one@example.com", "two@example.com"],
+        "s",
+        "b",
+        smtphosts=["smtp.example.com"],
+        attachment_file_paths=[report],
+        attachment_blocked_directories=frozenset(),
+        transport=transport,
+    )
+
+    bodies = [raw.split(b"\r\n\r\n", 1)[1] for raw in transport.messages.values()]
+    assert len(bodies) == 2
+    assert bodies[0] == bodies[1]
+
+
+def _warn_security(max_size: int | None) -> _attachments.AttachmentSecurityOptions:
+    return _attachments.AttachmentSecurityOptions(
+        allowed_extensions=None,
+        blocked_extensions=frozenset(),
+        allowed_directories=None,
+        blocked_directories=frozenset(),
+        max_size_bytes=max_size,
+        allow_symlinks=False,
+        raise_on_violation=False,
+        max_count=None,
+    )
+
+
+@pytest.mark.os_agnostic
+def test_in_warn_mode_an_attachment_read_before_the_grown_one_keeps_its_bytes(tmp_path: Path) -> None:
+    """The retry re-encodes the attachments already read; each must be read from its start again."""
+    steady = tmp_path / "steady.txt"
+    steady.write_bytes(b"steady bytes")
+    grown = tmp_path / "grown.txt"
+    grown.write_bytes(b"x" * 10)
+    attachments = _attachments.prepare_attachments((steady, grown), _warn_security(12), raise_on_missing=True)
+    try:
+        with grown.open("ab") as grow:
+            grow.write(b"y" * 200_000)
+        body = _compose.compose_body_once(_compose.MessageContent(plain_body="b", html_body="", attachments=attachments), raise_on_violation=False)
+        raw = b"Subject: s\r\n" + body.read()
+        body.close()
+    finally:
+        _attachments.close_attachments(attachments)
+
+    parts = {part.get_filename(): part.get_payload(decode=True) for part in message_from_bytes(raw).walk() if part.get_filename()}
+    assert parts == {"steady.txt": b"steady bytes"}
+
+
+@pytest.mark.os_agnostic
+def test_in_warn_mode_an_oversized_attachment_is_skipped_and_the_mail_is_sent(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """The size is checked when the file is opened; warn mode must skip it there too, not raise."""
+    big = tmp_path / "big.txt"
+    big.write_bytes(b"x" * 100)
+    small = tmp_path / "small.txt"
+    small.write_bytes(b"ok")
+    transport = RecordingTransport()
+
+    with caplog.at_level(logging.WARNING, logger="btx_lib_mail"):
+        assert lib_mail.send(
+            "sender@example.com",
+            "one@example.com",
+            "s",
+            "b",
+            smtphosts=["smtp.example.com"],
+            attachment_file_paths=[big, small],
+            attachment_blocked_directories=frozenset(),
+            attachment_max_size_bytes=10,
+            attachment_raise_on_security_violation=False,
+            transport=transport,
+        )
+
+    names = [part.get_filename() for part in message_from_bytes(transport.only.raw).walk() if part.get_filename()]
+    assert names == ["small.txt"]
+    assert "exceeds limit 10 bytes" in caplog.text
+
+
+@pytest.mark.os_agnostic
+def test_a_path_swapped_for_a_symlink_inside_the_open_is_refused_as_changed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """O_NOFOLLOW makes that open fail with ELOOP; it is a swap, not an unreadable file."""
+    report = tmp_path / "report.txt"
+    report.write_bytes(b"quarterly numbers")
+    secret = tmp_path / "secret.txt"
+    secret.write_bytes(b"NOT FOR MAIL")
+    real_open = os.open
+    swapped: list[bool] = []
+
+    def open_after_swap(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        if not swapped and os.fspath(path) in {os.fspath(report.resolve()), report.name}:
+            report.unlink()
+            report.symlink_to(secret)
+            swapped.append(True)
+        return real_open(path, flags, *args, **kwargs)
+
+    if not hasattr(os, "O_NOFOLLOW"):
+        pytest.skip("this platform has no O_NOFOLLOW")
+    monkeypatch.setattr(os, "open", open_after_swap)
+    transport = RecordingTransport()
+
+    with pytest.raises(AttachmentSecurityError) as caught:
+        lib_mail.send(
+            "sender@example.com",
+            "one@example.com",
+            "s",
+            smtphosts=["smtp.example.com"],
+            attachment_file_paths=[report],
+            attachment_blocked_directories=frozenset(),
+            transport=transport,
+        )
+
+    assert swapped, "positive control: the swap ran inside the open"
+    assert caught.value.violation_type is AttachmentViolation.CHANGED
+    assert transport.deliveries == []
+
+
+@pytest.mark.os_posix
+@pytest.mark.skipif(sys.platform == "win32", reason="needs mkfifo")
+def test_a_path_swapped_for_a_fifo_inside_the_open_is_refused_without_blocking(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """O_NONBLOCK keeps the open of a FIFO nobody writes to from waiting for a writer forever."""
+    report = tmp_path / "report.txt"
+    report.write_bytes(b"quarterly numbers")
+    real_open = os.open
+    swapped: list[bool] = []
+
+    def open_after_swap(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        if not swapped and os.fspath(path) in {os.fspath(report.resolve()), report.name}:
+            report.unlink()
+            os.mkfifo(report)
+            swapped.append(True)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", open_after_swap)
+    outcome: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            lib_mail.send(
+                "sender@example.com",
+                "one@example.com",
+                "s",
+                smtphosts=["smtp.example.com"],
+                attachment_file_paths=[report],
+                attachment_blocked_directories=frozenset(),
+                transport=RecordingTransport(),
+            )
+        except BaseException as error:
+            outcome.append(error)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(timeout=5)
+    if worker.is_alive():
+        # Release the blocked open so the thread does not outlive the test.
+        os.close(real_open(report, os.O_WRONLY | os.O_NONBLOCK))
+        worker.join(timeout=5)
+        pytest.fail("the open of a swapped-in FIFO blocked")
+    assert swapped, "positive control: the swap ran inside the open"
+    assert len(outcome) == 1
+    assert isinstance(outcome[0], AttachmentSecurityError)
+    assert outcome[0].violation_type is AttachmentViolation.CHANGED

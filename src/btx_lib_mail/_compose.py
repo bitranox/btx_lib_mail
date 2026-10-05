@@ -137,6 +137,11 @@ def compose_body_once(content: MessageContent, *, raise_on_violation: bool) -> I
 
     Returns:
         Spool positioned at offset 0, as returned by :func:`_compose_body`.
+
+    Raises:
+        AttachmentSecurityError: In strict mode; in warn mode too when the
+            violation names no attachment left to drop, since composing again
+            would meet it again and never end.
     """
     while True:
         try:
@@ -145,12 +150,11 @@ def compose_body_once(content: MessageContent, *, raise_on_violation: bool) -> I
             if raise_on_violation:
                 raise
             violation = exc
+        remaining = tuple(attachment for attachment in content.attachments if attachment.source != violation.path)
+        if len(remaining) == len(content.attachments):
+            raise violation
         log_violation(violation, str(violation.path))
-        content = MessageContent(
-            plain_body=content.plain_body,
-            html_body=content.html_body,
-            attachments=tuple(attachment for attachment in content.attachments if attachment.source != violation.path),
-        )
+        content = MessageContent(plain_body=content.plain_body, html_body=content.html_body, attachments=remaining)
 
 
 def envelope_header_lines(*, sender: str, subject: str, recipients: Sequence[str]) -> tuple[bytes, ...]:

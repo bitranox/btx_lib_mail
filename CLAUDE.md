@@ -104,7 +104,8 @@ tests/
   never a socket-level monkeypatch. The package's own code is not patched, except the
   `lib_mail.DEFAULT_TRANSPORT` seam and the fault injections in `test_secret_safety.py` that
   reach its fail-closed branches; the CLI plumbing is driven through `main()`
-- `_reset_conf_mail` autouse fixture restores global config between tests
+- The global `conf` is restored after every test that changes it: by the `_reset_conf_mail` autouse fixture in
+  `tests/test_lib_mail.py`, and through `monkeypatch` everywhere else
 - Markers: `os_agnostic`, `os_windows`, `os_macos`, `os_posix`, `os_linux`, `local_only`
   (real SMTP via `TEST_SMTP_*` env vars)
 - Doctests run via `--doctest-modules` in pytest config

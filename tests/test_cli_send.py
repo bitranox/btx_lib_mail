@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -21,16 +22,17 @@ from typing import TYPE_CHECKING, Any
 import click
 import lib_cli_exit_tools
 import pytest
+from click.testing import CliRunner
+from smtp_test_server import CollectingHandler, run_server
 from transport_doubles import RecordingTransport
 
-from btx_lib_mail import __init__conf__, conf
+from btx_lib_mail import __init__conf__, conf, lib_mail
 from btx_lib_mail import cli as cli_mod
 from btx_lib_mail.cli import CliContext, _output, _settings_sources
 from btx_lib_mail.errors import InvalidInputError
 
 if TYPE_CHECKING:
-    from click.testing import CliRunner, Result
-    from smtp_test_server import CollectingHandler
+    from click.testing import Result
 
 # pyright: reportPrivateUsage=false
 
@@ -1029,3 +1031,160 @@ def test_an_env_file_that_is_a_directory_is_refused_without_leaking_its_descript
             _settings_sources.read_env_file(tmp_path)
 
     assert _open_descriptor_count() == before
+
+
+# Sweep 9 reviewer B: each test below fails on the mutant it was written against.
+
+
+_CLI_MESSAGE = ["--subject", "S", "--body", "B"]
+
+
+@pytest.fixture
+def _no_ambient(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in list(os.environ):
+        if key.startswith("BTX_MAIL_"):
+            monkeypatch.delenv(key)
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.usefixtures("_no_ambient")
+def test_an_empty_environment_value_lets_the_env_file_supply_the_key(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """docs: a key set to an empty string in either source counts as unset."""
+    env_file = tmp_path / "mail.env"
+    env_file.write_text("BTX_MAIL_SENDER=from-file@example.com\n", encoding="utf-8")
+    monkeypatch.setenv("BTX_MAIL_SENDER", "")
+
+    result, transport = _invoke(
+        CliRunner(), ["send", "--host", "smtp.example.com", "--recipient", "one@example.com", "--env-file", str(env_file), *_CLI_MESSAGE]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert transport.only.sender == "from-file@example.com"
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.usefixtures("_no_ambient")
+def test_a_password_file_of_exactly_the_maximum_length_is_read() -> None:
+    password = "p" * 4096
+
+    result, transport = _invoke(
+        CliRunner(),
+        ["send", "--host", "smtp.example.com", "--recipient", "one@example.com", *_CLI_MESSAGE, "--username", "u", "--password-file", "-"],
+        input_text=password,
+    )
+
+    assert result.exit_code == 0, result.output
+    assert transport.only.options.credentials == ("u", password)
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.usefixtures("_no_ambient")
+def test_the_extension_option_overrides_the_environment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("BTX_MAIL_ATTACHMENT_BLOCKED_EXT", ".txt")
+    note = tmp_path / "note.txt"
+    note.write_text("payload", encoding="utf-8")
+    args = ["send", "--host", "smtp.example.com", "--recipient", "one@example.com", *_CLI_MESSAGE, "--attachment", str(note)]
+    args += ["--attachment-blocked-ext", ".pdf", "--attachment-blocked-dir", str(tmp_path / "nothing-blocked-here")]
+
+    result, transport = _invoke(CliRunner(), args)
+
+    assert result.exit_code == 0, result.output
+    assert [part.get_filename() for part in message_from_bytes(transport.only.raw).walk() if part.get_filename()] == ["note.txt"]
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.usefixtures("_no_ambient")
+def test_the_local_hostname_option_overrides_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BTX_MAIL_SMTP_LOCAL_HOSTNAME", "env.example.com")
+
+    result, transport = _invoke(
+        CliRunner(), ["send", "--host", "smtp.example.com", "--recipient", "one@example.com", *_CLI_MESSAGE, "--local-hostname", "cli.example.com"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert transport.only.options.local_hostname == "cli.example.com"
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.usefixtures("_no_ambient")
+def test_a_skipped_recipient_given_in_capitals_is_not_reported_as_delivered() -> None:
+    args = ["--json", "send", "--host", "smtp.example.com", "--recipient", "one@example.com,Not-An-Address", *_CLI_MESSAGE]
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(lib_mail.conf, "raise_on_invalid_recipient", False)
+        result, transport = _invoke(CliRunner(), args)
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["data"]["recipients"] == ["one@example.com"]
+    assert transport.recipients == ["one@example.com"]
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.usefixtures("_no_ambient")
+def test_the_short_json_flag_prints_the_envelope() -> None:
+    result, _transport = _invoke(CliRunner(), ["-j", "hello"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == {"ok": True, "command": "hello", "data": {"greeting": "Hello World"}, "skipped": []}
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.usefixtures("_no_ambient")
+def test_the_short_json_flag_reports_a_failure_as_json(capsys: pytest.CaptureFixture[str]) -> None:
+    """main() reads the JSON mode from argv before Click parses it, so -j must be recognised there too."""
+    exit_code = cli_mod.main(["-j", "validate-email", "not-an-address"])
+
+    envelope = json.loads(capsys.readouterr().out)
+    assert exit_code != 0
+    assert envelope["ok"] is False
+    assert envelope["error"]["type"] == "InvalidInputError"
+
+
+@pytest.mark.os_agnostic
+def test_the_cli_writes_a_skipped_attachment_warning_to_stderr_and_only_json_to_stdout(tmp_path: Path) -> None:
+    """docs/cli.md: warnings always go to stderr, never into the JSON. Run as a real process: pytest's own log handler would hide it."""
+    handler = CollectingHandler()
+    controller = run_server(handler)
+    tool = tmp_path / "tool.exe"
+    tool.write_bytes(b"MZ")
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("BTX_MAIL_")}
+    # The child imports the package the suite imports, not whatever the interpreter has installed.
+    environment["PYTHONPATH"] = str(Path(lib_mail.__file__).resolve().parents[1])
+    try:
+        completed = subprocess.run(  # noqa: S603 - argv is sys.executable plus literals and test paths
+            [
+                sys.executable,
+                "-m",
+                "btx_lib_mail",
+                "--json",
+                "send",
+                "--host",
+                f"127.0.0.1:{controller.port}",
+                "--recipient",
+                "one@example.com",
+                "--subject",
+                "S",
+                "--body",
+                "B",
+                "--no-starttls",
+                "--attachment",
+                str(tool),
+                "--attachment-warn",
+                "--attachment-blocked-dir",
+                str(tmp_path / "nothing-blocked-here"),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=environment,
+            cwd=tmp_path,
+            timeout=60,
+            check=False,
+        )
+    finally:
+        controller.stop()
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout)["ok"] is True
+    assert 'extension ".exe" is blocked' in completed.stderr
+    assert len(handler.messages) == 1

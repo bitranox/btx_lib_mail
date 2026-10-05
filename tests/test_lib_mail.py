@@ -18,7 +18,7 @@ import pytest
 from pydantic import SecretStr, ValidationError
 from transport_doubles import PerHostTransport, RecordingTransport
 
-from btx_lib_mail import ConfMail, InvalidInputError, _compose, _transport, _validation, lib_mail
+from btx_lib_mail import ConfMail, DeliveryError, InvalidInputError, _compose, _transport, _validation, lib_mail
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -2618,3 +2618,56 @@ def test_a_refused_host_of_exactly_the_quote_limit_is_quoted_whole() -> None:
 def test_a_refused_host_of_ordinary_length_keeps_its_whole_message() -> None:
     with pytest.raises(InvalidInputError, match=r'^invalid smtp port in "smtp\.example\.com:x"$'):
         lib_mail.validate_smtp_host("smtp.example.com:x")
+
+
+# Sweep 9 reviewer B: each test below fails on the mutant it was written against.
+
+
+@pytest.mark.os_agnostic
+def test_an_ehlo_name_of_exactly_255_characters_is_accepted() -> None:
+    name = "a" * 255
+
+    assert ConfMail(smtp_local_hostname=name).smtp_local_hostname == name
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("password", [None, SecretStr("")], ids=["no-password", "empty-password"])
+def test_a_user_name_without_a_password_sends_anonymously(password: SecretStr | None) -> None:
+    """docs/api.md: the password is ignored when either value is missing, so no AUTH is attempted."""
+    transport = RecordingTransport()
+    config = ConfMail(smtphosts=["smtp.example.com"], smtp_username="user", smtp_password=password)
+
+    assert lib_mail.send("sender@example.com", "one@example.com", "s", config=config, transport=transport)
+
+    assert transport.only.options.credentials is None
+
+
+@pytest.mark.os_agnostic
+def test_a_host_listed_twice_is_tried_once_per_recipient() -> None:
+    """docs/configuration.md: send() drops duplicate hosts."""
+    transport = PerHostTransport({("smtp.example.com", None): ConnectionRefusedError("refused")})
+
+    with pytest.raises(DeliveryError):
+        lib_mail.send("sender@example.com", "one@example.com", "s", smtphosts=["smtp.example.com", " smtp.example.com "], transport=transport)
+
+    assert transport.attempts == [("smtp.example.com", "one@example.com")]
+
+
+@pytest.mark.os_agnostic
+def test_an_attachment_of_an_unknown_type_is_sent_as_octet_stream(tmp_path: Path) -> None:
+    blob = tmp_path / "data.zz-unknown"
+    blob.write_bytes(b"\x00\x01")
+    transport = RecordingTransport()
+
+    lib_mail.send(
+        "sender@example.com",
+        "one@example.com",
+        "s",
+        smtphosts=["smtp.example.com"],
+        attachment_file_paths=[blob],
+        attachment_blocked_directories=frozenset(),
+        transport=transport,
+    )
+
+    [part] = [part for part in message_from_bytes(transport.only.raw).walk() if part.get_filename()]
+    assert part.get_content_type() == "application/octet-stream"
