@@ -20,10 +20,10 @@
 - Sensitive-path patterns `/.netrc`, `/.pgpass`, `/.git-credentials`, `/.docker/config.json`,
   `/.pypirc`, `/.npmrc` and `/gh/hosts.yml`.
 - `AttachmentViolation.CHANGED`: an attachment path that became a symlink or another file
-  after it was checked, or whose parent directory was swapped for a link (on Linux the
-  path is opened one component at a time and follows no link; on macOS and Windows the path
-  the operating system reports for the open file is checked again, so only a link into a
-  place the checks refuse is `CHANGED` there).
+  after it was checked (on POSIX also a directory or FIFO while it was being opened), or whose
+  parent directory was swapped for a link (on Linux the path is opened one component at a time
+  and follows no link; on macOS and Windows the path the operating system reports for the open
+  file is checked again, so only a link into a place the checks refuse is `CHANGED` there).
 - `AttachmentViolation.FILENAME`: an attachment whose file name holds a control character
   (Unicode category `Cc`: CR, LF, NUL, ESC, DEL, ...).
 - `ConfMail.smtp_delivery_deadline` / `send(delivery_deadline=)` / `--delivery-deadline` /
@@ -128,13 +128,24 @@
 - A blank entry in `attachment_blocked_directories` or `attachment_allowed_directories` is
   dropped, as a blank extension already was. `[""]`, what splitting an empty setting yields, named
   the working directory: it replaced the default blocked directories without tripping the
-  empty-blocklist refusal, and on the allowed side permitted the whole working directory.
+  empty-blocklist refusal, and on the allowed side permitted the whole working directory. A
+  directory given as a string is stripped of surrounding whitespace, as an extension already
+  was: `"/srv/public, /srv/hr".split(",")` made `" /srv/hr"` a relative rule under the working
+  directory, so `/srv/hr` was not blocked. A `pathlib` path is kept as given.
 - An attachment path longer than 4096 characters is quoted in messages and log lines by its first
   256 characters and its length, rather than whole.
-- On Windows, an attachment path or a directory rule longer than 32767 characters raised a bare
-  `ValueError` ("path too long for Windows"). Such an attachment now "can not be read
-  (ENAMETOOLONG)" on every platform, as Linux already reported it, and such a directory rule is
-  refused where it is given (`directory must not be longer than 32767 characters`).
+- On Windows, an attachment path or a directory rule longer than Windows can name (32767 UTF-16
+  code units, so an emoji counts two; a path can also grow past it while it is resolved) raised a
+  bare `ValueError` ("path too long for Windows"). Such an attachment now "can not be read
+  (ENAMETOOLONG)" on every platform, as Linux already reported it; such a directory rule is
+  refused where it is given (`directory must not be longer than 32767 UTF-16 code units`), or,
+  when only resolving makes it too long, when `send()` resolves it (`an attachment directory can
+  not be resolved (ENAMETOOLONG)`).
+- On POSIX, an attachment path or a directory rule holding a lone surrogate that has no bytes
+  (`"\ud800"`, unlike the surrogate an invalid UTF-8 byte in a real file name decodes to) raised a bare
+  `UnicodeEncodeError`. Such an attachment is now a `FILENAME` refusal, as a NUL in the path
+  is, and such a directory rule is refused where it is given (`directory can not be
+  encoded for the operating system`).
 - An attachment whose file name really ends in ` (deleted)` was judged, on Linux, as the path
   without that suffix, so a permitted file could be refused (or an unrelated path checked).
   The suffix the kernel appends to an unlinked file is now cut only when the open file has no

@@ -21,7 +21,17 @@ of sensitive files, dangerous executables, or oversized payloads.
    Linux it is exact, where `.SSH/config` is a different file.
 4. **Directory Restrictions**  -  By default, files from system directories
    (`/etc`, `/var`, `/root`, etc. on POSIX; `C:\Windows`, etc. on Windows) are
-   blocked. Use `attachment_allowed_directories` for whitelist mode.
+   blocked. Use `attachment_allowed_directories` for whitelist mode. A directory given
+   as a string is stripped of surrounding whitespace (`"/srv/a, /srv/b".split(",")`
+   blocks `/srv/b`, not a relative ` /srv/b`); a `pathlib` path is taken as given. A
+   rule that no operating system call can be handed (holding NUL, longer than 32767
+   UTF-16 code units, or with a lone surrogate POSIX cannot encode) is refused where it
+   is given, with `InvalidInputError` (`ConfigurationError` from `ConfMail`).
+   The rules and the attachment are compared as resolved paths: a symlink is followed,
+   but another NAME for the same directory is not recognised. A Windows loopback share
+   (`\\localhost\C$\Windows`, `\\?\UNC\localhost\C$\...`) or a Linux bind mount reaches
+   a blocked directory under a name the blocklist does not hold. For a hard boundary,
+   list what may be sent with `attachment_allowed_directories` rather than what may not.
 5. **Extension Filtering**  -  Dangerous extensions (`.sh`, `.exe`, `.bat`, `.py`,
    etc.) are blocked by default on every platform: the default is the union of the
    POSIX and Windows lists, because the RECIPIENT's system decides what an attachment
@@ -49,8 +59,10 @@ of sensitive files, dangerous executables, or oversized payloads.
    the path the operating system reports for the open file (`F_GETPATH`,
    `GetFinalPathNameByHandleW`; `/proc/self/fd` on Linux as well) is checked again, so
    only a link into a place the checks refuse is `CHANGED` there. Swapped for a directory
-   or a FIFO, it is reported like a missing
-   file (`AttachmentNotFoundError`). Swapping or deleting the file while delivery
+   or a FIFO before the open, it is reported like a missing file
+   (`AttachmentNotFoundError`, "can not be found"); swapped while it is being opened, it is
+   refused as `CHANGED` (on Windows a directory cannot be opened as a file, so there it
+   "can not be read (EACCES)"). Swapping or deleting the file while delivery
    runs changes nothing that is sent. The files are closed before `send()` returns.
 8. **File Name**  -  A file name holding a control character (CR, LF, NUL, ESC, DEL
    or any other Unicode `Cc` character), a bidirectional formatting character
@@ -60,8 +72,11 @@ of sensitive files, dangerous executables, or oversized payloads.
    another name (an RFC 2047 encoded word: `=?utf-8?b?aW52b2ljZS5leGU=?=` arrives as
    `invoice.exe`), is refused as `FILENAME`:
    the name becomes the attachment's `Content-Disposition` header, and a POSIX file
-   system allows all of them in a name. A path holding NUL anywhere is refused the same way,
-   before any file system call.
+   system allows all of them in a name. A path holding NUL anywhere, or a lone surrogate
+   POSIX has no bytes for (`"\ud800"`; Windows can name it), is refused the same way,
+   before any file system call. A path longer than the operating system can name (on
+   Windows 32767 UTF-16 code units, which a path can also reach while it is resolved) "can
+   not be read (ENAMETOOLONG)" on every platform.
 
 A refusal raises `AttachmentSecurityError`, whose `violation_type` is an
 `AttachmentViolation` member: `PATH_TRAVERSAL`, `SYMLINK`, `SENSITIVE_PATTERN`,
@@ -104,6 +119,12 @@ send(
     attachment_raise_on_security_violation=False,
 )
 ```
+
+An attachment that grows past its size limit while the message is composed is left out and
+the message composed again without it. One case raises even in warn mode: a violation found
+while composing that names no attachment still in the message. Leaving nothing out would
+change nothing, and composing again would meet the same violation, so it is raised instead
+of retried.
 
 ### Public Constants
 

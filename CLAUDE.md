@@ -177,7 +177,7 @@ Attachments are validated against multiple security checks:
 5. **Extension Filtering**  -  POSIX and Windows dangerous extensions (`.sh`, `.exe`, etc.) blocked on every platform
 6. **Size Limits**  -  Default 25 MiB (`attachment_max_size_bytes`), also enforced while reading
 7. **One open file**  -  each file opened once after its checks; a swapped path (or parent directory) is refused as `CHANGED`
-8. **File name**  -  a control character (Unicode `Cc`), a bidirectional formatting character or invalid Unicode in the name, or NUL in the path, is refused as `FILENAME`
+8. **File name**  -  a control character (Unicode `Cc`), a bidirectional formatting character or invalid Unicode in the name, or NUL (or a lone surrogate POSIX cannot encode) in the path, is refused as `FILENAME`
 
 ### Configuration Fields (ConfMail)
 
@@ -274,6 +274,13 @@ Deliberately accepted items - do not flag in future reviews unless the stated re
 - **A handle number freed by a Windows deadline cut can be taken by another thread's new socket**
   between the C-level close and the placeholder socket that holds it: a window of microseconds,
   never observed (every cut measured ended with WinError 10038).
+- **A closed or broken standard output gives the CLI a mode-dependent exit code**: `--json info`
+  exits 1 (click meets the broken pipe inside its own `echo` and exits 1), plain `info` exits 120
+  (the interpreter's exit flush meets it), and `docs/cli.md` says so under its exit code table.
+  Nobody reads the result either way. One code for both needs detecting click's private
+  `_PacifyFlushWrapper` swap, or redirecting the process's file descriptor 1 from inside a `main()`
+  that embedding applications call; both cost more than the difference. Re-open if a caller keys
+  on that code.
 - **A KeyboardInterrupt inside the watchdog's join** leaves the session's duplicate socket to the
   garbage collector: the window is microseconds (up to 50 ms when the deadline passed before the
   socket existed), and nothing leaks past collection.
