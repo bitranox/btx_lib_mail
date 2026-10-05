@@ -52,6 +52,21 @@
 
 ### Changed
 
+- `send(credentials=)` refuses any value that is not a `(user, password)` pair of `str`; only
+  `None` or an empty pair fall back to the configured credentials. `0`, `False` and `""` used
+  the configured ones silently. Likewise `smtphosts=0` or `False` is refused rather than
+  falling back to the configured hosts; `None`, `[]`, `()` and `""` still fall back.
+- `smtphosts` (the `send()` keyword and `ConfMail.smtphosts`) accepts one string or a list,
+  tuple, set or frozenset of strings; a generator or `range` is refused with the message a
+  wrong type always had. A lazy iterable was read whole before any entry was checked, so an
+  endless one ran out of memory.
+- A generator passed as `attachment_file_paths` is read only one entry past
+  `attachment_max_count` and refused when it yields more
+  (`attachment_file_paths yields more than attachment_max_count (N) paths`); an endless one
+  ran out of memory. A list or tuple is counted as before.
+- A NUL character in the SMTP user name or password is refused before any connection
+  (`the SMTP user name must not contain NUL`). AUTH PLAIN separates its fields with NUL, so a
+  lenient server read a different identity.
 - `str()` and `repr()` of a `ConfigurationError` drop pydantic's per-error
   `For further information visit https://errors.pydantic.dev/<version>/...` line, which named
   the installed pydantic version and described pydantic rather than the refused setting. The
@@ -103,6 +118,10 @@
 
 ### Fixed
 
+- An attachment whose file name really ends in ` (deleted)` was judged, on Linux, as the path
+  without that suffix, so a permitted file could be refused (or an unrelated path checked).
+  The suffix the kernel appends to an unlinked file is now cut only when the open file has no
+  link left.
 - A recipient holding KELVIN SIGN (U+212A) was lower-cased to an ASCII `k` before it was
   validated, so a non-ASCII address was silently rewritten to a different, valid one and sent
   there, while the same text as sender was refused. Only an ASCII recipient is lower-cased

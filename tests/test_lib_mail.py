@@ -2193,13 +2193,68 @@ def test_the_public_validators_refuse_a_value_of_the_wrong_type(validator: Any, 
 
 
 @pytest.mark.os_agnostic
+def test_nul_in_the_configured_user_name_is_refused_before_any_connection() -> None:
+    """AUTH PLAIN separates its fields with NUL, so a NUL in the user name splits it into another identity."""
+    transport = RecordingTransport()
+    config = ConfMail(smtphosts=["smtp.example.com"], smtp_username="victim\x00attacker", smtp_password=SecretStr("pw"))
+
+    with pytest.raises(InvalidInputError, match=r"^the SMTP user name must not contain NUL$"):
+        lib_mail.send(**_with(config=config, transport=transport))
+
+    assert transport.deliveries == []
+
+
+_CONFIGURED = ConfMail(smtphosts=["configured.example.com"], smtp_username="user", smtp_password=SecretStr("DUMMY-cfg"))
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        ({"credentials": 0}, "credentials must be a (user, password) pair of str"),
+        ({"credentials": False}, "credentials must be a (user, password) pair of str"),
+        ({"credentials": ""}, "credentials must be a (user, password) pair of str"),
+        ({"smtphosts": 0}, "smtphosts must be a string, list of strings, or tuple of strings"),
+        ({"smtphosts": False}, "smtphosts must be a string, list of strings, or tuple of strings"),
+    ],
+    ids=["credentials-0", "credentials-false", "credentials-empty-str", "hosts-0", "hosts-false"],
+)
+def test_a_falsy_override_of_the_wrong_type_is_refused(override: dict[str, Any], message: str) -> None:
+    """A falsy value of the wrong type silently used the configured hosts and credentials instead."""
+    transport = RecordingTransport()
+
+    with pytest.raises(InvalidInputError) as caught:
+        lib_mail.send(**{**_with(config=_CONFIGURED, transport=transport), **override})
+
+    assert str(caught.value) == message
+    assert transport.deliveries == []
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    "override",
+    [{"credentials": ()}, {"credentials": []}, {"smtphosts": []}, {"smtphosts": ()}, {"smtphosts": ""}],
+    ids=["credentials-empty-tuple", "credentials-empty-list", "hosts-empty-list", "hosts-empty-tuple", "hosts-empty-str"],
+)
+def test_an_empty_override_of_the_accepted_type_falls_back_to_the_configured_value(override: dict[str, Any]) -> None:
+    transport = RecordingTransport()
+
+    assert lib_mail.send(**{**_with(config=_CONFIGURED, transport=transport, smtphosts=None), **override})
+
+    assert [delivery.host for delivery in transport.deliveries] == ["configured.example.com"]
+    assert transport.deliveries[0].options.credentials == ("user", "DUMMY-cfg")
+
+
+@pytest.mark.os_agnostic
 @pytest.mark.parametrize(
     ("credentials", "message"),
     [
         (("user", "DUMMY-pw-" + chr(0xDCFF)), "the SMTP password must be valid Unicode text"),
         (("us" + chr(0xDCFF) + "er", "pw"), "the SMTP user name must be valid Unicode text"),
+        (("user", "DUMMY-pw\x00"), "the SMTP password must not contain NUL"),
+        (("victim\x00attacker", "pw"), "the SMTP user name must not contain NUL"),
     ],
-    ids=["password", "user"],
+    ids=["password", "user", "password-nul", "user-nul"],
 )
 def test_credentials_that_cannot_be_encoded_are_refused_before_any_connection(credentials: tuple[str, str], message: str) -> None:
     # An invalid UTF-8 byte from argv or an env file decodes to a lone surrogate; AUTH would

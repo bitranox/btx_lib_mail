@@ -242,13 +242,13 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
     )
 
     attachments = prepare_attachments(
-        coerce_attachment_paths(attachment_file_paths or ()),
+        coerce_attachment_paths(attachment_file_paths or (), max_count=security.max_count),
         security,
         raise_on_missing=resolved_raise_on_missing,
     )
     try:
         plan = _DeliveryPlan(
-            hosts=prepare_hosts(host_entries(smtphosts or settings.smtphosts)),
+            hosts=prepare_hosts(_requested_or_configured_hosts(smtphosts, settings)),
             delivery=_resolve_delivery_options(
                 settings=settings,
                 overrides=_DeliveryOverrides(
@@ -354,6 +354,26 @@ class _DeliveryPlan:
         object.__setattr__(self, "order", _HostOrder(self.hosts))
 
 
+def _requested_or_configured_hosts(smtphosts: object, settings: ConfMail) -> tuple[str, ...]:
+    """Return the hosts passed to send(), or the configured ones when none were.
+
+    None or an empty value of an accepted type (``[]``, ``()``, ``""``) falls back
+    to the settings; a value of any other type is refused, falsy or not.
+
+    Args:
+        smtphosts: The ``smtphosts`` keyword as the caller passed it.
+        settings: The configuration in use.
+
+    Returns:
+        The host entries, not yet normalised or validated.
+
+    Raises:
+        InvalidInputError: If smtphosts is not a string or a collection of strings.
+    """
+    requested = host_entries(smtphosts)
+    return requested if smtphosts else host_entries(settings.smtphosts)
+
+
 def _resolve_delivery_options(*, settings: ConfMail, overrides: _DeliveryOverrides) -> DeliveryOptions:
     """Resolve per-call overrides against configuration defaults.
 
@@ -370,8 +390,11 @@ def _resolve_delivery_options(*, settings: ConfMail, overrides: _DeliveryOverrid
     Raises:
         InvalidInputError: If the resolved credentials, timeout, local_hostname, or deadline is refused.
     """
-    # An empty pair falls back to the settings, as it always has.
-    credentials = require_credentials(overrides.credentials) if overrides.credentials else settings.resolved_credentials()
+    # None or an empty pair falls back to the settings, as it always has; any
+    # other value, falsy or not, must be a pair.
+    requested: object = overrides.credentials  # typed loosely: the annotation on send() is not enforced at run time
+    is_empty_pair = isinstance(requested, (tuple, list)) and not requested
+    credentials = settings.resolved_credentials() if requested is None or is_empty_pair else require_credentials(requested)
     check_credentials(credentials)
     use_starttls = _flag_or(overrides.use_starttls, setting=settings.smtp_use_starttls, field_name="use_starttls")
     starttls_verify = _flag_or(overrides.starttls_verify, setting=settings.smtp_starttls_verify, field_name="starttls_verify")

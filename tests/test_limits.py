@@ -16,6 +16,7 @@ from btx_lib_mail import ConfigurationError, ConfMail, InvalidInputError, send, 
 from btx_lib_mail.cli import CliContext, cli
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
     from click.testing import CliRunner
@@ -201,6 +202,56 @@ def test_attachments_up_to_the_ceiling_are_sent(tmp_path: Path) -> None:
     assert _send(transport, attachment_file_paths=_attachments(tmp_path, 2), attachment_blocked_directories=frozenset(), config=config) is True
 
     assert transport.recipients == ["one@example.com"]
+
+
+class _ReadTooFarError(Exception):
+    """Raised by a generator read past the point the code under test should have stopped."""
+
+
+def _endless(item: object, *, stop_after: int) -> Iterator[object]:
+    """Yield item for ever, as far as the caller is concerned; past stop_after reads, fail the test.
+
+    A regression reads the whole iterable, and an endless one would exhaust memory before the
+    test could fail; this one fails fast instead, naming why.
+    """
+    for _ in range(stop_after):
+        yield item
+    raise _ReadTooFarError(f"read more than {stop_after} entries of an endless iterable")
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("lazy", ["range", "generator"])
+def test_a_lazy_host_iterable_is_refused_before_it_is_read(lazy: str) -> None:
+    """A lazy iterable was read whole before any check, so an endless one ran out of memory."""
+    hosts = range(3) if lazy == "range" else _endless("smtp.example.com", stop_after=50)
+    with pytest.raises(InvalidInputError, match=r"^smtphosts must be a string, list of strings, or tuple of strings$"):
+        _send(RecordingTransport(), smtphosts=hosts)
+
+
+@pytest.mark.os_agnostic
+def test_an_endless_attachment_generator_is_refused_at_the_ceiling(tmp_path: Path) -> None:
+    """Read only one past attachment_max_count, so an endless generator is refused rather than exhausting memory."""
+    report = tmp_path / "report.txt"
+    report.write_text("hello")
+
+    with pytest.raises(InvalidInputError, match=r"^attachment_file_paths yields more than attachment_max_count \(3\) paths$"):
+        _send(
+            RecordingTransport(),
+            attachment_file_paths=_endless(report, stop_after=50),
+            attachment_blocked_directories=frozenset(),
+            config=ConfMail(attachment_max_count=3),
+        )
+
+
+@pytest.mark.os_agnostic
+def test_an_attachment_generator_within_the_ceiling_is_sent(tmp_path: Path) -> None:
+    """A generator such as Path.glob() stays accepted."""
+    for name in ("a.txt", "b.txt"):
+        (tmp_path / name).write_text(name)
+    transport = RecordingTransport()
+
+    assert _send(transport, attachment_file_paths=tmp_path.glob("*.txt"), attachment_blocked_directories=frozenset(), config=ConfMail(attachment_max_count=2))
+    assert len(transport.recipients) == 1
 
 
 @pytest.mark.os_agnostic

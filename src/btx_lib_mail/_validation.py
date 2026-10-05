@@ -188,24 +188,26 @@ def check_local_hostname(value: str, *, label: str) -> None:
 
 
 def check_credentials(credentials: tuple[str, str] | None) -> None:
-    """Refuse a user name or password that cannot be written as UTF-8, without echoing it.
+    """Refuse a user name or password AUTH cannot carry, without echoing it.
 
     A lone surrogate (an invalid UTF-8 byte in argv or an env file) would make
-    AUTH fail only after each host's connection was made.
+    AUTH fail only after each host's connection was made. AUTH PLAIN separates
+    its fields with NUL (RFC 4616), so a NUL inside one splits it into another
+    identity on a lenient server.
 
     Args:
         credentials: ``(user name, password)``, or ``None`` for no AUTH.
 
     Raises:
-        InvalidInputError: If either cannot be encoded as UTF-8.
+        InvalidInputError: If either cannot be encoded as UTF-8 or contains NUL.
     """
     if credentials is None:
         return
-    user, password = credentials
-    if not is_valid_unicode(user):
-        raise InvalidInputError("the SMTP user name must be valid Unicode text")
-    if not is_valid_unicode(password):
-        raise InvalidInputError("the SMTP password must be valid Unicode text")
+    for value, label in zip(credentials, ("the SMTP user name", "the SMTP password"), strict=True):
+        if not is_valid_unicode(value):
+            raise InvalidInputError(f"{label} must be valid Unicode text")
+        if "\x00" in value:
+            raise InvalidInputError(f"{label} must not contain NUL")
 
 
 def check_timeout(value: float) -> None:
@@ -469,14 +471,17 @@ def collect_host_inputs(value: Any) -> list[str]:
 def host_entries(value: object) -> tuple[str, ...]:
     """Return the host entries a caller passed: one string is one host, never one per character.
 
+    Only a collection is read: a lazy iterable (a generator, a ``range``) would
+    be read whole before any entry is checked, and an endless one never ends.
+
     Args:
-        value: ``None``, one host string, or an iterable of host strings.
+        value: ``None``, one host string, or a list, tuple, set or frozenset of host strings.
 
     Returns:
         The entries as given, not yet normalised or validated.
 
     Raises:
-        InvalidInputError: If value is not a string or iterable of strings.
+        InvalidInputError: If value is not a string or a collection of strings.
 
     Examples:
         >>> host_entries("smtp.example.com")
@@ -488,7 +493,7 @@ def host_entries(value: object) -> tuple[str, ...]:
         return ()
     if isinstance(value, str):
         return (value,)
-    if isinstance(value, Iterable):
+    if isinstance(value, (list, tuple, set, frozenset)):
         items = tuple(cast("Iterable[object]", value))
         if not all(isinstance(item, str) for item in items):
             raise InvalidInputError("smtphosts entries must be strings")

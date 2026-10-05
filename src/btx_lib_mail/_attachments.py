@@ -6,12 +6,13 @@ Private to btx_lib_mail: import the public names from `btx_lib_mail` or `btx_lib
 from __future__ import annotations
 
 import errno
+import itertools
 import os
 import pathlib
 import stat
 import sys
 import unicodedata
-from collections.abc import Iterable
+from collections.abc import Iterable, Sized
 from dataclasses import dataclass, field, replace
 from email.message import EmailMessage
 from enum import Enum
@@ -1056,12 +1057,16 @@ def _unavailable(path: pathlib.Path, problem: str, *, raise_on_missing: bool) ->
     )
 
 
-def coerce_attachment_paths(entries: object) -> tuple[pathlib.Path, ...]:
+def coerce_attachment_paths(entries: object, *, max_count: int | None = None) -> tuple[pathlib.Path, ...]:
     """Return each attachment entry as a path; a ``str`` or a ``pathlib`` path is accepted.
+
+    A lazy iterable (a generator such as ``Path.glob()``) is read only one entry
+    past max_count, so an endless one is refused instead of exhausting memory.
 
     Args:
         entries: The caller's attachment entries, typed loosely because the
             annotation on ``send()`` is not enforced at run time.
+        max_count: Most attachments one call accepts; None sets no limit.
 
     Returns:
         The entries as ``pathlib.Path`` objects, in order.
@@ -1069,7 +1074,8 @@ def coerce_attachment_paths(entries: object) -> tuple[pathlib.Path, ...]:
     Raises:
         InvalidInputError: If entries is a single path (``str``, ``bytes``,
             ``pathlib`` path) or not iterable rather than a sequence of
-            paths, or an entry is neither a ``str`` nor a ``pathlib`` path.
+            paths, an entry is neither a ``str`` nor a ``pathlib`` path, or a
+            lazy iterable yields more than max_count entries.
 
     Examples:
         >>> [path.name for path in coerce_attachment_paths(["/data/a.pdf", pathlib.Path("/data/b.pdf")])]
@@ -1078,11 +1084,18 @@ def coerce_attachment_paths(entries: object) -> tuple[pathlib.Path, ...]:
     # A bare string is iterable too, and would be checked one character at a time.
     if isinstance(entries, (str, bytes, pathlib.PurePath)) or not isinstance(entries, Iterable):
         raise InvalidInputError(f"attachment_file_paths must be a sequence of paths, got {type(entries).__name__}")
+    iterable = cast("Iterable[object]", entries)
+    # A collection is already in memory; only a lazy iterable is cut short.
+    limit = None if isinstance(entries, Sized) else max_count
+    if limit is not None:
+        iterable = itertools.islice(iterable, limit + 1)
     paths: list[pathlib.Path] = []
-    for entry in cast("Iterable[object]", entries):
+    for entry in iterable:
         if not isinstance(entry, (str, pathlib.PurePath)):
             raise InvalidInputError(f"attachment_file_paths entries must be paths, got {type(entry).__name__}")
         paths.append(pathlib.Path(entry))
+    if limit is not None and len(paths) > limit:
+        raise InvalidInputError(f"attachment_file_paths yields more than attachment_max_count ({limit}) paths")
     return tuple(paths)
 
 
