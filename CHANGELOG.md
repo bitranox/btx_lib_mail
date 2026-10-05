@@ -183,6 +183,16 @@
   bare `TypeError` or `AttributeError` from inside a check. It is
   `InvalidInputError("<field> must be str, got <type>")` now, before any delivery
   (`validate_smtp_host(None)` keeps `empty SMTP host`).
+- The keyword overrides of `send()` skipped the checks the matching `ConfMail` fields get. A
+  string given as an extension set was read one character at a time, so
+  `attachment_blocked_extensions=".exe"` blocked nothing and the file was sent; a string flag
+  such as `attachment_allow_symlinks="false"` read as `True`; `credentials="ab"` logged in as
+  user `a`. Directory sets, sizes, flags, `timeout`, `delivery_deadline`, `local_hostname`,
+  `credentials` and `config` of the wrong type raised a bare `AttributeError`, `TypeError` or
+  `ValueError`. Each is an `InvalidInputError` naming the keyword now, before any file is opened
+  or delivery made (`attachment_blocked_extensions must be a set, frozenset, list, or tuple of
+  strings, got str`, `timeout must be a number of seconds, got str`). A directory set may hold
+  strings, as the `ConfMail` field may.
 - CLI: a `./.env` the process may not read raised a bare `PermissionError` (exit 13); it is
   a usage error now, `./.env in the working directory can not be read (EACCES)`, exit 2.
 - CLI: with `--json`, a failure whose message held a path that is not valid UTF-8 crashed

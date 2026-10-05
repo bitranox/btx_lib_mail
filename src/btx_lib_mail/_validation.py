@@ -60,6 +60,114 @@ def require_text(value: object, *, field_name: str) -> None:
         raise InvalidInputError(f"{field_name} must be str, got {type(value).__name__}")
 
 
+def require_flag(value: object, *, field_name: str) -> bool:
+    """Return value when it is ``True`` or ``False``; refuse anything else.
+
+    A string such as ``"false"`` is truthy, so reading it as a flag would turn
+    the setting it names on.
+
+    Args:
+        value: The caller's value.
+        field_name: The name the message reports.
+
+    Returns:
+        The value, a ``bool``.
+
+    Raises:
+        InvalidInputError: If value is not a ``bool``.
+
+    Examples:
+        >>> require_flag("false", field_name="attachment_allow_symlinks")
+        Traceback (most recent call last):
+            ...
+        btx_lib_mail.errors.InvalidInputError: attachment_allow_symlinks must be True or False, got str
+    """
+    if not isinstance(value, bool):
+        raise InvalidInputError(f"{field_name} must be True or False, got {type(value).__name__}")
+    return value
+
+
+def require_number(value: object, *, field_name: str) -> float:
+    """Return value unchanged when it is an ``int`` or ``float`` (not a ``bool``).
+
+    Args:
+        value: The caller's value, a number of seconds.
+        field_name: The name the message reports.
+
+    Returns:
+        The value; its range is checked by :func:`check_seconds`.
+
+    Raises:
+        InvalidInputError: If value is not a number, or is a ``bool``.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise InvalidInputError(f"{field_name} must be a number of seconds, got {type(value).__name__}")
+    return value
+
+
+def require_ceiling(value: object, *, field_name: str) -> int:
+    """Return value when it is a positive ``int`` (not a ``bool``), with the message ConfMail gives.
+
+    Args:
+        value: The caller's size or count limit.
+        field_name: The name the message reports.
+
+    Returns:
+        The value.
+
+    Raises:
+        InvalidInputError: If value is not an ``int``, or not positive.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise InvalidInputError(f"{field_name} must be int, got {type(value).__name__}")
+    if value <= 0:
+        raise InvalidInputError(f"{field_name} must be positive, got {value}")
+    return value
+
+
+def require_collection(value: object, *, field_name: str, of_what: str = "") -> Iterable[object]:
+    """Return value when it is a set, frozenset, list or tuple; a bare string is refused.
+
+    A string is iterable too and would be read one character at a time: a
+    blocklist of ``".exe"`` became ``{".", ".e", ".x"}`` and blocked nothing.
+
+    Args:
+        value: The caller's collection.
+        field_name: The name the message reports.
+        of_what: What the entries are, appended to the message (``" of strings"``).
+
+    Returns:
+        The value.
+
+    Raises:
+        InvalidInputError: If value is not a set, frozenset, list or tuple.
+    """
+    if not isinstance(value, (frozenset, set, list, tuple)):
+        raise InvalidInputError(f"{field_name} must be a set, frozenset, list, or tuple{of_what}, got {type(value).__name__}")
+    return cast("Iterable[object]", value)
+
+
+def require_credentials(value: object) -> tuple[str, str]:
+    """Return value when it is a ``(user, password)`` pair of ``str``.
+
+    The message does not echo the value, which holds a password.
+
+    Args:
+        value: The caller's credentials.
+
+    Returns:
+        The pair as a tuple.
+
+    Raises:
+        InvalidInputError: If value is not a tuple or list of two ``str``.
+    """
+    if isinstance(value, (tuple, list)):
+        pair = cast("tuple[object, ...] | list[object]", value)
+        if len(pair) == 2 and isinstance(pair[0], str) and isinstance(pair[1], str):  # noqa: PLR2004 - a user and a password
+            return (pair[0], pair[1])
+    raise InvalidInputError("credentials must be a (user, password) pair of str")
+
+
 def check_local_hostname(value: str, *, label: str) -> None:
     """Raise unless value can be sent as the EHLO argument.
 

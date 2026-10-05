@@ -186,7 +186,10 @@ Windows, whose file systems do, and exactly on Linux:
 - `InvalidInputError` (a `ValueError`)  -  a refused sender, recipient, host, subject (over
   4096 characters, a line break, a control character other than TAB, or invalid Unicode), body (invalid Unicode), EHLO name, timeout or delivery deadline, an
   argument that is not a `str` where one is expected (`mail_subject must be str, got NoneType`),
-  or no valid recipient left after validation.
+  a keyword of the wrong type (a string as an extension or directory set, a flag that is not
+  `True` or `False`, a size that is not a positive `int`, `timeout` or `delivery_deadline` that
+  is not a number, `credentials` that are not a `(user, password)` pair of `str`, `config` that
+  is not a `ConfMail`), or no valid recipient left after validation.
 - `AttachmentNotFoundError` (a `FileNotFoundError`)  -  when a required attachment is missing,
   is not a regular file (a directory, a FIFO), or cannot be examined or opened (`can not be read
   (EACCES)`, the errno name in brackets; a symlink loop reads `ELOOP`) and `raise_on_missing_attachments` is `True`.

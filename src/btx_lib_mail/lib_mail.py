@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import smtplib
 from dataclasses import dataclass, field
-from typing import IO, TYPE_CHECKING, Final
+from typing import IO, TYPE_CHECKING, Final, TypeVar
 
 from ._attachments import (
     DANGEROUS_DIRECTORIES_POSIX,
@@ -35,6 +35,7 @@ from ._attachments import (
     AttachmentViolation,
     close_attachments,
     coerce_attachment_paths,
+    normalise_directories,
     normalise_extensions,
     prepare_attachments,
 )
@@ -52,6 +53,11 @@ from ._validation import (
     host_entries,
     prepare_hosts,
     prepare_recipients,
+    require_ceiling,
+    require_collection,
+    require_credentials,
+    require_flag,
+    require_number,
     require_text,
     validate_email_address,
     validate_smtp_host,
@@ -172,8 +178,11 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
         InvalidInputError: If the sender, a recipient (in strict mode), a
             host, the subject (over 4096 characters, a line break, a control
             character other than TAB, or invalid Unicode), the body (invalid Unicode),
-            `local_hostname`, `timeout` or `delivery_deadline` is refused, or
-            no valid recipient remains. Raised before the first delivery.
+            `local_hostname`, `timeout` or `delivery_deadline` is refused, a
+            keyword has the wrong type (a string as an extension or directory
+            set, a non-``bool`` flag, ``credentials`` that are not a pair of
+            ``str``, ``config`` that is not a ``ConfMail``), or no valid
+            recipient remains. Raised before the first delivery.
             Also a `ValueError`.
         AttachmentNotFoundError: If required attachments are missing and
             `raise_on_missing_attachments` is `True` on the config in use
@@ -200,7 +209,7 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
         ... )
         True
     """
-    settings = config if config is not None else conf
+    settings = _settings_from(config)
 
     require_text(mail_from, field_name="mail_from")
     # An overlong sender is reported by its length; the generic message below quotes the value.
@@ -213,8 +222,8 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
         raise InvalidInputError(f"invalid sender address: {mail_from!r}") from None
 
     # Resolve error handling parameters
-    resolved_raise_on_missing = raise_on_missing_attachments if raise_on_missing_attachments is not None else settings.raise_on_missing_attachments
-    resolved_raise_on_invalid = raise_on_invalid_recipient if raise_on_invalid_recipient is not None else settings.raise_on_invalid_recipient
+    resolved_raise_on_missing = _flag_or(raise_on_missing_attachments, setting=settings.raise_on_missing_attachments, field_name="raise_on_missing_attachments")
+    resolved_raise_on_invalid = _flag_or(raise_on_invalid_recipient, setting=settings.raise_on_invalid_recipient, field_name="raise_on_invalid_recipient")
 
     recipients = prepare_recipients(mail_recipients, raise_on_invalid=resolved_raise_on_invalid, max_count=settings.recipient_max_count)
 
@@ -318,18 +327,21 @@ def _resolve_delivery_options(*, settings: ConfMail, overrides: _DeliveryOverrid
     Raises:
         InvalidInputError: If the resolved credentials, timeout, local_hostname, or deadline is refused.
     """
-    credentials = overrides.credentials or settings.resolved_credentials()
+    # An empty pair falls back to the settings, as it always has.
+    credentials = require_credentials(overrides.credentials) if overrides.credentials else settings.resolved_credentials()
     check_credentials(credentials)
-    use_starttls = bool(overrides.use_starttls if overrides.use_starttls is not None else settings.smtp_use_starttls)
-    starttls_verify = bool(overrides.starttls_verify if overrides.starttls_verify is not None else settings.smtp_starttls_verify)
-    timeout = float(overrides.timeout if overrides.timeout is not None else settings.smtp_timeout)
+    use_starttls = _flag_or(overrides.use_starttls, setting=settings.smtp_use_starttls, field_name="use_starttls")
+    starttls_verify = _flag_or(overrides.starttls_verify, setting=settings.smtp_starttls_verify, field_name="starttls_verify")
+    timeout = float(require_number(overrides.timeout, field_name="timeout") if overrides.timeout is not None else settings.smtp_timeout)
     check_timeout(timeout)
     if overrides.local_hostname is not None:
+        require_text(overrides.local_hostname, field_name="local_hostname")
         check_local_hostname(overrides.local_hostname, label="local_hostname")
     local_hostname = overrides.local_hostname if overrides.local_hostname is not None else settings.smtp_local_hostname
+    deadline = settings.smtp_delivery_deadline
     if overrides.deadline is not None:
-        check_seconds(overrides.deadline, label="delivery_deadline")
-    deadline = overrides.deadline if overrides.deadline is not None else settings.smtp_delivery_deadline
+        deadline = require_number(overrides.deadline, field_name="delivery_deadline")
+        check_seconds(deadline, label="delivery_deadline")
     return DeliveryOptions(
         credentials=credentials,
         use_starttls=use_starttls,
@@ -381,15 +393,19 @@ def _resolve_attachment_security_options(  # noqa: PLR0913 - one keyword-only ov
     Returns:
         Frozen options object consumed by security validation.
     """
-    # Use sentinel pattern: None means "use default", explicit value overrides
-    # A keyword set is normalised like the ConfMail field, so {".EXE"} blocks x.exe here too.
-    allowed_ext = normalise_extensions(explicit_allowed_extensions) if explicit_allowed_extensions is not None else settings.attachment_allowed_extensions
-    blocked_ext = normalise_extensions(explicit_blocked_extensions) if explicit_blocked_extensions is not None else settings.attachment_blocked_extensions
-    allowed_dirs = explicit_allowed_directories if explicit_allowed_directories is not None else settings.attachment_allowed_directories
-    blocked_dirs = explicit_blocked_directories if explicit_blocked_directories is not None else settings.attachment_blocked_directories
-    max_size = explicit_max_size_bytes if explicit_max_size_bytes is not None else settings.attachment_max_size_bytes
-    allow_symlinks = explicit_allow_symlinks if explicit_allow_symlinks is not None else settings.attachment_allow_symlinks
-    raise_on_violation = explicit_raise_on_violation if explicit_raise_on_violation is not None else settings.attachment_raise_on_security_violation
+    # None means "use the settings"; an explicit value gets the checks the ConfMail field
+    # gives it and is normalised the same way, so {".EXE"} blocks x.exe here too.
+    allowed_ext = _extensions_or(explicit_allowed_extensions, setting=settings.attachment_allowed_extensions, field_name="attachment_allowed_extensions")
+    blocked_ext = _extensions_or(explicit_blocked_extensions, setting=settings.attachment_blocked_extensions, field_name="attachment_blocked_extensions")
+    allowed_dirs = _directories_or(explicit_allowed_directories, setting=settings.attachment_allowed_directories, field_name="attachment_allowed_directories")
+    blocked_dirs = _directories_or(explicit_blocked_directories, setting=settings.attachment_blocked_directories, field_name="attachment_blocked_directories")
+    max_size = settings.attachment_max_size_bytes
+    if explicit_max_size_bytes is not None:
+        max_size = require_ceiling(explicit_max_size_bytes, field_name="attachment_max_size_bytes")
+    allow_symlinks = _flag_or(explicit_allow_symlinks, setting=settings.attachment_allow_symlinks, field_name="attachment_allow_symlinks")
+    raise_on_violation = _flag_or(
+        explicit_raise_on_violation, setting=settings.attachment_raise_on_security_violation, field_name="attachment_raise_on_security_violation"
+    )
 
     return AttachmentSecurityOptions(
         allowed_extensions=allowed_ext,
@@ -401,6 +417,43 @@ def _resolve_attachment_security_options(  # noqa: PLR0913 - one keyword-only ov
         raise_on_violation=raise_on_violation,
         max_count=settings.attachment_max_count,
     )
+
+
+# The allowed sets may be None (no allowlist); the blocked sets never are.
+_ExtensionSetting = TypeVar("_ExtensionSetting", frozenset[str], "frozenset[str] | None")
+_DirectorySetting = TypeVar("_DirectorySetting", "frozenset[pathlib.Path]", "frozenset[pathlib.Path] | None")
+
+
+def _settings_from(config: object) -> ConfMail:
+    """Return the passed settings, or the global ``conf`` when none were passed.
+
+    Raises:
+        InvalidInputError: If config is neither ``None`` nor a ``ConfMail``.
+    """
+    if config is None:
+        return conf
+    if not isinstance(config, ConfMail):
+        raise InvalidInputError(f"config must be a ConfMail, got {type(config).__name__}")
+    return config
+
+
+def _flag_or(explicit: object, *, setting: bool, field_name: str) -> bool:
+    """Return the explicit flag when given (it must be a ``bool``), else the setting."""
+    return setting if explicit is None else require_flag(explicit, field_name=field_name)
+
+
+def _extensions_or(explicit: object, *, setting: _ExtensionSetting, field_name: str) -> frozenset[str] | _ExtensionSetting:
+    """Return the explicit extension set when given, checked and normalised, else the setting."""
+    if explicit is None:
+        return setting
+    return normalise_extensions(require_collection(explicit, field_name=field_name, of_what=" of strings"))
+
+
+def _directories_or(explicit: object, *, setting: _DirectorySetting, field_name: str) -> frozenset[pathlib.Path] | _DirectorySetting:
+    """Return the explicit directory set when given, checked and as paths, else the setting."""
+    if explicit is None:
+        return setting
+    return normalise_directories(require_collection(explicit, field_name=field_name))
 
 
 # Bounds one logged failure line so a hostile or chatty server reply cannot

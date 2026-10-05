@@ -201,6 +201,8 @@ redacted at the credential fields (`smtp_password`, `smtphosts`).
 * `AttachmentSecurityOptions` - the resolved rules for one call.
 * `coerce_attachment_paths(entries)` - each `str` or `pathlib` entry as a `Path`; any
   other type is an `InvalidInputError`.
+* `normalise_extensions(values)`, `normalise_directories(values)` - the extension and
+  directory sets as `ConfMail` and the `send()` keywords both read them.
 * `prepare_attachments(paths, security, *, raise_on_missing)` - refuses more paths than
   `security.max_count`, then for each path the path checks (`_validate_attachment_security`:
   NUL anywhere, traversal component, final-component symlink, then on the resolved path the
@@ -269,6 +271,9 @@ redacted at the credential fields (`smtp_password`, `smtphosts`).
 * `prepare_recipients`, `prepare_hosts`, `parse_smtp_host`, `collect_host_inputs`,
   `check_local_hostname`, `check_timeout`, `check_seconds` - the shared checks `send()`
   and `ConfMail` run.
+* `require_text`, `require_flag`, `require_number`, `require_ceiling`, `require_collection`,
+  `require_credentials` - the type checks for `send()` arguments and keyword overrides, each an
+  `InvalidInputError` naming the argument (`timeout must be a number of seconds, got str`).
 
 **Location:** src/btx_lib_mail/_validation.py
 

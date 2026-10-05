@@ -223,6 +223,33 @@ def normalise_extensions(values: Iterable[object]) -> frozenset[str]:
     return frozenset(normalised)
 
 
+def normalise_directories(values: Iterable[object]) -> frozenset[pathlib.Path]:
+    """Return values as a set of paths; each must be a ``str`` or a ``pathlib`` path.
+
+    Used for the `ConfMail` fields and for the `send()` keywords alike, so a list of
+    strings means the same directories wherever it is given.
+
+    Args:
+        values: Directory entries.
+
+    Returns:
+        The entries as ``pathlib.Path`` objects.
+
+    Raises:
+        InvalidInputError: If any value is neither a ``str`` nor a ``pathlib`` path.
+
+    Examples:
+        >>> sorted(path.name for path in normalise_directories(["/srv/a", pathlib.Path("/srv/b")]))
+        ['a', 'b']
+    """
+    normalised: set[pathlib.Path] = set()
+    for directory in values:
+        if not isinstance(directory, (str, pathlib.PurePath)):
+            raise InvalidInputError(f"directory must be a string or Path, got {type(directory).__name__}")
+        normalised.add(pathlib.Path(directory))
+    return frozenset(normalised)
+
+
 class AttachmentViolation(str, Enum):
     """Enumerate the closed set of attachment security violation categories.
 

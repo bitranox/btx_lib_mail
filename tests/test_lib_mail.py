@@ -2274,7 +2274,8 @@ def test_each_recipient_gets_its_own_to_header() -> None:
     recipients = ["first@example.com", "second@example.com", "third@example.com"]
     transport = RecordingTransport()
 
-    lib_mail.send(**{**_VALID_SEND, "mail_recipients": recipients, "transport": transport})
+    arguments: dict[str, Any] = {**_VALID_SEND, "mail_recipients": recipients, "transport": transport}
+    lib_mail.send(**arguments)
 
     to_headers = {recipient: message_from_bytes(raw)["To"] for recipient, raw in transport.messages.items()}
     assert to_headers == {recipient: recipient for recipient in recipients}
@@ -2293,3 +2294,80 @@ def test_split_header_lines_equal_folding_all_four_together() -> None:
     whole["Date"] = date
 
     assert block == _compose._header_lines(whole)
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        ({"attachment_blocked_extensions": ".exe"}, "attachment_blocked_extensions must be a set, frozenset, list, or tuple of strings, got str"),
+        ({"attachment_allowed_extensions": b".pdf"}, "attachment_allowed_extensions must be a set, frozenset, list, or tuple of strings, got bytes"),
+        ({"attachment_blocked_directories": "/etc"}, "attachment_blocked_directories must be a set, frozenset, list, or tuple, got str"),
+        ({"attachment_allowed_directories": [5]}, "directory must be a string or Path, got int"),
+        ({"attachment_max_size_bytes": "100"}, "attachment_max_size_bytes must be int, got str"),
+        ({"attachment_max_size_bytes": True}, "attachment_max_size_bytes must be int, got bool"),
+        ({"attachment_max_size_bytes": -5}, "attachment_max_size_bytes must be positive, got -5"),
+        ({"attachment_allow_symlinks": "false"}, "attachment_allow_symlinks must be True or False, got str"),
+        ({"attachment_raise_on_security_violation": 0}, "attachment_raise_on_security_violation must be True or False, got int"),
+        ({"raise_on_missing_attachments": "no"}, "raise_on_missing_attachments must be True or False, got str"),
+        ({"raise_on_invalid_recipient": None, "use_starttls": "yes"}, "use_starttls must be True or False, got str"),
+        ({"starttls_verify": 1}, "starttls_verify must be True or False, got int"),
+        ({"timeout": "abc"}, "timeout must be a number of seconds, got str"),
+        ({"timeout": object()}, "timeout must be a number of seconds, got object"),
+        ({"delivery_deadline": "5"}, "delivery_deadline must be a number of seconds, got str"),
+        ({"delivery_deadline": True}, "delivery_deadline must be a number of seconds, got bool"),
+        ({"local_hostname": 5}, "local_hostname must be str, got int"),
+        ({"credentials": ("user",)}, "credentials must be a (user, password) pair of str"),
+        ({"credentials": ("user", None)}, "credentials must be a (user, password) pair of str"),
+        ({"credentials": ("user", b"pw")}, "credentials must be a (user, password) pair of str"),
+        ({"credentials": "ab"}, "credentials must be a (user, password) pair of str"),
+        ({"config": {"smtphosts": ["smtp.example.com"]}}, "config must be a ConfMail, got dict"),
+    ],
+    ids=[
+        "blocked-ext-str",
+        "allowed-ext-bytes",
+        "blocked-dirs-str",
+        "allowed-dirs-entry",
+        "max-size-str",
+        "max-size-bool",
+        "max-size-negative",
+        "symlinks-str",
+        "raise-on-violation-int",
+        "raise-on-missing-str",
+        "starttls-str",
+        "verify-int",
+        "timeout-str",
+        "timeout-object",
+        "deadline-str",
+        "deadline-bool",
+        "local-hostname-int",
+        "credentials-one",
+        "credentials-none-password",
+        "credentials-bytes-password",
+        "credentials-str",
+        "config-dict",
+    ],
+)
+def test_a_keyword_of_the_wrong_type_is_refused_before_any_delivery(override: dict[str, Any], message: str) -> None:
+    """The keyword overrides get the checks ConfMail gives its fields; a str blocklist once switched blocking off."""
+    transport = RecordingTransport()
+    arguments: dict[str, Any] = {**_VALID_SEND, **override, "transport": transport}
+
+    with pytest.raises(InvalidInputError) as caught:
+        lib_mail.send(**arguments)
+
+    assert str(caught.value) == message
+    assert transport.deliveries == []
+
+
+@pytest.mark.os_agnostic
+def test_a_blocked_directory_keyword_given_as_strings_is_honoured(tmp_path: Path) -> None:
+    """A list of str is a set of directories, as it is for ConfMail; it used to raise AttributeError."""
+    secret = tmp_path / "vault" / "notes.txt"
+    secret.parent.mkdir()
+    secret.write_text("x")
+
+    with pytest.raises(lib_mail.AttachmentSecurityError) as caught:
+        lib_mail.send(**_with(attachment_file_paths=[secret], attachment_blocked_directories=[str(secret.parent)]))
+
+    assert caught.value.violation_type is lib_mail.AttachmentViolation.DIRECTORY
