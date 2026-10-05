@@ -12,7 +12,7 @@ import stat
 import sys
 import unicodedata
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from email.message import EmailMessage
 from enum import Enum
 from typing import IO, Final, cast
@@ -237,7 +237,8 @@ def normalise_directories(values: Iterable[object]) -> frozenset[pathlib.Path]:
         The entries as ``pathlib.Path`` objects.
 
     Raises:
-        InvalidInputError: If any value is neither a ``str`` nor a ``pathlib`` path.
+        InvalidInputError: If any value is neither a ``str`` nor a ``pathlib`` path,
+            or holds NUL (no directory can be named so, and resolving it raises).
 
     Examples:
         >>> sorted(path.name for path in normalise_directories(["/srv/a", pathlib.Path("/srv/b")]))
@@ -247,6 +248,8 @@ def normalise_directories(values: Iterable[object]) -> frozenset[pathlib.Path]:
     for directory in values:
         if not isinstance(directory, (str, pathlib.PurePath)):
             raise InvalidInputError(f"directory must be a string or Path, got {type(directory).__name__}")
+        if "\x00" in str(directory):
+            raise InvalidInputError("directory must not contain NUL")
         normalised.add(pathlib.Path(directory))
     return frozenset(normalised)
 
@@ -351,9 +354,12 @@ class AttachmentPayload:
 
 @dataclass(frozen=True)
 class AttachmentSecurityOptions:
-    """Capture the resolved attachment security options for a single send operation.
+    """Capture the attachment security options for a single send operation.
 
-    Validation helpers receive one immutable object.
+    Validation helpers receive one immutable object. The directory sets are
+    resolved by :func:`prepare_attachments`, and only when there is an
+    attachment to check, so a rule that cannot be resolved never fails a
+    message without attachments.
 
     Attributes:
         allowed_extensions: When set, only these extensions are allowed
@@ -379,23 +385,30 @@ class AttachmentSecurityOptions:
     raise_on_violation: bool
     max_count: int | None
 
-    def __post_init__(self) -> None:
-        """Resolve the directory sets once; every attachment is compared with these.
 
-        Raises:
-            InvalidInputError: If a relative directory cannot be resolved (the
-                working directory is gone).
-        """
-        if self.allowed_directories is not None:
-            object.__setattr__(self, "allowed_directories", _resolved_directories(self.allowed_directories))
-        object.__setattr__(self, "blocked_directories", _resolved_directories(self.blocked_directories))
+def _with_resolved_directories(security: AttachmentSecurityOptions) -> AttachmentSecurityOptions:
+    """Return security with its directory sets resolved once; every attachment is compared with these.
+
+    Raises:
+        InvalidInputError: If a directory cannot be resolved (a relative one whose
+            working directory is gone, or a symlink loop before Python 3.13).
+    """
+    allowed = security.allowed_directories
+    return replace(
+        security,
+        allowed_directories=None if allowed is None else _resolved_directories(allowed),
+        blocked_directories=_resolved_directories(security.blocked_directories),
+    )
 
 
 def _resolved_directories(directories: frozenset[pathlib.Path]) -> frozenset[pathlib.Path]:
     try:
         return frozenset(directory.resolve() for directory in directories)
     except OSError as exc:
-        raise InvalidInputError(f"an attachment directory can not be resolved ({_errno_name(exc.errno)})") from None
+        code = _errno_name(exc.errno)
+    except RuntimeError:  # a symlink loop, before Python 3.13
+        code = "ELOOP"
+    raise InvalidInputError(f"an attachment directory can not be resolved ({code})")
 
 
 def _errno_name(error_number: int | None) -> str:
@@ -932,11 +945,14 @@ def prepare_attachments(
         closed before the error propagates.
 
     Raises:
-        InvalidInputError: If there are more paths than `security.max_count`;
-            no file is checked or opened then.
+        InvalidInputError: If there are more paths than `security.max_count`, or
+            a directory rule cannot be resolved; no file is checked or opened then.
     """
     if security.max_count is not None and len(paths) > security.max_count:
         raise InvalidInputError(f"{len(paths)} attachments, more than attachment_max_count ({security.max_count})")
+    if not paths:
+        return ()
+    security = _with_resolved_directories(security)
     prepared: list[AttachmentPayload] = []
     try:
         for path in paths:

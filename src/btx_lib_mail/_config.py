@@ -295,7 +295,8 @@ class ConfMail(SecretSafeModel):
             Normalised directory set.
 
         Raises:
-            InvalidInputError: If value is not a set, frozenset, list, or tuple, or an entry is not a string or Path.
+            InvalidInputError: If value is not a set, frozenset, list, or tuple, or an entry is not a string or Path
+                or holds NUL.
         """
         if value is None:
             return None

@@ -936,3 +936,57 @@ def test_a_relative_directory_rule_whose_working_directory_is_gone_is_refused(tm
 
     with pytest.raises(InvalidInputError, match=r"^an attachment directory can not be resolved \(ENOENT\)$"):
         _send(RecordingTransport(), report, attachment_blocked_directories=frozenset({Path("private")}))
+
+
+@pytest.mark.os_agnostic
+def test_a_directory_rule_that_cannot_be_resolved_does_not_stop_a_send_without_attachments(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The rules were resolved for every send(), so a mail with no attachment failed over a rule it never used."""
+    if sys.platform == "win32":
+        pytest.skip("Windows refuses to delete the working directory of a running process")
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    monkeypatch.chdir(gone)
+    gone.rmdir()
+    transport = RecordingTransport()
+
+    _send(transport, "unused", attachment_file_paths=[], attachment_blocked_directories=frozenset({Path("private")}))
+
+    assert len(transport.recipients) == 3
+
+
+@pytest.mark.os_agnostic
+def test_a_directory_rule_that_is_a_symlink_loop_is_refused_as_unresolvable_or_compared_as_written(tmp_path: Path) -> None:
+    """Python before 3.13 raises a bare RuntimeError resolving a loop; 3.13 and later return the path unresolved."""
+    loop = tmp_path / "loop"
+    try:
+        loop.symlink_to(loop)
+    except OSError:
+        pytest.skip("this platform or account cannot create a symlink")
+    report = tmp_path / "report.txt"
+    report.write_text("x")
+    transport = RecordingTransport()
+
+    if sys.version_info < (3, 13):
+        with pytest.raises(InvalidInputError, match=r"^an attachment directory can not be resolved \(ELOOP\)$"):
+            _send(transport, report, attachment_blocked_directories=frozenset({loop}))
+        assert transport.recipients == []
+    else:
+        _send(transport, report, attachment_blocked_directories=frozenset({loop}))
+        assert len(transport.recipients) == 3
+
+
+@pytest.mark.os_agnostic
+def test_a_directory_rule_holding_nul_is_refused_by_conf_mail() -> None:
+    """NUL was accepted into the setting and broke every later send() with a bare ValueError."""
+    with pytest.raises(ConfigurationError, match="directory must not contain NUL"):
+        ConfMail.model_validate({"attachment_blocked_directories": ["/srv/a\x00b"]})
+
+
+@pytest.mark.os_agnostic
+def test_a_directory_rule_holding_nul_is_refused_by_send() -> None:
+    transport = RecordingTransport()
+
+    with pytest.raises(InvalidInputError, match=r"^directory must not contain NUL$"):
+        _send(transport, "unused", attachment_file_paths=[], attachment_allowed_directories=frozenset({"/srv/a\x00b"}))
+
+    assert transport.recipients == []

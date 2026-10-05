@@ -230,8 +230,14 @@
   rule that cannot be resolved then is an `InvalidInputError`.
 - The allowed and blocked directories were resolved again for every attachment and each
   attachment compared with every one: 100 attachments against 5000 blocked directories took
-  7.7 seconds. They are resolved once per call, and each attachment is checked against its
-  own ancestors (0.05 seconds).
+  7.7 seconds. They are resolved once per call that has an attachment, and each attachment
+  is checked against its own ancestors (0.05 seconds). A rule that cannot be resolved (a
+  relative one whose working directory is gone, or a symlink loop, which raised a bare
+  `RuntimeError` before Python 3.13) is an `InvalidInputError` naming `ELOOP` or the errno;
+  a call without attachments does not resolve the rules at all.
+- A directory rule holding NUL was accepted by `ConfMail` and the `send()` keywords and
+  raised a bare `ValueError` once an attachment was checked against it. It is refused where
+  it is given now (`directory must not contain NUL`).
 - A refused SMTP host was quoted whole in the message (a bad port, a missing bracket, two
   hosts in one entry, ...), so a host of a megabyte copied a megabyte into the exception and
   the log. A host longer than 300 characters is quoted by its first 300 and its length now;
