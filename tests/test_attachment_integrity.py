@@ -863,3 +863,16 @@ def test_a_parent_directory_swapped_for_an_equally_permitted_one_still_sends_wha
     assert handle is not None
     with handle:
         assert handle.read() == b"also fine"
+
+
+@pytest.mark.os_agnostic
+def test_an_attachment_path_below_a_regular_file_is_not_found(tmp_path: Path) -> None:
+    """ENOTDIR: a component is a file, so the path can never exist; that is missing, not unreadable."""
+    report = tmp_path / "file.txt"
+    report.write_text("x")
+    transport = RecordingTransport()
+
+    with pytest.raises(AttachmentNotFoundError, match=r"can not be found$"):
+        _send(transport, report / "report.txt")
+
+    assert transport.messages == {}

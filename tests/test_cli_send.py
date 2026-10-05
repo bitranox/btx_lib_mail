@@ -452,14 +452,26 @@ def test_a_fifo_with_no_writer_as_the_env_file_reads_as_empty_without_waiting(cl
     assert transport.only.sender == "from-option@example.com"
 
 
-@pytest.mark.os_posix
-@pytest.mark.skipif(sys.platform == "win32", reason="Windows refuses to open a directory as a file")
+@pytest.mark.os_agnostic
 def test_a_directory_as_the_env_file_is_refused(cli_runner: CliRunner, tmp_path: Path) -> None:
+    # click's own path check (dir_okay=False) refuses it, on every platform, before any open.
     result, transport = _invoke(cli_runner, ["send", "--env-file", str(tmp_path), *_ROUTE, *_MESSAGE])
 
     assert result.exit_code == 2
     assert "is a directory" in _flat(result.output)
     assert transport.deliveries == []
+
+
+@pytest.mark.os_agnostic
+def test_a_directory_given_to_the_env_file_reader_is_refused(tmp_path: Path) -> None:
+    """A path that became a directory after click's check is refused by the reader, not a bare IsADirectoryError.
+
+    POSIX opens a directory read-only and the type check refuses it; Windows refuses the open.
+    """
+    expected = r"can not be read \(EACCES\)" if sys.platform == "win32" else "is not a file, pipe or character device"
+
+    with pytest.raises(click.UsageError, match=expected):
+        _settings_sources.read_env_file(tmp_path)
 
 
 @pytest.mark.os_agnostic

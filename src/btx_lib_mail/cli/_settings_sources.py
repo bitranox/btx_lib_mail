@@ -130,10 +130,13 @@ def _read_bounded_env_file(path: Path) -> bytes:
         descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
     except OSError as exc:
         raise _env_file_refusal(path, f"can not be read ({errno.errorcode.get(exc.errno or 0, 'OSError')})") from None
+    # Checked on the raw descriptor: os.fdopen raises a bare IsADirectoryError for a
+    # directory, and the descriptor would leak with it.
+    mode = os.fstat(descriptor).st_mode
+    if not (stat.S_ISREG(mode) or stat.S_ISFIFO(mode) or stat.S_ISCHR(mode)):
+        os.close(descriptor)
+        raise _env_file_refusal(path, "is not a file, pipe or character device")
     with os.fdopen(descriptor, "rb") as handle:
-        mode = os.fstat(handle.fileno()).st_mode
-        if not (stat.S_ISREG(mode) or stat.S_ISFIFO(mode) or stat.S_ISCHR(mode)):
-            raise _env_file_refusal(path, "is not a file, pipe or character device")
         if sys.platform != "win32":
             os.set_blocking(handle.fileno(), True)
         data = handle.read(_ENV_FILE_MAX_BYTES + 1)
