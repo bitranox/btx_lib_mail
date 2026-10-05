@@ -8,6 +8,7 @@ Private to btx_lib_mail: import the public names from `btx_lib_mail` or `btx_lib
 
 from __future__ import annotations
 
+import _socket
 import base64
 import functools
 import smtplib
@@ -399,8 +400,11 @@ def _cut_session(smtp_connection: _SessionSMTP) -> bool:
         return False
     with suppress(OSError):
         handle.close()
+    # socket.close() leaves the handle open while smtplib's makefile() reader
+    # holds a reference to it, which is exactly while a read is blocked; the
+    # C-level close releases it regardless.
     with suppress(OSError):
-        live_socket.close()
+        _socket.socket.close(live_socket)
     return True
 
 

@@ -179,12 +179,23 @@ def test_the_deadline_reaches_the_transport_from_the_config_or_the_keyword() -> 
 class _SessionServer:
     """A plain SMTP session whose greeting or QUIT reply can drip, or whose QUIT reply can be refused.
 
+    With silent_at, the server stops answering for good: before the greeting ("greeting") or
+    once it has read the named command ("EHLO", "RCPT").
+
     Counts the messages it accepted, so a test can tell "delivered, then QUIT failed" from
     "not delivered".
     """
 
-    def __init__(self, *, drip_greeting: bool = False, drip_quit: bool = False, quit_reply: bytes = b"221 bye\r\n") -> None:
+    def __init__(
+        self,
+        *,
+        drip_greeting: bool = False,
+        drip_quit: bool = False,
+        quit_reply: bytes = b"221 bye\r\n",
+        silent_at: str | None = None,
+    ) -> None:
         self.drip_greeting = drip_greeting
+        self.silent_at = silent_at
         self.drip_quit = drip_quit
         self.quit_reply = quit_reply
         self.stored = 0
@@ -219,6 +230,9 @@ class _SessionServer:
     def _session(self, connection: socket.socket) -> None:
         with connection, connection.makefile("rb") as lines:
             try:
+                if self.silent_at == "greeting":
+                    self._stop.wait()
+                    return
                 self._send(connection, b"220 session.example.com ESMTP\r\n", drip=self.drip_greeting)
                 in_data = False
                 for line in lines:
@@ -229,6 +243,9 @@ class _SessionServer:
                             connection.sendall(b"250 queued\r\n")
                         continue
                     verb = line[:4].upper()
+                    if self.silent_at is not None and verb == self.silent_at.encode():
+                        self._stop.wait()
+                        return
                     if verb == b"QUIT":
                         self._send(connection, self.quit_reply, drip=self.drip_quit)
                         return
@@ -272,6 +289,21 @@ def _deliver_bounded(port: int) -> tuple[list[BaseException], float]:
 def test_a_deadline_bounds_a_greeting_that_drips() -> None:
     """The greeting is read while connecting; that read is inside the deadline too."""
     server = _SessionServer(drip_greeting=True)
+    try:
+        outcome, elapsed = _deliver_bounded(server.port)
+    finally:
+        server.close()
+
+    assert len(outcome) == 1
+    assert isinstance(outcome[0], TimeoutError)
+    assert elapsed < 4 * _DEADLINE
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("silent_at", ["greeting", "EHLO", "RCPT"])
+def test_a_deadline_ends_a_session_whose_server_falls_silent(silent_at: str) -> None:
+    """A peer that sends nothing at all is cut at the deadline, not at the socket timeout."""
+    server = _SessionServer(silent_at=silent_at)
     try:
         outcome, elapsed = _deliver_bounded(server.port)
     finally:
