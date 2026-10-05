@@ -265,8 +265,9 @@
   7.7 seconds. They are resolved once per call that has an attachment, and each attachment
   is checked against its own ancestors (0.05 seconds). A rule that cannot be resolved (a
   relative one whose working directory is gone, or a symlink loop, which raised a bare
-  `RuntimeError` before Python 3.13) is an `InvalidInputError` naming `ELOOP` or the errno;
-  a call without attachments does not resolve the rules at all.
+  `RuntimeError` before Python 3.13 and was kept as an inert rule from 3.13 on) is an
+  `InvalidInputError` naming `ELOOP` or the errno on every version; a call without
+  attachments does not resolve the rules at all.
 - A directory rule holding NUL was accepted by `ConfMail` and the `send()` keywords and
   raised a bare `ValueError` once an attachment was checked against it. It is refused where
   it is given now (`directory must not contain NUL`).

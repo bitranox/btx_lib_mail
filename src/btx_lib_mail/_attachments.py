@@ -392,7 +392,7 @@ def _with_resolved_directories(security: AttachmentSecurityOptions) -> Attachmen
 
     Raises:
         InvalidInputError: If a directory cannot be resolved (a relative one whose
-            working directory is gone, or a symlink loop before Python 3.13).
+            working directory is gone, or a symlink loop).
     """
     allowed = security.allowed_directories
     return replace(
@@ -404,10 +404,16 @@ def _with_resolved_directories(security: AttachmentSecurityOptions) -> Attachmen
 
 def _resolved_directories(directories: frozenset[pathlib.Path]) -> frozenset[pathlib.Path]:
     try:
-        return frozenset(directory.resolve() for directory in directories)
+        resolved = frozenset(directory.resolve() for directory in directories)
     except OSError as exc:
         code = _errno_name(exc.errno)
     except RuntimeError:  # a symlink loop, before Python 3.13
+        code = "ELOOP"
+    else:
+        # Python 3.13+ returns a loop unresolved, still a symlink: refused the
+        # same way, rather than kept as a rule no file can ever match.
+        if not any(_is_symlink(directory) for directory in resolved):
+            return resolved
         code = "ELOOP"
     raise InvalidInputError(f"an attachment directory can not be resolved ({code})")
 

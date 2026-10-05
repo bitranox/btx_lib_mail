@@ -982,8 +982,8 @@ def test_a_directory_rule_that_cannot_be_resolved_does_not_stop_a_send_without_a
 
 
 @pytest.mark.os_agnostic
-def test_a_directory_rule_that_is_a_symlink_loop_is_refused_as_unresolvable_or_compared_as_written(tmp_path: Path) -> None:
-    """Python before 3.13 raises a bare RuntimeError resolving a loop; 3.13 and later return the path unresolved."""
+def test_a_directory_rule_that_is_a_symlink_loop_is_refused_as_unresolvable(tmp_path: Path) -> None:
+    """Python before 3.13 raises a bare RuntimeError resolving a loop; 3.13 and later returned it unresolved, an inert rule."""
     loop = tmp_path / "loop"
     try:
         loop.symlink_to(loop)
@@ -993,13 +993,9 @@ def test_a_directory_rule_that_is_a_symlink_loop_is_refused_as_unresolvable_or_c
     report.write_text("x")
     transport = RecordingTransport()
 
-    if sys.version_info < (3, 13):
-        with pytest.raises(InvalidInputError, match=r"^an attachment directory can not be resolved \(ELOOP\)$"):
-            _send(transport, report, attachment_blocked_directories=frozenset({loop}))
-        assert transport.recipients == []
-    else:
+    with pytest.raises(InvalidInputError, match=r"^an attachment directory can not be resolved \(ELOOP\)$"):
         _send(transport, report, attachment_blocked_directories=frozenset({loop}))
-        assert len(transport.recipients) == 3
+    assert transport.recipients == []
 
 
 @pytest.mark.os_agnostic
