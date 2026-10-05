@@ -211,9 +211,11 @@ attached. The message is `can not send mail to "<recipient>" via host "<host>": 
 where `<description>` is built by `_describe_failure`: for an `smtplib.SMTPResponseException`
 (a server reply) it is `<ExceptionClassName> <smtp_code> <reply text>`; for any other `OSError`
 (including a custom `Transport`'s own `OSError`) it is `<ExceptionClassName>: <error text>`,
-logged as given; for anything else it is only the exception class name. The password in use,
-and its AUTH PLAIN and AUTH LOGIN base64 forms, are replaced by `[redacted]` wherever the text
-repeats them (a server may echo the AUTH line it rejected). The description text
+logged as given; for anything else it is only the exception class name. An
+`SMTPAuthenticationError` keeps only its code and RFC 3463 enhanced status
+(`SMTPAuthenticationError 535 5.7.8`): a server may echo the AUTH line it rejected in a form
+no search finds. Any other text holding the password in use, or its AUTH PLAIN or AUTH LOGIN
+base64 form (spaces and padding aside), is dropped, leaving the class name and code. The description text
 has its control characters (CR, LF, ESC, NUL, ...) replaced by spaces and is capped at 200
 characters; `<host>` and `<recipient>` are run through the same control-character cleaning
 (`printable`), but are not capped at 200 characters, since a description text is the one value

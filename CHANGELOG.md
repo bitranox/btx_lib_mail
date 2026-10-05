@@ -230,8 +230,11 @@
   private attribute a model validator set on the copy; assignments are serialised, so two
   threads assigning different fields of one instance both land.
 - A server that echoed the AUTH line it rejected put the AUTH PLAIN token (base64 of the user
-  name and password) into the per-host `WARNING`. The password and its AUTH PLAIN and AUTH
-  LOGIN encodings are replaced by `[redacted]` in that line now.
+  name and password) into the per-host `WARNING`. An authentication failure is logged with its
+  code and enhanced status only now (`SMTPAuthenticationError 535 5.7.8`), whatever shape the
+  echo takes (wrapped, unpadded, decoded, cut short). Any other failure text holding the
+  password or its AUTH encodings, spaces and padding aside, is dropped whole: replacing a short
+  password in place would show where it stood.
 - A relative attachment path while the working directory had been deleted raised a bare
   `FileNotFoundError`, even with `raise_on_missing_attachments=False`. It is reported like
   any file that cannot be examined now (`can not be read (ENOENT)`); a relative directory

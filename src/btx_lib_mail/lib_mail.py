@@ -20,6 +20,7 @@ configuration flow and delivery flow separated.
 from __future__ import annotations
 
 import base64
+import re
 import smtplib
 from dataclasses import dataclass, field
 from typing import IO, TYPE_CHECKING, Final, TypeVar
@@ -64,7 +65,6 @@ from ._validation import (
     validate_smtp_host,
 )
 from .errors import DeliveryError, InvalidInputError
-from .secret_safety import REDACTED_INPUT
 
 if TYPE_CHECKING:
     import pathlib
@@ -513,9 +513,13 @@ def _describe_failure(error: BaseException, *, credentials: tuple[str, str] | No
     `smtplib.SMTPException` is one): for the stdlib transport it comes from
     the OS, the TLS layer or the server reply. A custom `Transport` can raise
     an `OSError` with any text, and that text is logged as given. Anything
-    else is logged by type name only. A server that echoes the rejected AUTH
-    line quotes the password in a form of its own, so the password and its
-    AUTH PLAIN and AUTH LOGIN encodings are replaced in the text.
+    else is logged by type name only. A server that rejects AUTH can echo the
+    AUTH line in a form of its own (wrapped, unpadded, decoded, cut short), which
+    no search for the password finds reliably, so an authentication failure
+    keeps its reply code and RFC 3463 enhanced status only. Any other text that
+    holds the password, or its AUTH PLAIN or AUTH LOGIN encoding, once spaces
+    and base64 padding are removed, is dropped whole: replacing a short
+    password in place would show every position it stood at.
 
     Args:
         error: The exception raised while delivering to one host.
@@ -529,36 +533,58 @@ def _describe_failure(error: BaseException, *, credentials: tuple[str, str] | No
         >>> _describe_failure(ValueError("anything"))
         'ValueError'
         >>> _describe_failure(smtplib.SMTPAuthenticationError(535, b"5.7.8 invalid"))
-        'SMTPAuthenticationError 535 5.7.8 invalid'
+        'SMTPAuthenticationError 535 5.7.8'
+        >>> _describe_failure(smtplib.SMTPDataError(554, b"5.6.0 rejected"))
+        'SMTPDataError 554 5.6.0 rejected'
     """
     name = type(error).__name__
     if isinstance(error, smtplib.SMTPResponseException):
         reply = error.smtp_error
         text = reply.decode("utf-8", "replace") if isinstance(reply, bytes) else str(reply)
-        return printable(_without_password(f"{name} {error.smtp_code} {text}", credentials))[:_FAILURE_TEXT_LIMIT]
+        if isinstance(error, smtplib.SMTPAuthenticationError):
+            return printable(" ".join([name, str(error.smtp_code), *_enhanced_status(text)]))
+        described = f"{name} {error.smtp_code} {text}"
+        return printable(described if not _holds_password(described, credentials) else f"{name} {error.smtp_code}")[:_FAILURE_TEXT_LIMIT]
     if isinstance(error, OSError):
-        return printable(_without_password(f"{name}: {error}", credentials))[:_FAILURE_TEXT_LIMIT]
+        described = f"{name}: {error}"
+        return printable(described if not _holds_password(described, credentials) else name)[:_FAILURE_TEXT_LIMIT]
     return name
 
 
-def _without_password(text: str, credentials: tuple[str, str] | None) -> str:
-    """Replace the password, and the base64 forms SMTP AUTH sends it in, wherever text repeats them.
+# An RFC 3463 enhanced status code: class, subject and detail.
+_ENHANCED_STATUS: Final = re.compile(r"[245]\.\d{1,3}\.\d{1,3}")
+
+
+def _enhanced_status(text: str) -> list[str]:
+    """Return the enhanced status code that opens a reply text, as a list of none or one."""
+    first = text.split(maxsplit=1)[:1]
+    return first if first and _ENHANCED_STATUS.fullmatch(first[0]) else []
+
+
+def _holds_password(text: str, credentials: tuple[str, str] | None) -> bool:
+    """Whether text holds the password, or the base64 form SMTP AUTH sends it in, spaces and padding aside.
 
     Examples:
-        >>> _without_password("535 AUTH PLAIN AHUAcHc= rejected", ("u", "pw"))
-        '535 AUTH PLAIN [redacted] rejected'
+        >>> _holds_password("535 AUTH PLAIN AHUAc Hc rejected", ("u", "pw"))
+        True
+        >>> _holds_password("535 rejected", ("u", "pw"))
+        False
     """
     if credentials is None or not credentials[1]:
-        return text
+        return False
     user, password = credentials
+    squeezed = _squeezed(text)
     forms = (
         base64.b64encode(f"\0{user}\0{password}".encode()).decode("ascii"),  # AUTH PLAIN
         base64.b64encode(password.encode()).decode("ascii"),  # AUTH LOGIN
         password,
     )
-    for form in forms:
-        text = text.replace(form, REDACTED_INPUT)
-    return text
+    return any(_squeezed(form) in squeezed for form in forms)
+
+
+def _squeezed(text: str) -> str:
+    # A server wraps a long echo over reply lines and may drop the base64 padding.
+    return "".join(text.split()).replace("=", "")
 
 
 def _deliver_to_any_host(*, sender: str, recipient: str, message: IO[bytes], plan: _DeliveryPlan) -> bool:

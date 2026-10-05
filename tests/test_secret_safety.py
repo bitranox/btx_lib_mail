@@ -102,15 +102,15 @@ def test_a_failed_host_logs_no_traceback_and_no_auth_string(caplog: pytest.LogCa
 @pytest.mark.os_agnostic
 def test_a_failed_host_logs_the_smtp_code_and_server_text(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.WARNING, logger="btx_lib_mail")
-    error = smtplib.SMTPAuthenticationError(535, b"5.7.8 Authentication credentials invalid")
+    error = smtplib.SMTPDataError(554, b"5.6.0 Message content rejected")
 
     with pytest.raises(RuntimeError):
         _send_through(RefusingTransport(error))
 
     record = _failure_records(caplog)[0]
-    assert "SMTPAuthenticationError 535 5.7.8 Authentication credentials invalid" in record.getMessage()
-    assert record.__dict__["error_type"] == "SMTPAuthenticationError"
-    assert record.__dict__["smtp_code"] == 535
+    assert "SMTPDataError 554 5.6.0 Message content rejected" in record.getMessage()
+    assert record.__dict__["error_type"] == "SMTPDataError"
+    assert record.__dict__["smtp_code"] == 554
 
 
 class _FailingFormatter(logging.Formatter):
@@ -178,9 +178,9 @@ def test_a_long_server_reply_is_bounded() -> None:
 
 @pytest.mark.os_agnostic
 def test_a_server_reply_cannot_forge_log_lines() -> None:
-    reply = b"5.7.8 denied\r\nWARNING forged line\x1b[31m\x00"
-    described = lib_mail._describe_failure(smtplib.SMTPAuthenticationError(535, reply))
-    assert described.startswith("SMTPAuthenticationError 535 5.7.8 denied"), "positive control: the reply text is kept"
+    reply = b"5.6.0 denied\r\nWARNING forged line\x1b[31m\x00"
+    described = lib_mail._describe_failure(smtplib.SMTPDataError(554, reply))
+    assert described.startswith("SMTPDataError 554 5.6.0 denied"), "positive control: the reply text is kept"
     assert "forged line" in described, "positive control: text after the line break is kept, on the same line"
     assert all(character.isprintable() for character in described)
 
@@ -1671,7 +1671,7 @@ def test_a_server_echoing_the_auth_line_does_not_put_the_credential_in_the_log(c
     with caplog.at_level(logging.WARNING, logger="btx_lib_mail"), pytest.raises(DeliveryError):
         lib_mail.send("sender@example.com", "one@example.com", "s", smtphosts=["smtp.example.com"], credentials=(user, password), transport=transport)
 
-    assert "5.7.8 rejected" in caplog.text, "positive control: the reply is logged"
+    assert "SMTPAuthenticationError 535 5.7.8" in caplog.text, "positive control: the failure is logged"
     assert login_line not in caplog.text
     assert_never_logged(caplog, password, user=user)
 
@@ -1829,3 +1829,55 @@ def test_two_threads_assigning_different_fields_both_land() -> None:
     assert not paused.is_alive()
     assert not other.is_alive()
     assert (model.first, model.second) == (1, 2)
+
+
+_USER = "mailer@example.com"
+_PASSWORD = "S3cretPassw0rd!"
+_PLAIN_TOKEN = base64.b64encode(f"\0{_USER}\0{_PASSWORD}".encode()).decode()
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    "reply",
+    [
+        f"5.7.8 rejected: AUTH PLAIN {_PLAIN_TOKEN[:16]}\n{_PLAIN_TOKEN[16:]}".encode(),
+        f"5.7.8 rejected token {_PLAIN_TOKEN.rstrip('=')}".encode(),
+        f"5.7.8 bad login {_USER}:{_PASSWORD}".encode(),
+        f"5.7.8 rejected: AUTH PLAIN {_PLAIN_TOKEN[:12]}...".encode(),
+    ],
+    ids=["wrapped", "unpadded", "decoded", "truncated"],
+)
+def test_an_authentication_failure_keeps_its_code_and_status_but_not_the_server_text(reply: bytes) -> None:
+    """A server that echoes the AUTH line in a shape of its own defeats any search for the password."""
+    described = lib_mail._describe_failure(smtplib.SMTPAuthenticationError(535, reply), credentials=(_USER, _PASSWORD))
+
+    assert described == "SMTPAuthenticationError 535 5.7.8"
+
+
+@pytest.mark.os_agnostic
+def test_an_authentication_failure_without_an_enhanced_status_keeps_its_code() -> None:
+    described = lib_mail._describe_failure(smtplib.SMTPAuthenticationError(535, b"Authentication failed"), credentials=(_USER, _PASSWORD))
+
+    assert described == "SMTPAuthenticationError 535"
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    ("error", "credentials"),
+    [
+        (ConnectionError(f"login token {_PLAIN_TOKEN[:20]} {_PLAIN_TOKEN[20:]}"), (_USER, _PASSWORD)),
+        (ConnectionError(f"login token {_PLAIN_TOKEN.rstrip('=')}"), (_USER, _PASSWORD)),
+        (ConnectionError("connection reset by peer"), ("user", "e")),
+    ],
+    ids=["split", "unpadded", "one-character-password"],
+)
+def test_another_failure_whose_text_carries_the_password_is_named_only(error: OSError, credentials: tuple[str, str]) -> None:
+    """Replacing a one-character password in the text showed every place it stood, so the password itself."""
+    assert lib_mail._describe_failure(error, credentials=credentials) == type(error).__name__
+
+
+@pytest.mark.os_agnostic
+def test_a_failure_whose_text_does_not_carry_the_password_keeps_it() -> None:
+    described = lib_mail._describe_failure(ConnectionError("connection reset by peer"), credentials=(_USER, _PASSWORD))
+
+    assert described == "ConnectionError: connection reset by peer"
