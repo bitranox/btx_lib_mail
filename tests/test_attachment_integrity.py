@@ -508,6 +508,23 @@ def test_a_nul_in_an_attachment_path_is_a_filename_refusal_before_any_file_syste
 
 
 @pytest.mark.os_linux
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="the component walk and /proc/self/fd are Linux-only")
+def test_sending_an_attachment_from_a_deep_directory_leaks_no_descriptor(tmp_path: Path) -> None:
+    """The walk opens one descriptor per directory; each must be closed, or a long-running sender reaches EMFILE."""
+    deep = tmp_path / "a" / "b" / "c"
+    deep.mkdir(parents=True)
+    report = deep / "report.txt"
+    report.write_text("hello")
+    assert _send(RecordingTransport(), report)  # warm-up: imports, logger handlers
+    before = len(list(Path("/proc/self/fd").iterdir()))
+
+    for _ in range(5):
+        assert _send(RecordingTransport(), report)
+
+    assert len(list(Path("/proc/self/fd").iterdir())) == before
+
+
+@pytest.mark.os_linux
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="macOS and Windows file systems refuse a name that is not valid UTF-8")
 @pytest.mark.parametrize("strict", [True, False], ids=["strict", "warn"])
 def test_an_attachment_name_that_is_not_valid_unicode_is_a_filename_refusal(tmp_path: Path, strict: bool) -> None:

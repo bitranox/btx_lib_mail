@@ -578,6 +578,89 @@ def test_conf_mail_refuses_a_number_of_seconds_no_timer_can_wait(field: str, val
         ConfMail.model_validate({field: value})
 
 
+def _send_with(**overrides: Any) -> RecordingTransport:
+    transport = RecordingTransport()
+    send("sender@example.com", "one@example.com", "s", smtphosts=["smtp.example.com"], transport=transport, **overrides)
+    return transport
+
+
+@pytest.mark.os_agnostic
+def test_the_longest_timeout_is_two_to_the_31_milliseconds() -> None:
+    """The ceiling is the Windows socket limit the docs name, not whatever the constant says."""
+    assert _send_with(timeout=2_147_483).deliveries
+    with pytest.raises(InvalidInputError, match="must be at most 2147483 seconds"):
+        _send_with(timeout=2_147_484)
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("keyword", ["timeout", "delivery_deadline"])
+def test_an_int_too_long_to_print_is_refused_as_invalid_input(keyword: str) -> None:
+    """str() refuses an int of more than 4300 digits, so echoing it raised a bare ValueError."""
+    with pytest.raises(InvalidInputError, match=r"must be at most 2147483 seconds$"):
+        _send_with(**{keyword: 10**5000})
+
+
+@pytest.mark.os_agnostic
+def test_an_int_timeout_reaches_the_transport_as_a_float() -> None:
+    timeout = _send_with(timeout=7).deliveries[0].options.timeout
+
+    assert type(timeout) is float
+    assert timeout == 7.0
+
+
+@pytest.mark.os_agnostic
+def test_a_refused_zero_timeout_reads_as_a_float() -> None:
+    with pytest.raises(InvalidInputError, match=r"smtp_timeout must be positive, got 0\.0$"):
+        _send_with(timeout=0)
+
+
+@pytest.mark.os_agnostic
+def test_a_connect_timing_out_on_the_socket_timeout_is_not_called_the_deadline() -> None:
+    connection = _transport._SessionSMTP(local_hostname="client.example.com", timeout=0.2)
+    with _unanswered_port() as port, pytest.raises(TimeoutError) as raised, _transport._session_deadline(connection, 30):
+        connection.connect("127.0.0.1", port)
+
+    assert "delivery deadline" not in str(raised.value)
+
+
+@pytest.mark.os_agnostic
+def test_a_connect_started_with_no_time_left_fails_as_the_deadline() -> None:
+    connection = _transport._SessionSMTP(local_hostname="client.example.com", timeout=_SOCKET_TIMEOUT)
+    with _unanswered_port() as port, pytest.raises(TimeoutError, match="delivery deadline of 30 seconds"), _transport._session_deadline(connection, 30):
+        connection.ends_at = time.monotonic() - 1  # the watchdog's timer is still 30 seconds away
+        connection.connect("127.0.0.1", port)
+
+
+@pytest.mark.os_agnostic
+def test_a_session_with_a_deadline_closes_its_duplicate_descriptor() -> None:
+    connection = _transport._SessionSMTP(local_hostname="client.example.com", timeout=_SOCKET_TIMEOUT)
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        try:
+            with _transport._session_deadline(connection, 30):
+                connection.sock = connection._get_socket("127.0.0.1", listener.getsockname()[1], _SOCKET_TIMEOUT)
+                duplicate = connection.cut_handle
+                assert duplicate is not None, "positive control: the connect made a duplicate"
+        finally:
+            if connection.sock is not None:
+                connection.sock.close()
+
+    assert duplicate.fileno() == -1
+    assert connection.cut_handle is None
+
+
+@pytest.mark.os_agnostic
+def test_no_watchdog_is_still_running_when_a_session_ends() -> None:
+    """The watchdog is joined before the duplicate closes, so it never shuts down a reused descriptor."""
+    before = set(threading.enumerate())
+    connection = _transport._SessionSMTP(local_hostname="client.example.com", timeout=_SOCKET_TIMEOUT)
+    with _transport._session_deadline(connection, 30):
+        started = [thread for thread in threading.enumerate() if thread not in before]
+    alive = [thread for thread in started if thread.is_alive()]
+
+    assert started, "positive control: the session started a watchdog"
+    assert alive == []
+
+
 @pytest.mark.os_agnostic
 def test_the_longest_accepted_timeout_and_deadline_still_deliver() -> None:
     server = _SessionServer()

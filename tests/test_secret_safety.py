@@ -185,10 +185,79 @@ def test_a_server_reply_cannot_forge_log_lines() -> None:
     assert all(character.isprintable() for character in described)
 
 
+_PLAIN_PASSWORD = "s3cret-Pass"
+_CREDENTIALS = ("user@example.com", _PLAIN_PASSWORD)
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    "reply",
+    [f"5.7.8{_PLAIN_PASSWORD} rejected".encode(), b"9.7.8 Authentication failed"],
+    ids=["status-glued-to-echo", "no-such-status-class"],
+)
+def test_an_auth_failure_keeps_a_first_word_only_when_it_is_exactly_an_enhanced_status(reply: bytes) -> None:
+    described = lib_mail._describe_failure(smtplib.SMTPAuthenticationError(535, reply), credentials=_CREDENTIALS)
+
+    assert described == "SMTPAuthenticationError 535"
+
+
+@pytest.mark.os_agnostic
+def test_a_failure_text_carrying_the_auth_login_form_is_named_only() -> None:
+    login_form = base64.b64encode(_PLAIN_PASSWORD.encode()).decode("ascii")
+    error = ConnectionError(f"server said: 334 {login_form} rejected")
+
+    assert lib_mail._describe_failure(error, credentials=_CREDENTIALS) == "ConnectionError"
+
+
+@pytest.mark.os_agnostic
+def test_a_data_reply_echoing_the_password_keeps_only_its_code() -> None:
+    error = smtplib.SMTPDataError(554, f"5.6.0 rejected {_PLAIN_PASSWORD}".encode())
+
+    assert lib_mail._describe_failure(error, credentials=_CREDENTIALS) == "SMTPDataError 554"
+
+
+@pytest.mark.os_agnostic
+def test_an_os_error_text_is_cut_at_the_limit() -> None:
+    described = lib_mail._describe_failure(ConnectionError("x" * 1000))
+
+    assert described.startswith("ConnectionError: x")
+    assert len(described) == lib_mail._FAILURE_TEXT_LIMIT
+
+
 @pytest.mark.os_agnostic
 def test_a_custom_transport_os_error_is_kept_on_one_line() -> None:
     described = lib_mail._describe_failure(ConnectionError("refused\nsecond line"))
     assert described == "ConnectionError: refused second line"
+
+
+class _MirrorTarget(SecretSafeModel):
+    model_config = ConfigDict(validate_assignment=True)
+    value: int = 0
+
+
+class _Mirroring(SecretSafeModel):
+    """Its validator assigns to another SecretSafeModel while its own assignment holds the lock."""
+
+    model_config = ConfigDict(validate_assignment=True)
+    value: int = 0
+    mirror: ClassVar[_MirrorTarget] = _MirrorTarget()
+
+    @model_validator(mode="after")
+    def _mirror(self) -> _Mirroring:
+        _Mirroring.mirror.value = self.value
+        return self
+
+
+@pytest.mark.os_agnostic
+def test_a_validator_that_assigns_to_another_model_does_not_deadlock() -> None:
+    model = _Mirroring()
+    worker = threading.Thread(target=setattr, args=(model, "value", 5), daemon=True)
+
+    worker.start()
+    worker.join(timeout=5)
+
+    assert not worker.is_alive(), "the assignment deadlocked on the process-wide lock"
+    assert (model.value, _Mirroring.mirror.value) == (5, 5)
 
 
 _LOG_METHODS = frozenset({"debug", "info", "warning", "warn", "error", "critical", "exception", "log"})
