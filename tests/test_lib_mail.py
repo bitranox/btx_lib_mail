@@ -2404,3 +2404,28 @@ def test_a_host_that_refused_one_recipient_keeps_its_place_for_the_next() -> Non
         ("second.example.com", "one@example.com"),
         ("first.example.com", "two@example.com"),
     ]
+
+
+_HUGE = "h" * 1_000_000
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    "host",
+    ["[" + _HUGE, _HUGE + ":x", _HUGE + ",b", "[" + _HUGE + "]", "[::1]" + _HUGE, _HUGE + ":99999", _HUGE + "::1"],
+    ids=["no-closing-bracket", "bad-port", "two-hosts", "bracket-not-ip", "after-bracket", "port-range", "unbracketed-ipv6"],
+)
+def test_a_refused_host_is_quoted_only_in_part(host: str) -> None:
+    """A refusal that quoted the whole host copied a megabyte into the error and the log."""
+    with pytest.raises(InvalidInputError) as caught:
+        lib_mail.validate_smtp_host(host)
+
+    message = str(caught.value)
+    assert len(message) < 500
+    assert f"({len(host)} characters)" in message
+
+
+@pytest.mark.os_agnostic
+def test_a_refused_host_of_ordinary_length_keeps_its_whole_message() -> None:
+    with pytest.raises(InvalidInputError, match=r'^invalid smtp port in "smtp\.example\.com:x"$'):
+        lib_mail.validate_smtp_host("smtp.example.com:x")

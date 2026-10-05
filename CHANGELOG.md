@@ -212,6 +212,10 @@
   was delivered twice, with one host `send()` raised `DeliveryError` for a message the server
   kept. Once the reply to `DATA` or `BDAT LAST` is `250`, the message counts as delivered and
   the answer to `QUIT` changes nothing.
+- A refused SMTP host was quoted whole in the message (a bad port, a missing bracket, two
+  hosts in one entry, ...), so a host of a megabyte copied a megabyte into the exception and
+  the log. A host longer than 300 characters is quoted by its first 300 and its length now;
+  shorter ones keep their message.
 - A value in `./.env`, and the password `--password-file` reads, ended at every break
   `str.splitlines()` knows: FS, GS, RS, FF, NEL, U+2028 and U+2029 as well as LF and CR. A
   password holding one was cut short without a word and refused at AUTH. A line ends at LF

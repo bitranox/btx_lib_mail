@@ -548,6 +548,26 @@ def _refuse_credentials_in_host(host: str) -> str:
     return host
 
 
+# Longest host a refusal quotes whole: past any name DNS allows (253) plus a port and
+# brackets. A longer one is quoted in part, so a refused megabyte is not copied into the
+# error and the log.
+_HOST_QUOTE_LIMIT: Final[int] = 300
+
+
+def _shown(host: str) -> str:
+    """Return host for a refusal message: whole up to ``_HOST_QUOTE_LIMIT`` characters, else its start and length.
+
+    Examples:
+        >>> _shown("smtp.example.com:x")
+        'smtp.example.com:x'
+        >>> _shown("h" * 1000).endswith("h... (1000 characters)")
+        True
+    """
+    if len(host) <= _HOST_QUOTE_LIMIT:
+        return host
+    return f"{host[:_HOST_QUOTE_LIMIT]}... ({len(host)} characters)"
+
+
 def validate_smtp_host(host: str) -> None:
     """Raise when host is not a valid SMTP host string.
 
@@ -617,12 +637,12 @@ def _validate_port_and_brackets(host: str) -> None:
         return
     bracket_end = host.find("]")
     if bracket_end == -1:
-        raise InvalidInputError(f'missing closing bracket in "{host}"')
+        raise InvalidInputError(f'missing closing bracket in "{_shown(host)}"')
     remainder = host[bracket_end + 1 :]
     if remainder == "":
         return
     if not remainder.startswith(":"):
-        raise InvalidInputError(f'unexpected characters after bracket in "{host}"')
+        raise InvalidInputError(f'unexpected characters after bracket in "{_shown(host)}"')
     _validate_port(remainder[1:], host)
 
 
@@ -643,15 +663,15 @@ def _validate_host_shape(host: str) -> None:
             content that is not an IP address or a name DNS can never resolve.
     """
     if "," in host:
-        raise InvalidInputError(f'SMTP host must be one host per entry; pass several hosts as a list, got "{host}"')
+        raise InvalidInputError(f'SMTP host must be one host per entry; pass several hosts as a list, got "{_shown(host)}"')
     if host.startswith("["):
         name = host[1 : host.find("]")]
     else:
         name = host.rsplit(":", 1)[0] if ":" in host else host
         if ":" in name:
-            raise InvalidInputError(f'more than one ":" in "{host}"; an IPv6 address must be in brackets, as [addr] or [addr]:port')
+            raise InvalidInputError(f'more than one ":" in "{_shown(host)}"; an IPv6 address must be in brackets, as [addr] or [addr]:port')
     if not name:
-        raise InvalidInputError(f'missing host name in "{host}"')
+        raise InvalidInputError(f'missing host name in "{_shown(host)}"')
     if host.startswith("["):
         _check_address_literal(name, host)
     else:
@@ -671,7 +691,7 @@ def _check_address_literal(address: str, host: str) -> None:
     try:
         ipaddress.ip_address(address)
     except ValueError:
-        raise InvalidInputError(f'not an IP address in brackets in "{host}"') from None
+        raise InvalidInputError(f'not an IP address in brackets in "{_shown(host)}"') from None
 
 
 def _check_host_name(name: str, host: str) -> None:
@@ -695,11 +715,11 @@ def _check_host_name(name: str, host: str) -> None:
         raise InvalidInputError(f"SMTP host name has {len(name)} characters, more than the {_MAX_HOST_NAME} allowed")
     for label in name.removesuffix(".").split("."):
         if not label:
-            raise InvalidInputError(f'empty host name label in "{host}"')
+            raise InvalidInputError(f'empty host name label in "{_shown(host)}"')
         if len(label) > _MAX_HOST_LABEL:
             raise InvalidInputError(f"a host name label has {len(label)} characters, more than the {_MAX_HOST_LABEL} allowed")
         if label.startswith("-") or label.endswith("-"):
-            raise InvalidInputError(f'a host name label must not start or end with "-" in "{host}"')
+            raise InvalidInputError(f'a host name label must not start or end with "-" in "{_shown(host)}"')
 
 
 def _validate_port(port_str: str, original: str) -> None:
@@ -717,15 +737,15 @@ def _validate_port(port_str: str, original: str) -> None:
     try:
         port = int(port_str)
     except ValueError as exc:
-        raise InvalidInputError(f'invalid smtp port in "{original}"') from exc
+        raise InvalidInputError(f'invalid smtp port in "{_shown(original)}"') from exc
     if not (min_port <= port <= max_port):
         # The message names the host and nothing derived from it: a model that scrubs
         # the host as a credential can only remove the whole string, not a re-quoted port.
-        raise InvalidInputError(f'port must be {min_port}-{max_port} in "{original}"')
+        raise InvalidInputError(f'port must be {min_port}-{max_port} in "{_shown(original)}"')
     # int() also takes a sign, "_" separators and any Unicode digits; checked after the
     # range so a port the range check already refused keeps that message.
     if not (port_str.isascii() and port_str.isdigit()):
-        raise InvalidInputError(f'invalid smtp port in "{original}"')
+        raise InvalidInputError(f'invalid smtp port in "{_shown(original)}"')
 
 
 def parse_smtp_host(address: str) -> tuple[str, int | None]:
