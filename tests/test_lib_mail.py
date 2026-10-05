@@ -17,7 +17,7 @@ import pytest
 from pydantic import SecretStr, ValidationError
 from transport_doubles import RecordingTransport
 
-from btx_lib_mail import ConfMail, InvalidInputError, _transport, _validation, lib_mail
+from btx_lib_mail import ConfMail, InvalidInputError, _compose, _transport, _validation, lib_mail
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -2266,3 +2266,30 @@ def test_an_ehlo_name_longer_than_a_domain_may_be_is_refused_without_echoing_it(
         lib_mail.send(**_with(local_hostname="h" * 256))
 
     assert str(caught.value) == "local_hostname has 256 characters, more than the 255 allowed"
+
+
+@pytest.mark.os_agnostic
+def test_each_recipient_gets_its_own_to_header() -> None:
+    """One message per recipient, each addressed to that recipient alone: none sees another's address."""
+    recipients = ["first@example.com", "second@example.com", "third@example.com"]
+    transport = RecordingTransport()
+
+    lib_mail.send(**{**_VALID_SEND, "mail_recipients": recipients, "transport": transport})
+
+    to_headers = {recipient: message_from_bytes(raw)["To"] for recipient, raw in transport.messages.items()}
+    assert to_headers == {recipient: recipient for recipient in recipients}
+
+
+@pytest.mark.os_agnostic
+def test_split_header_lines_equal_folding_all_four_together() -> None:
+    """Folding Subject and From once and To and Date per recipient changes no byte of the headers."""
+    subject = "Quartalsbericht für Müller & Söhne " * 6 + "🙂" * 20
+    block = _compose.envelope_header_lines(sender="absender@example.com", subject=subject, recipients=["empfänger@example.com"])[0]
+    date = message_from_bytes(block)["Date"]
+    whole = EmailMessage()
+    whole["Subject"] = subject
+    whole["From"] = "absender@example.com"
+    whole["To"] = "empfänger@example.com"
+    whole["Date"] = date
+
+    assert block == _compose._header_lines(whole)
