@@ -490,11 +490,27 @@ _BYTES_DUMMY = "DUMMY-PLANTED-9f6b-ä".encode()
 _NONASCII_QUOTE_DUMMY = 'DUMMY-PLANTED-2d9f-ä"x'
 # A credential used AS a mapping key, not a value.
 _KEY_DUMMY = "DUMMY-PLANTED-4a7c"
+# repr() writes the control character as \x01 and keeps the umlaut; json.dumps() writes \u0001,
+# ascii() escapes the umlaut too, so only the repr() form matches (the umlaut-backslash dummy
+# above is also matched by json.dumps(ensure_ascii=False), which doubles the backslash the same way).
+_REPR_ONLY_DUMMY = "DUMMY-PLANTED-1e4f-ä\x01"
+# An attribute of an object input, quoted by a message on its own rather than as the object's repr.
+_ATTRIBUTE_DUMMY = "DUMMY-PLANTED-3b7d"
 
 
 class _QuotedToken(SecretSafeModel):
     credential_fields = frozenset({"token"})
     token: str = ""
+
+
+class _HolderQuotedByAttribute(SecretSafeModel):
+    credential_fields = frozenset({"holder"})
+    holder: Any = None
+
+    @field_validator("holder")
+    @classmethod
+    def _check(cls, value: Any) -> Any:
+        raise ValueError(f"key {value.secret} is not accepted")
 
 
 class _TokenQuotedByRepr(_QuotedToken):
@@ -642,6 +658,8 @@ _LEAK_CASES: list[tuple[str, Callable[[], object], str]] = [
     ("mapping-valued Enum in a non-credential field", lambda: _Creds(timeout=_MappingEnum.HELD), _MODEL_DUMMY),  # type: ignore[arg-type]
     ("tuple-valued Enum in a non-credential field", lambda: _Creds(timeout=_TupleEnum.HELD), _MODEL_DUMMY),  # type: ignore[arg-type]
     ("token quoted by repr()", lambda: _TokenQuotedByRepr(token=_BACKSLASH_DUMMY), "PLANTED-5b2d"),
+    ("token whose repr() is the only matching form", lambda: _TokenQuotedByRepr(token=_REPR_ONLY_DUMMY), "PLANTED-1e4f"),
+    ("one attribute of an object input quoted on its own", lambda: _HolderQuotedByAttribute(holder=_Holder(_ATTRIBUTE_DUMMY)), "PLANTED-3b7d"),
     ("token quoted by ascii()", lambda: _TokenQuotedByAscii(token=_UMLAUT_DUMMY), "PLANTED-6c3e"),
     ("token quoted by json.dumps()", lambda: _TokenQuotedByJson(token=_UMLAUT_DUMMY), "PLANTED-6c3e"),
     ("backslash token quoted by json.dumps()", lambda: _TokenQuotedByJson(token=_BACKSLASH_DUMMY), "PLANTED-5b2d"),

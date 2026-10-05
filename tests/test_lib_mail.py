@@ -1007,6 +1007,25 @@ class TestDirectoryNormalisation:
         config = ConfMail(attachment_blocked_directories=frozenset({Path("/etc")}))
         assert Path("/etc") in config.attachment_blocked_directories
 
+    @pytest.mark.os_agnostic
+    def test_a_directory_list_split_at_commas_with_spaces_blocks_every_entry(self, tmp_path: Path) -> None:
+        """ "a, b".split(",") leaves " b": kept, it was a relative rule under the working directory and blocked nothing."""
+        (tmp_path / "hr").mkdir()
+        payroll = tmp_path / "hr" / "payroll.pdf"
+        payroll.write_bytes(b"%PDF-1.4")
+        config = ConfMail.model_validate({"attachment_blocked_directories": f"{tmp_path / 'public'}, {tmp_path / 'hr'}".split(",")})
+
+        with pytest.raises(lib_mail.AttachmentSecurityError) as excinfo:
+            lib_mail.send(**_with(attachment_file_paths=[payroll], config=config))
+
+        assert excinfo.value.violation_type is lib_mail.AttachmentViolation.DIRECTORY
+
+    @pytest.mark.os_agnostic
+    def test_a_directory_given_as_a_path_keeps_its_spaces(self) -> None:
+        """Only a string is stripped; a Path names exactly the directory given, a leading space included."""
+        config = ConfMail(attachment_blocked_directories=frozenset({Path(" spaced")}))
+        assert config.attachment_blocked_directories == frozenset({Path(" spaced")})
+
 
 _EMPTY_BLOCKED_CASES = [
     pytest.param("attachment_blocked_extensions", [".exe"], id="extensions"),
@@ -1566,6 +1585,19 @@ class TestSensitivePatterns:
             ".pypirc",
             ".npmrc",
             ".config/gh/hosts.yml",
+            # Each SENSITIVE_PATH_PATTERNS entry by a literal name, outside its usual directory,
+            # so dropping one fails here; compared with the constant, nothing would.
+            "keys/id_rsa",
+            "keys/id_ed25519",
+            "keys/id_ecdsa",
+            "keys/authorized_keys",
+            "keys/known_hosts",
+            "tls/private.key",
+            "app/secret.txt",
+            "app/credentials",
+            "app/password.txt",
+            "app/token.json",
+            ".kube/config",
         ],
     )
     def test_a_credential_file_is_blocked(self, tmp_path: Path, relative: str) -> None:
@@ -1715,7 +1747,9 @@ class TestDefaultSecuritySettings:
 
     @pytest.mark.os_agnostic
     # A trailing no-break space survived the suffix check and the header dropped it: x.exe arrived.
-    @pytest.mark.parametrize("name", ["tool.exe", "run.bat", "x.sh.", "x.exe ", "x.sh. . ", "X.EXE", "x.exe" + chr(0xA0)])
+    @pytest.mark.parametrize(
+        "name", ["tool.exe", "run.bat", "x.sh.", "x.exe ", "x.sh. . ", "X.EXE", "x.exe" + chr(0xA0), "tool.py", "run.sh", "macro.vbs", "app.jar", "script.ps1"]
+    )
     def test_default_blocklist_refuses_an_executable_name(self, tmp_path: Path, name: str) -> None:
         if sys.platform == "win32" and name != name.rstrip(". "):
             pytest.skip("Windows cannot create a file whose name ends in a dot or space")
@@ -1733,6 +1767,22 @@ class TestDefaultSecuritySettings:
                 transport=FakeTransport(),
             )
         assert excinfo.value.violation_type is lib_mail.AttachmentViolation.EXTENSION
+
+    @pytest.mark.os_posix
+    @pytest.mark.skipif(sys.platform == "win32", reason="the POSIX system directories are the default blocklist only on POSIX")
+    def test_the_default_blocked_directories_are_the_documented_posix_system_directories(self) -> None:
+        """Spelled out here, not read from DANGEROUS_DIRECTORIES_POSIX, so dropping one fails (/root is not searchable to test by a file)."""
+        documented = {"/etc", "/var", "/root", "/boot", "/sys", "/proc", "/dev", "/usr/bin", "/usr/sbin", "/bin", "/sbin"}
+        assert {str(directory) for directory in ConfMail().attachment_blocked_directories} >= documented
+
+    @pytest.mark.os_posix
+    @pytest.mark.skipif(sys.platform == "win32", reason="the POSIX system directories are the default blocklist only on POSIX")
+    @pytest.mark.parametrize("directory", ["/etc", "/var", "/proc", "/dev", "/usr/bin"])
+    def test_a_default_blocked_posix_directory_refuses_an_attachment_under_it(self, directory: str) -> None:
+        """Refused by its directory before the file is looked for, so no file there is needed."""
+        with pytest.raises(lib_mail.AttachmentSecurityError) as excinfo:
+            lib_mail.send(**_with(attachment_file_paths=[f"{directory}/btx-lib-mail-probe-report.txt"]))
+        assert excinfo.value.violation_type is lib_mail.AttachmentViolation.DIRECTORY
 
     @pytest.mark.os_agnostic
     def test_default_symlinks_disabled(self) -> None:
@@ -2671,3 +2721,108 @@ def test_an_attachment_of_an_unknown_type_is_sent_as_octet_stream(tmp_path: Path
 
     [part] = [part for part in message_from_bytes(transport.only.raw).walk() if part.get_filename()]
     assert part.get_content_type() == "application/octet-stream"
+
+
+@pytest.mark.os_agnostic
+def test_an_extension_allowlist_replaces_the_blocklist(tmp_path: Path) -> None:
+    """docs/api.md: the blocked extensions are ignored while an allowlist is set."""
+    script = _written(tmp_path / "deploy.sh")
+    transport = RecordingTransport()
+
+    lib_mail.send(
+        **_with(
+            transport=transport, attachment_file_paths=[script], attachment_allowed_extensions=frozenset({".sh"}), attachment_blocked_directories=frozenset()
+        )
+    )
+
+    assert b'filename="deploy.sh"' in transport.only.raw
+
+
+@pytest.mark.os_agnostic
+def test_a_directory_allowlist_replaces_the_blocklist(tmp_path: Path) -> None:
+    """docs/api.md: the blocked directories are ignored while an allowlist is set."""
+    report = _written(tmp_path / "out" / "report.txt")
+    transport = RecordingTransport()
+
+    lib_mail.send(
+        **_with(
+            transport=transport,
+            attachment_file_paths=[report],
+            attachment_allowed_directories=frozenset({tmp_path / "out"}),
+            attachment_blocked_directories=frozenset({tmp_path}),
+        )
+    )
+
+    assert b'filename="report.txt"' in transport.only.raw
+
+
+@pytest.mark.os_agnostic
+def test_an_explicit_empty_directory_keyword_lifts_the_configured_blocklist_for_the_call(tmp_path: Path) -> None:
+    """docs/api.md: None uses the settings, an empty set means no restriction for this call."""
+    report = _written(tmp_path / "report.txt")
+    config = ConfMail(attachment_blocked_directories=frozenset({tmp_path}))
+    with pytest.raises(lib_mail.AttachmentSecurityError):
+        lib_mail.send(**_with(attachment_file_paths=[report], config=config))  # positive control: the config blocks it
+
+    transport = RecordingTransport()
+    lib_mail.send(**_with(transport=transport, attachment_file_paths=[report], config=config, attachment_blocked_directories=frozenset()))
+
+    assert b'filename="report.txt"' in transport.only.raw
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("written", ['"One@Example.com"', "'one@example.com'", '  "one@example.com"  '])
+def test_a_recipient_is_stripped_of_surrounding_quotes(written: str) -> None:
+    """docs/api.md: each recipient is stripped of surrounding whitespace and quotes."""
+    transport = RecordingTransport()
+
+    lib_mail.send(**_with(transport=transport, mail_recipients=[written]))
+
+    assert transport.recipients == ["one@example.com"]
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("name", ["client\x7fexample", "client example", "client\x1fexample"], ids=["del", "space", "unit-separator"])
+def test_an_ehlo_name_outside_printable_ascii_is_refused(name: str) -> None:
+    """docs/api.md: the EHLO name must be non-empty printable ASCII without spaces."""
+    with pytest.raises(InvalidInputError, match="non-empty printable ASCII without spaces"):
+        lib_mail.send(**_with(local_hostname=name))
+    with pytest.raises(ValidationError):
+        ConfMail(smtp_local_hostname=name)
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    "field", ["attachment_blocked_extensions", "attachment_allowed_extensions", "attachment_blocked_directories", "attachment_allowed_directories"]
+)
+def test_conf_mail_refuses_a_single_string_for_a_set_field(field: str) -> None:
+    """A string is iterable: ".exe" read character by character would block ".e" and ".x", not ".exe"."""
+    with pytest.raises(ValidationError):
+        ConfMail.model_validate({field: ".exe" if "extensions" in field else "/srv/out"})
+
+
+@pytest.mark.os_agnostic
+def test_a_configured_password_without_a_user_sends_anonymously() -> None:
+    """docs/api.md: the password is ignored when the user is missing, not sent with an empty user."""
+    transport = RecordingTransport()
+
+    lib_mail.send(**_with(transport=transport, config=ConfMail(smtphosts=["smtp.example.com"], smtp_password=SecretStr("s3cret-Pass"))))
+
+    assert transport.only.options.credentials is None
+
+
+@pytest.mark.os_agnostic
+def test_an_extension_set_holding_a_non_string_is_refused_as_invalid_input() -> None:
+    """Refused inside the library's error family, not as a bare AttributeError from str.lower."""
+    with pytest.raises(InvalidInputError, match="extension must be a string, got int"):
+        lib_mail.send(**_with(attachment_blocked_extensions=frozenset({1})))
+    with pytest.raises(ValidationError):
+        ConfMail.model_validate({"attachment_blocked_extensions": [".exe", 1]})
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("subject", ["\x1b[31mRed", "Report\x1b", "\x00"], ids=["leading-escape", "trailing-escape", "only-nul"])
+def test_a_control_character_anywhere_in_the_subject_is_refused(subject: str) -> None:
+    """docs/api.md: a subject with a control character other than TAB is refused, wherever it stands."""
+    with pytest.raises(InvalidInputError, match="must not contain control characters"):
+        lib_mail.send(**_with(mail_subject=subject))

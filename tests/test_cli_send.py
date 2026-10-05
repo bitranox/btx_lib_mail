@@ -1188,3 +1188,86 @@ def test_the_cli_writes_a_skipped_attachment_warning_to_stderr_and_only_json_to_
     assert json.loads(completed.stdout)["ok"] is True
     assert 'extension ".exe" is blocked' in completed.stderr
     assert len(handler.messages) == 1
+
+
+def _file(path: Path, content: bytes = b"content") -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    return path
+
+
+# One test per documented BTX_MAIL_* key the other tests only override with an option:
+# a misspelt key in the source would leave every other test green.
+
+
+@pytest.mark.os_agnostic
+def test_the_delivery_deadline_comes_from_the_environment(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner) -> None:
+    monkeypatch.setenv("BTX_MAIL_SMTP_DELIVERY_DEADLINE", "42.5")
+    result, transport = _invoke(cli_runner, ["send", *_ROUTE, *_MESSAGE])
+    assert result.exit_code == 0, result.output
+    assert transport.only.options.deadline == 42.5
+
+
+@pytest.mark.os_agnostic
+def test_a_blocklist_from_the_environment_replaces_the_default(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner, tmp_path: Path) -> None:
+    monkeypatch.setenv("BTX_MAIL_ATTACHMENT_BLOCKED_EXT", ".txt")
+    allowed_now, transport = _invoke(cli_runner, ["send", *_ROUTE, *_MESSAGE, "--attachment", str(_file(tmp_path / "run.sh")), *_no_blocked_dirs(tmp_path)])
+    refused, _transport = _invoke(cli_runner, ["send", *_ROUTE, *_MESSAGE, "--attachment", str(_file(tmp_path / "notes.txt")), *_no_blocked_dirs(tmp_path)])
+    assert allowed_now.exit_code == 0, allowed_now.output
+    assert b'filename="run.sh"' in transport.only.raw
+    assert 'extension ".txt" is blocked' in str(refused.exception)
+
+
+@pytest.mark.os_agnostic
+def test_a_directory_blocklist_from_the_environment_refuses_files_there(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner, tmp_path: Path) -> None:
+    monkeypatch.setenv("BTX_MAIL_ATTACHMENT_BLOCKED_DIRS", str(tmp_path / "private"))
+    result, transport = _invoke(cli_runner, ["send", *_ROUTE, *_MESSAGE, "--attachment", str(_file(tmp_path / "private" / "report.pdf"))])
+    assert "path under blocked directory" in str(result.exception)
+    assert transport.deliveries == []
+
+
+@pytest.mark.os_agnostic
+def test_a_directory_allowlist_from_the_environment_refuses_files_elsewhere(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner, tmp_path: Path) -> None:
+    monkeypatch.setenv("BTX_MAIL_ATTACHMENT_ALLOWED_DIRS", str(tmp_path / "outbox"))
+    result, transport = _invoke(cli_runner, ["send", *_ROUTE, *_MESSAGE, "--attachment", str(_file(tmp_path / "elsewhere" / "report.pdf"))])
+    assert "not under any allowed directory" in str(result.exception)
+    assert transport.deliveries == []
+
+
+@pytest.mark.os_agnostic
+def test_symlinks_are_allowed_from_the_environment(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner, tmp_path: Path) -> None:
+    monkeypatch.setenv("BTX_MAIL_ATTACHMENT_ALLOW_SYMLINKS", "yes")
+    real = _file(tmp_path / "real.txt")
+    link = tmp_path / "link.txt"
+    try:
+        link.symlink_to(real)
+    except OSError as exc:  # Windows without the symlink privilege
+        pytest.skip(f"cannot create a symlink here: {exc}")
+    result, transport = _invoke(cli_runner, ["send", *_ROUTE, *_MESSAGE, "--attachment", str(link), *_no_blocked_dirs(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert b'filename="real.txt"' in transport.only.raw
+
+
+@pytest.mark.os_agnostic
+def test_warn_mode_comes_from_the_environment(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner, tmp_path: Path) -> None:
+    monkeypatch.setenv("BTX_MAIL_ATTACHMENT_RAISE_ON_SECURITY", "off")
+    tool = _file(tmp_path / "tool.exe")
+    result, transport = _invoke(cli_runner, ["send", *_ROUTE, *_MESSAGE, "--attachment", str(tool), *_no_blocked_dirs(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert b"tool.exe" not in transport.only.raw
+
+
+@pytest.mark.os_agnostic
+def test_a_json_failure_outside_send_reports_no_skips_of_an_earlier_run(tmp_path: Path) -> None:
+    """main() embedded and called twice: a later failure must not report an earlier failed send's skips."""
+    tool = _file(tmp_path / "tool.exe", b"MZ")
+    first_run = ["--json", "send", "--host", "127.0.0.1:1", "--recipient", "one@example.com", *_MESSAGE]
+    first_run += ["--attachment", str(tool), "--attachment-warn", *_no_blocked_dirs(tmp_path)]
+    with CliRunner().isolation() as (stdout, _stderr, _output):
+        assert cli_mod.main(first_run) != 0, "positive control: the first send failed after skipping tool.exe"
+        first = stdout.getvalue().decode()
+        start = len(stdout.getvalue())
+        assert cli_mod.main(["--json", "validate-email", "nope"]) != 0
+        printed = stdout.getvalue()[start:].decode()
+    assert json.loads(first)["skipped"] != [], "positive control: the first run reported its skip"
+    assert json.loads(printed)["skipped"] == []

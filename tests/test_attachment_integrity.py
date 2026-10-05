@@ -814,6 +814,68 @@ def test_a_path_swapped_for_another_regular_file_after_the_check_is_refused_as_c
     assert transport.messages == {}
 
 
+@pytest.mark.os_agnostic
+def test_a_path_swapped_for_a_directory_inside_the_open_is_refused_and_leaks_no_descriptor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """POSIX opens a directory for reading; os.fdopen then raised a bare IsADirectoryError and the descriptor leaked.
+
+    Windows refuses to open a directory as a file, so there it is unreadable (EACCES).
+    """
+    report = tmp_path / "report.txt"
+    report.write_bytes(b"quarterly numbers")
+    real_open = os.open
+    swapped: list[bool] = []
+
+    def open_after_swap(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        if not swapped and _opens(path, report):
+            report.unlink()
+            report.mkdir()
+            swapped.append(True)
+        return real_open(path, flags, *args, **kwargs)
+
+    # The lowest free descriptor number: a leaked one keeps it taken.
+    free_before = real_open(os.devnull, os.O_RDONLY)
+    os.close(free_before)
+    monkeypatch.setattr(os, "open", open_after_swap)
+    transport = RecordingTransport()
+
+    with pytest.raises((AttachmentSecurityError, AttachmentNotFoundError)) as caught:
+        _send(transport, report)
+
+    free_after = real_open(os.devnull, os.O_RDONLY)
+    os.close(free_after)
+    assert swapped, "positive control: the swap ran inside the open"
+    if sys.platform == "win32":
+        assert str(caught.value).endswith("can not be read (EACCES)")
+    else:
+        assert isinstance(caught.value, AttachmentSecurityError)
+        assert caught.value.violation_type is AttachmentViolation.CHANGED
+    assert free_after == free_before, "the descriptor of the directory was left open"
+    assert transport.messages == {}
+
+
+@pytest.mark.os_agnostic
+def test_a_file_deleted_inside_the_open_is_reported_as_not_found(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Deleted between the check and the open, the file is missing, not unreadable (ENOENT)."""
+    report = tmp_path / "report.txt"
+    report.write_bytes(b"quarterly numbers")
+    real_open = os.open
+    deleted: list[bool] = []
+
+    def open_after_delete(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        if not deleted and _opens(path, report):
+            report.unlink()
+            deleted.append(True)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", open_after_delete)
+
+    with pytest.raises(AttachmentNotFoundError) as raised:
+        _send(RecordingTransport(), report)
+
+    assert deleted, "positive control: the file was deleted inside the open"
+    assert str(raised.value).endswith("can not be found")
+
+
 def _opens(path: Any, target: Path) -> bool:
     """Whether an os.open call is the attachment's own open: by full path, or by name below a directory (Linux)."""
     return os.fspath(path) in {os.fspath(target.resolve()), target.name}
@@ -1067,21 +1129,163 @@ def test_a_directory_rule_holding_nul_is_refused_by_send() -> None:
 # Longer than any operating system can name; resolving it on Windows raised a bare ValueError ("path too long for Windows").
 _TOO_LONG_DIRECTORY = "/srv/" + "d" * 40_000
 
-
-@pytest.mark.os_agnostic
-def test_a_directory_rule_too_long_to_name_is_refused_by_conf_mail() -> None:
-    with pytest.raises(ConfigurationError, match="directory must not be longer than 32767 characters"):
-        ConfMail.model_validate({"attachment_blocked_directories": [_TOO_LONG_DIRECTORY]})
+# 17000 characters, below the limit as Python counts, but 34000 UTF-16 code units, which is how Windows counts.
+_TOO_LONG_IN_UTF16 = "/srv/" + chr(0x1F4C4) * 17_000
 
 
 @pytest.mark.os_agnostic
-def test_a_directory_rule_too_long_to_name_is_refused_by_send() -> None:
+@pytest.mark.parametrize("rule", [_TOO_LONG_DIRECTORY, _TOO_LONG_IN_UTF16], ids=["characters", "utf16-units"])
+def test_a_directory_rule_too_long_to_name_is_refused_by_conf_mail(rule: str) -> None:
+    with pytest.raises(ConfigurationError, match="directory must not be longer than 32767 UTF-16 code units"):
+        ConfMail.model_validate({"attachment_blocked_directories": [rule]})
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("rule", [_TOO_LONG_DIRECTORY, _TOO_LONG_IN_UTF16], ids=["characters", "utf16-units"])
+def test_a_directory_rule_too_long_to_name_is_refused_by_send(rule: str) -> None:
     transport = RecordingTransport()
 
-    with pytest.raises(InvalidInputError, match=r"^directory must not be longer than 32767 characters$"):
-        _send(transport, "unused", attachment_file_paths=[], attachment_allowed_directories=frozenset({_TOO_LONG_DIRECTORY}))
+    with pytest.raises(InvalidInputError, match=r"^directory must not be longer than 32767 UTF-16 code units$"):
+        _send(transport, "unused", attachment_file_paths=[], attachment_allowed_directories=frozenset({rule}))
 
     assert transport.recipients == []
+
+
+@pytest.mark.os_agnostic
+def test_a_directory_rule_of_exactly_the_longest_path_is_kept() -> None:
+    """Only a rule longer than Windows can name is refused; an emoji counts two UTF-16 code units, as there."""
+    by_characters = "/" + "a" * (_attachments._LONGEST_PATH - 1)
+    by_units = "/" + chr(0x1F4C4) * ((_attachments._LONGEST_PATH - 1) // 2)
+    assert _attachments._utf16_length(by_units) == _attachments._LONGEST_PATH
+
+    assert _attachments.normalise_directories([by_characters, by_units]) == frozenset({Path(by_characters), Path(by_units)})
+    with pytest.raises(InvalidInputError):
+        _attachments.normalise_directories([by_units + "a"])
+
+
+@pytest.mark.os_agnostic
+def test_a_path_of_exactly_the_quote_limit_is_quoted_whole() -> None:
+    path = "/" + "a" * (_attachments._QUOTE_LIMIT - 1)
+    assert _attachments._quoted(path) == path
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("tolerate", [False, True], ids=["raise", "tolerate"])
+def test_an_attachment_path_too_long_in_utf16_units_is_reported_as_unreadable(tmp_path: Path, tolerate: bool, caplog: pytest.LogCaptureFixture) -> None:
+    """Linux refuses the name as ENAMETOOLONG; Python on Windows raised a bare ValueError for it, now reported the same."""
+    long_path = tmp_path / (chr(0x1F4C4) * 17_000 + ".txt")
+    transport = RecordingTransport()
+    if not tolerate:
+        with pytest.raises(AttachmentNotFoundError, match=r"can not be read \(ENAMETOOLONG\)$"):
+            _send(transport, long_path)
+        return
+    _send(transport, long_path, raise_on_missing_attachments=False)
+    assert "can not be read (ENAMETOOLONG)" in caplog.text
+    assert len(transport.recipients) == 3
+
+
+# What Python on Windows raises, instead of an OSError, for a path past 32767 UTF-16 code units;
+# a path can grow past it while it is resolved (C:\PROGRA~2 expanded), after every earlier check.
+_WINDOWS_TOO_LONG = "path too long for Windows"
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("call", ["lstat", "open"])
+def test_a_path_windows_refuses_as_too_long_is_unreadable_at_each_file_system_call(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, call: str) -> None:
+    """Each call site reports the ValueError as Linux reports the length: unreadable (ENAMETOOLONG), not a foreign error."""
+    report = tmp_path / "report.txt"
+    report.write_bytes(b"numbers")
+    names = {os.fspath(report), os.fspath(report.resolve()), report.name}  # resolved now: resolving calls lstat
+    real_call = getattr(os, call)
+
+    def too_long(path: Any, *args: Any, **kwargs: Any) -> Any:
+        if os.fspath(path) in names:
+            raise ValueError(_WINDOWS_TOO_LONG)
+        return real_call(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, call, too_long)
+
+    with pytest.raises(AttachmentNotFoundError, match=r"can not be read \(ENAMETOOLONG\)$"):
+        _send(RecordingTransport(), report)
+
+
+@pytest.mark.os_agnostic
+def test_an_attachment_path_that_resolves_too_long_for_windows_is_unreadable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    report = tmp_path / "report.txt"
+    report.write_bytes(b"numbers")
+    real_resolve = Path.resolve
+
+    def too_long(self: Path, *, strict: bool = False) -> Path:
+        if self.name == report.name:
+            raise ValueError(_WINDOWS_TOO_LONG)
+        return real_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", too_long)
+
+    with pytest.raises(AttachmentNotFoundError, match=r"can not be read \(ENAMETOOLONG\)$"):
+        _send(RecordingTransport(), report)
+
+
+@pytest.mark.os_agnostic
+def test_a_directory_rule_that_resolves_too_long_for_windows_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    report = tmp_path / "report.txt"
+    report.write_bytes(b"numbers")
+    rule = tmp_path / "PROGRA~2"
+    real_resolve = Path.resolve
+
+    def too_long(self: Path, *, strict: bool = False) -> Path:
+        if self == rule:
+            raise ValueError(_WINDOWS_TOO_LONG)
+        return real_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", too_long)
+
+    with pytest.raises(InvalidInputError, match=r"^an attachment directory can not be resolved \(ENAMETOOLONG\)$"):
+        _send(RecordingTransport(), report, attachment_blocked_directories=frozenset({rule}))
+
+
+# A high surrogate is outside the surrogateescape range: POSIX has no bytes for it (Windows names it).
+_UNENCODABLE = chr(0xD800)
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("strict", [True, False], ids=["strict", "warn"])
+def test_an_attachment_name_holding_a_lone_surrogate_is_a_filename_refusal(tmp_path: Path, strict: bool, caplog: pytest.LogCaptureFixture) -> None:
+    """os.lstat raised a bare UnicodeEncodeError for it on POSIX; on every platform it is now refused as FILENAME."""
+    odd = tmp_path / f"report{_UNENCODABLE}.pdf"
+    transport = RecordingTransport()
+    if strict:
+        with pytest.raises(AttachmentSecurityError) as caught:
+            _send(transport, odd)
+        assert caught.value.violation_type is AttachmentViolation.FILENAME
+        return
+    _send(transport, odd, attachment_raise_on_security_violation=False)
+    assert "Attachment security violation" in caplog.text
+    assert len(transport.recipients) == 3
+
+
+@pytest.mark.os_posix
+def test_a_directory_holding_a_lone_surrogate_in_an_attachment_path_is_a_filename_refusal(tmp_path: Path) -> None:
+    if sys.platform == "win32":
+        pytest.skip("Windows can name a lone surrogate")
+    with pytest.raises(AttachmentSecurityError, match="can not be encoded for the operating system") as caught:
+        _send(RecordingTransport(), tmp_path / _UNENCODABLE / "report.pdf")
+    assert caught.value.violation_type is AttachmentViolation.FILENAME
+
+
+@pytest.mark.os_posix
+@pytest.mark.parametrize("field", ["attachment_blocked_directories", "attachment_allowed_directories"])
+def test_a_directory_rule_holding_a_lone_surrogate_is_refused_where_it_is_given(tmp_path: Path, field: str) -> None:
+    """Resolving it raised a bare UnicodeEncodeError at send time on POSIX."""
+    if sys.platform == "win32":
+        pytest.skip("Windows can name a lone surrogate")
+    rule = f"/srv/{_UNENCODABLE}"
+    with pytest.raises(ConfigurationError, match="directory can not be encoded for the operating system"):
+        ConfMail.model_validate({field: [rule]})
+    report = tmp_path / "report.txt"
+    report.write_bytes(b"numbers")
+    with pytest.raises(InvalidInputError, match=r"^directory can not be encoded for the operating system$"):
+        _send(RecordingTransport(), report, **{field: frozenset({rule})})
 
 
 @pytest.mark.os_agnostic
@@ -1314,9 +1518,12 @@ def test_a_path_swapped_for_a_symlink_inside_the_open_is_refused_as_changed(tmp_
 
 
 @pytest.mark.os_posix
-@pytest.mark.skipif(sys.platform == "win32", reason="needs mkfifo")
 def test_a_path_swapped_for_a_fifo_inside_the_open_is_refused_without_blocking(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """O_NONBLOCK keeps the open of a FIFO nobody writes to from waiting for a writer forever."""
+    # A guard in the body, not a skipif, so the type checker sees os.mkfifo and os.O_NONBLOCK only where they exist.
+    if sys.platform == "win32":
+        pytest.skip("needs mkfifo")
+    make_fifo = os.mkfifo  # bound here, where the guard above narrows the platform; the nested function is checked on its own
     report = tmp_path / "report.txt"
     report.write_bytes(b"quarterly numbers")
     real_open = os.open
@@ -1325,7 +1532,7 @@ def test_a_path_swapped_for_a_fifo_inside_the_open_is_refused_without_blocking(t
     def open_after_swap(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
         if not swapped and os.fspath(path) in {os.fspath(report.resolve()), report.name}:
             report.unlink()
-            os.mkfifo(report)
+            make_fifo(report)
             swapped.append(True)
         return real_open(path, flags, *args, **kwargs)
 

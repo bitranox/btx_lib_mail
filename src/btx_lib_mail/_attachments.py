@@ -166,8 +166,9 @@ macOS and Windows, exactly on other platforms.
 # there; on Linux it is a different file that no SSH client reads.
 _PATHS_IGNORE_CASE: Final[bool] = sys.platform in ("darwin", "win32")
 
-# The longest path Windows can name; longer than any POSIX PATH_MAX. Past it, Python on
-# Windows raises a bare ValueError from every file system call instead of an OSError.
+# The longest path Windows can name, in UTF-16 code units; longer than any POSIX PATH_MAX.
+# Past it, Python on Windows raises a bare ValueError from every file system call instead
+# of an OSError.
 _LONGEST_PATH: Final[int] = 32767
 
 # A path is quoted whole in a message or log line up to this many characters (Linux's
@@ -252,13 +253,15 @@ def normalise_extensions(values: Iterable[object]) -> frozenset[str]:
 
 
 def normalise_directories(values: Iterable[object]) -> frozenset[pathlib.Path]:
-    """Return values as a set of paths; each must be a ``str`` or a ``pathlib`` path; blank strings are dropped.
+    """Return values as a set of paths; each must be a ``str`` or a ``pathlib`` path; strings are stripped, blank ones dropped.
 
     Used for the `ConfMail` fields and for the `send()` keywords alike, so a list of
     strings means the same directories wherever it is given. A blank string is what
     splitting an empty setting yields (``"".split(",") == [""]``); kept, it would name
     the working directory, replacing the default blocked directories with it or
-    allowing all of it.
+    allowing all of it. Surrounding whitespace is what splitting ``"/srv/a, /srv/b"``
+    leaves; kept, ``" /srv/b"`` would be a relative rule under the working directory
+    and block nothing. A ``pathlib`` path is taken as given, a leading space included.
 
     Args:
         values: Directory entries.
@@ -268,27 +271,56 @@ def normalise_directories(values: Iterable[object]) -> frozenset[pathlib.Path]:
 
     Raises:
         InvalidInputError: If any value is neither a ``str`` nor a ``pathlib`` path,
-            holds NUL, or is longer than ``_LONGEST_PATH`` characters (no
-            directory can be named so, and resolving it raises).
+            holds NUL, is longer than ``_LONGEST_PATH`` UTF-16 code units (no
+            directory can be named so on Windows, which counts in those units), or
+            cannot be encoded for the operating system (a lone surrogate on POSIX).
 
     Examples:
         >>> sorted(path.name for path in normalise_directories(["/srv/a", pathlib.Path("/srv/b")]))
         ['a', 'b']
         >>> normalise_directories(["", "  "])
         frozenset()
+        >>> normalise_directories(["  /srv/a "]) == frozenset({pathlib.Path("/srv/a")})
+        True
     """
     normalised: set[pathlib.Path] = set()
     for directory in values:
         if not isinstance(directory, (str, pathlib.PurePath)):
             raise InvalidInputError(f"directory must be a string or Path, got {type(directory).__name__}")
-        if "\x00" in str(directory):
-            raise InvalidInputError("directory must not contain NUL")
-        if len(str(directory)) > _LONGEST_PATH:
-            raise InvalidInputError(f"directory must not be longer than {_LONGEST_PATH} characters")
-        if isinstance(directory, str) and not directory.strip():
-            continue
-        normalised.add(pathlib.Path(directory))
+        text = directory.strip() if isinstance(directory, str) else str(directory)
+        _check_directory_text(text)
+        if text:
+            normalised.add(pathlib.Path(text) if isinstance(directory, str) else pathlib.Path(directory))
     return frozenset(normalised)
+
+
+def _check_directory_text(text: str) -> None:
+    """Refuse a directory rule no operating system call can be handed, the same way on every platform.
+
+    Raises:
+        InvalidInputError: If text holds NUL, is too long to name, or cannot be
+            encoded for the operating system.
+    """
+    if "\x00" in text:
+        raise InvalidInputError("directory must not contain NUL")
+    if _utf16_length(text) > _LONGEST_PATH:
+        raise InvalidInputError(f"directory must not be longer than {_LONGEST_PATH} UTF-16 code units")
+    try:
+        # What every file system call does to the path first; on POSIX a lone surrogate
+        # outside the surrogateescape range has no bytes, and the call raises.
+        os.fsencode(text)
+    except UnicodeEncodeError:
+        raise InvalidInputError("directory can not be encoded for the operating system") from None
+
+
+def _utf16_length(text: str) -> int:
+    """Return how long text is as Windows measures a path: in UTF-16 code units, so an emoji counts two.
+
+    Examples:
+        >>> _utf16_length("a" + chr(0x1F4C4))
+        3
+    """
+    return len(text.encode("utf-16-le", "surrogatepass")) // 2
 
 
 class AttachmentViolation(str, Enum):
@@ -443,6 +475,8 @@ def _resolved_directories(directories: frozenset[pathlib.Path]) -> frozenset[pat
         resolved = frozenset(directory.resolve() for directory in directories)
     except OSError as exc:
         code = _errno_name(exc.errno)
+    except ValueError:  # a rule Windows can name only until it is resolved (a short name expanded)
+        code = _too_long_to_name().code
     except RuntimeError:  # a symlink loop, before Python 3.13
         code = "ELOOP"
     else:
@@ -479,16 +513,37 @@ def _errno_name(error_number: int | None) -> str:
     return errno.errorcode.get(error_number, "OSError") if error_number is not None else "OSError"
 
 
+def _too_long_to_name() -> _UnreadableAttachmentError:
+    """Report a path Python on Windows refused to hand to the operating system as unreadable (``ENAMETOOLONG``).
+
+    Past ``_LONGEST_PATH`` UTF-16 code units a file system call raises a bare
+    ``ValueError`` ("path too long for Windows") where Linux raises ``OSError``
+    (``ENAMETOOLONG``); a path can also grow past it while it is resolved (a short
+    name such as ``PROGRA~2`` expanded). Every call site maps that ``ValueError``
+    here, so the outcome is the one Linux reports. The other ``ValueError`` causes
+    never get that far: an attachment path holding NUL or a lone surrogate is
+    refused before any call (:func:`_check_nameable`), a directory rule where it
+    is given (:func:`normalise_directories`).
+
+    Returns:
+        The error to raise.
+    """
+    return _UnreadableAttachmentError(errno.ENAMETOOLONG)
+
+
 def _resolve(path: pathlib.Path) -> pathlib.Path:
     """``path.resolve()``, reporting a failure (a deleted working directory) as unreadable.
 
     Raises:
-        _UnreadableAttachmentError: When the operating system cannot resolve path.
+        _UnreadableAttachmentError: When the operating system cannot resolve path,
+            or the path cannot be handed to it (:func:`_too_long_to_name`).
     """
     try:
         return path.resolve()
     except OSError as exc:
         raise _UnreadableAttachmentError(exc.errno) from None
+    except ValueError:
+        raise _too_long_to_name() from None
 
 
 def _check_path_traversal(path: pathlib.Path, original_str: str) -> None:
@@ -568,7 +623,8 @@ def _lstat_or_none(path: pathlib.Path) -> os.stat_result | None:
 
     Raises:
         _UnreadableAttachmentError: When the operating system refuses to
-            examine the path for any reason other than its absence.
+            examine the path for any reason other than its absence, or the
+            path cannot be handed to it (:func:`_too_long_to_name`).
     """
     try:
         return os.lstat(path)
@@ -576,6 +632,8 @@ def _lstat_or_none(path: pathlib.Path) -> os.stat_result | None:
         return None
     except OSError as exc:
         raise _UnreadableAttachmentError(exc.errno) from None
+    except ValueError:
+        raise _too_long_to_name() from None
 
 
 # Unicode bidirectional formatting characters: they reorder how a name is displayed, so
@@ -655,30 +713,19 @@ def _filename_as_sent(name: str) -> str | None:
     return header.get_filename()
 
 
-def _check_length(path: pathlib.Path) -> None:
-    """Report a path longer than ``_LONGEST_PATH`` as unreadable (``ENAMETOOLONG``), before any file system call sees it.
+def _check_nameable(path: pathlib.Path) -> None:
+    """Refuse a path the operating system cannot be handed, before any file system call sees it.
 
-    Linux reports such a path as ``ENAMETOOLONG``; Python on Windows raises a bare
-    ``ValueError`` instead, so the outcome is decided here, the same everywhere.
-
-    Raises:
-        _UnreadableAttachmentError: If the path is too long.
-    """
-    if len(str(path)) > _LONGEST_PATH:
-        raise _UnreadableAttachmentError(errno.ENAMETOOLONG)
-
-
-def _check_nul(path: pathlib.Path) -> None:
-    """Refuse a path holding NUL before any file system call sees it.
-
-    The operating system cannot name such a file, and ``os.lstat`` would raise a
-    bare ``ValueError`` before the file name check runs.
+    NUL ends a name for the operating system, and a lone surrogate outside the
+    ``surrogateescape`` range has no bytes on POSIX (Windows names it); either way
+    ``os.lstat`` would raise a bare ``ValueError`` before the file name check runs.
 
     Args:
         path: The path to check.
 
     Raises:
-        AttachmentSecurityError: If the path contains NUL.
+        AttachmentSecurityError: ``FILENAME`` if the path contains NUL or cannot be
+            encoded for the operating system.
     """
     if "\x00" in str(path):
         raise AttachmentSecurityError(
@@ -686,6 +733,14 @@ def _check_nul(path: pathlib.Path) -> None:
             reason=f'file name contains a control character: "{path}"',
             violation_type=AttachmentViolation.FILENAME,
         )
+    try:
+        os.fsencode(path)
+    except UnicodeEncodeError:
+        raise AttachmentSecurityError(
+            path=path,
+            reason=f'path can not be encoded for the operating system: "{path}"',
+            violation_type=AttachmentViolation.FILENAME,
+        ) from None
 
 
 def _case_as_the_file_system_does(text: str) -> str:
@@ -927,8 +982,9 @@ def _open_attachment(path: pathlib.Path, security: AttachmentSecurityOptions) ->
 
     Raises:
         AttachmentSecurityError: ``CHANGED`` when the path became a symlink or
-            another file after the checks; ``SIZE`` when the file exceeds
-            max_size.
+            another file after the checks, or something other than a regular
+            file (a directory, a FIFO) while it was opened; ``SIZE`` when the
+            file exceeds max_size.
         _UnreadableAttachmentError: When the regular file exists but the
             operating system refuses to open it.
     """
@@ -947,11 +1003,20 @@ def _open_attachment(path: pathlib.Path, security: AttachmentSecurityOptions) ->
         if exc.errno in _NOFOLLOW_ERRNOS:
             raise _changed_after_check(path) from None
         raise _UnreadableAttachmentError(exc.errno) from None
-    handle = os.fdopen(descriptor, "rb")
+    except ValueError:
+        raise _too_long_to_name() from None
+    # Judged on the raw descriptor: os.fdopen raises a bare IsADirectoryError for a
+    # directory swapped in during the open (POSIX opens one for reading), and the
+    # descriptor it was handed would leak with it.
     try:
-        opened = os.fstat(handle.fileno())
+        opened = os.fstat(descriptor)
         if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (checked.st_dev, checked.st_ino):
             raise _changed_after_check(path)
+    except BaseException:
+        os.close(descriptor)
+        raise
+    handle = os.fdopen(descriptor, "rb")
+    try:
         _check_descriptor_path(handle.fileno(), path, security)
         _check_size(path, opened.st_size, security.max_size_bytes)
     except BaseException:
@@ -1023,11 +1088,11 @@ def _validate_attachment_security(
     Raises:
         AttachmentSecurityError: If any check fails. File existence is not
             checked here.
-        _UnreadableAttachmentError: When the path cannot be examined, is
-            longer than any operating system can name, or is a symlink loop.
+        _UnreadableAttachmentError: When the path cannot be examined (also when
+            it is longer than the operating system can name, or cannot be encoded
+            for it), or is a symlink loop.
     """
-    _check_nul(path)
-    _check_length(path)
+    _check_nameable(path)
     _check_path_traversal(path, original_path_str)
     resolved_path = _check_symlink(path=path, allow_symlinks=security.allow_symlinks)
     _check_resolved_path(resolved_path, security)

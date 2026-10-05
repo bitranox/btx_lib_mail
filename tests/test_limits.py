@@ -443,3 +443,32 @@ def test_a_security_refusal_quotes_an_overlong_path_by_its_start_and_length_and_
     assert len(str(error)) < 2 * 4096
     assert str(error).count(f"... ({len(str(long_path))} characters)") == 1  # [path=...]; the reason is cut by its own length
     assert str(pickle.loads(pickle.dumps(error))) == str(error)  # noqa: S301 - round-trips an object this test just built
+
+
+@pytest.mark.os_agnostic
+def test_a_warn_mode_violation_logs_an_overlong_path_by_its_start_and_length(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """The violation log's attachment_path field is bounded like the message; a traversal is refused before any file system call."""
+    long_path = f"{tmp_path}/../{'a' * 30_000}.txt"  # over the quote limit, so the path is cut, and refused as a traversal
+
+    _send(
+        RecordingTransport(),
+        attachment_file_paths=[long_path],
+        attachment_blocked_directories=frozenset(),
+        config=ConfMail(attachment_raise_on_security_violation=False),
+    )
+
+    logged = everything_logged(caplog)
+    assert "traversal" in logged, "positive control: the violation was logged"
+    assert len(logged) < 16384
+
+
+@pytest.mark.os_agnostic
+def test_an_overlong_path_has_its_start_cleaned_of_control_characters(tmp_path: Path) -> None:
+    """A long path is quoted by its first characters; those are cleaned like a short path, so no line can be forged."""
+    long_path = tmp_path / f"report\nWARNING forged{_OVERLONG_NAME}.txt"
+
+    with pytest.raises(AttachmentNotFoundError) as raised:
+        _send(RecordingTransport(), attachment_file_paths=[long_path], attachment_blocked_directories=frozenset())
+
+    assert "... (" in str(raised.value), "positive control: the path was quoted by its start"
+    assert "\n" not in str(raised.value)

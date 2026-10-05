@@ -42,6 +42,9 @@ def _invoke_cli(argv: Sequence[str] | None) -> int:
     Returns:
         Exit code returned by the CLI execution.
     """
+    # Set by a failed send and read by the JSON failure handler; a later run in the same
+    # process (an application embedding main()) must not report an earlier run's skips.
+    FAILED_RUN_SKIPPED.set(())
     argv_list = list(argv) if argv is not None else None
     as_json, bare = _json_mode(argv_list if argv_list is not None else sys.argv[1:])
     if not as_json:

@@ -368,6 +368,8 @@ def test_a_deadline_that_passes_before_the_socket_exists_still_ends_the_read_aft
             finished_reading.set()
             elapsed = time.monotonic() - started
     finally:
+        # On Windows the watchdog leaves a placeholder socket on the session; only close() releases it.
+        connection.close()
         near.close()
         far.close()
 

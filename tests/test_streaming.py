@@ -23,7 +23,7 @@ from btx_lib_mail import DeliveryError, DeliveryOptions, _compose, _transport, l
 from btx_lib_mail import cli as cli_mod
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
 from aiosmtpd.controller import Controller
@@ -267,6 +267,42 @@ def test_compose_uses_crlf_line_endings(tmp_path: Path) -> None:
     assert b"\n" not in raw.replace(b"\r\n", b"")
 
 
+@pytest.mark.os_agnostic
+def test_an_attachment_part_uses_crlf_line_endings(tmp_path: Path) -> None:
+    """Bare LF in the DATA stream is refused by strict servers (Postfix smtpd_forbid_bare_newline)."""
+    content = bytes(range(256)) * 40
+    attachment = tmp_path / "data.pdf"
+    attachment.write_bytes(content)
+    transport = RecordingTransport()
+    lib_mail.send(
+        "sender@example.com",
+        "one@example.com",
+        "Report",
+        smtphosts=["smtp.example.com"],
+        attachment_file_paths=[attachment],
+        attachment_blocked_directories=frozenset(),
+        transport=transport,
+    )
+    raw = transport.only.raw
+    assert b"\n" not in raw.replace(b"\r\n", b"")
+    parsed = message_from_bytes(raw)
+    [part] = [part for part in parsed.walk() if part.get_filename() == "data.pdf"]
+    assert part.get_payload(decode=True) == content
+    assert parsed["MIME-Version"] == "1.0", "RFC 2045: the top-level header block names the MIME version"
+
+
+@pytest.mark.os_agnostic
+def test_a_composed_message_seeks_like_a_file() -> None:
+    """message_for is documented seekable: a transport may seek into the header or measure the end."""
+    body = io.BytesIO(b"MIME-Version: 1.0\r\n\r\nbody\r\n")
+    header = b"Subject: s\r\nTo: r@example.com\r\n"
+    whole = header + body.getvalue()
+    with _compose.message_for(header, body) as message:
+        assert message.seek(0, io.SEEK_END) == len(whole)
+        message.seek(3)
+        assert message.read() == whole[3:]
+
+
 # ---------------------------------------------------------------------------
 # End-to-end delivery against a real in-process SMTP server
 # ---------------------------------------------------------------------------
@@ -507,6 +543,218 @@ def test_a_reply_of_exactly_the_line_limit_is_read_whole() -> None:
 
     assert code == 250
     assert text.split(b"\n") == [b"more"] * (limit - 1) + [b"last"]
+
+
+def _ehlo_against(serve: Callable[[socket.socket], None], *, timeout: float = 5.0) -> tuple[int, bytes]:
+    """Connect a session to a one-client server running serve, and return its EHLO reply."""
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        server = threading.Thread(target=serve, args=(listener,), daemon=True)
+        server.start()
+        connection = _transport._SessionSMTP(local_hostname="client.example.com", timeout=timeout)
+        try:
+            connection.connect("127.0.0.1", listener.getsockname()[1])
+            return connection.ehlo()
+        finally:
+            connection.close()
+            server.join(timeout=5)
+
+
+@pytest.mark.os_agnostic
+def test_a_reply_one_line_over_the_limit_is_refused() -> None:
+    """The limit is the most lines one reply may carry; one more is refused, not read."""
+    limit = _transport._MAX_REPLY_LINES
+    reply = b"250-more\r\n" * limit + b"250 last\r\n"
+    with pytest.raises(smtplib.SMTPResponseException) as raised:
+        _ehlo_against(lambda listener: _answer_ehlo_with(listener, reply))
+    assert (raised.value.smtp_code, raised.value.smtp_error) == (500, "Reply too long.")
+
+
+@pytest.mark.os_agnostic
+def test_a_reply_line_longer_than_smtplib_allows_is_refused() -> None:
+    """smtplib refuses a reply line over 8192 bytes; the bounded reader keeps that rule."""
+    reply = b"250-" + b"a" * _transport._MAX_REPLY_LINE_BYTES + b"\r\n250 last\r\n"
+    with pytest.raises(smtplib.SMTPResponseException) as raised:
+        _ehlo_against(lambda listener: _answer_ehlo_with(listener, reply))
+    assert (raised.value.smtp_code, raised.value.smtp_error) == (500, "Line too long.")
+
+
+@pytest.mark.os_agnostic
+def test_a_reply_line_of_exactly_smtplibs_limit_is_read() -> None:
+    line = b"250-" + b"a" * (_transport._MAX_REPLY_LINE_BYTES - 6) + b"\r\n"
+    assert len(line) == _transport._MAX_REPLY_LINE_BYTES
+    code, _text = _ehlo_against(lambda listener: _answer_ehlo_with(listener, line + b"250 last\r\n"))
+    assert code == 250
+
+
+@pytest.mark.os_agnostic
+def test_a_reply_line_without_end_is_refused_at_the_line_limit_not_at_the_timeout() -> None:
+    """Only the limit is read: a line that never ends is refused at once, before the socket timeout ends it."""
+
+    def serve(listener: socket.socket) -> None:
+        connection, _address = listener.accept()
+        with connection, contextlib.suppress(OSError):
+            connection.sendall(b"220 server.example.com ready\r\n")
+            connection.recv(1024)
+            connection.sendall(b"250-" + b"a" * (2 * _transport._MAX_REPLY_LINE_BYTES))
+            while connection.recv(1024):  # until the client hangs up
+                pass
+
+    with pytest.raises(smtplib.SMTPResponseException) as raised:
+        _ehlo_against(serve, timeout=3.0)
+    assert (raised.value.smtp_code, raised.value.smtp_error) == (500, "Line too long.")
+
+
+@pytest.mark.os_agnostic
+def test_a_reply_code_without_text_is_a_whole_reply() -> None:
+    """RFC 5321 makes the text after the code optional: "220" and "250" alone are complete replies."""
+
+    def serve(listener: socket.socket) -> None:
+        connection, _address = listener.accept()
+        with connection, contextlib.suppress(OSError):
+            connection.sendall(b"220\r\n")
+            connection.recv(1024)
+            connection.sendall(b"250\r\n")
+            while connection.recv(1024):  # until the client hangs up
+                pass
+
+    code, text = _ehlo_against(serve, timeout=3.0)
+    assert (code, text) == (250, b"")
+
+
+@pytest.mark.os_agnostic
+def test_a_reply_read_that_times_out_is_reported_as_a_lost_connection() -> None:
+    """getreply's documented failure: a read error closes the session and raises SMTPServerDisconnected."""
+
+    def serve(listener: socket.socket) -> None:
+        connection, _address = listener.accept()
+        with connection, contextlib.suppress(OSError):
+            connection.sendall(b"220 server.example.com ready\r\n")
+            while connection.recv(1024):  # reads EHLO, never answers, until the client hangs up
+                pass
+
+    with pytest.raises(smtplib.SMTPServerDisconnected, match="Connection unexpectedly closed"):
+        _ehlo_against(serve, timeout=0.5)
+
+
+@pytest.mark.os_agnostic
+def test_a_server_that_hangs_up_before_greeting_is_a_lost_connection() -> None:
+    """An empty read is the end of the connection, not a reply with code -1."""
+
+    def serve(listener: socket.socket) -> None:
+        connection, _address = listener.accept()
+        connection.close()
+
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        server = threading.Thread(target=serve, args=(listener,), daemon=True)
+        server.start()
+        connection = _transport._SessionSMTP(local_hostname="client.example.com", timeout=5.0)
+        try:
+            with pytest.raises(smtplib.SMTPServerDisconnected, match="Connection unexpectedly closed"):
+                connection.connect("127.0.0.1", listener.getsockname()[1])
+        finally:
+            connection.close()
+            server.join(timeout=5)
+
+
+class _ScriptedPeer:
+    """A raw SMTP server for one client: answers each command line from a script and records what it received.
+
+    aiosmtpd cannot refuse DATA before its 354, refuse MAIL FROM and RCPT TO in one
+    session, or refuse one BDAT chunk and accept the next, so the wire is scripted here.
+    """
+
+    def __init__(self, answer: Callable[[bytes], bytes]) -> None:
+        self.answer = answer
+        self.received: list[bytes] = []
+        self.listener = socket.create_server(("127.0.0.1", 0))
+        self.port: int = self.listener.getsockname()[1]
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+        self.thread.start()
+
+    def _serve(self) -> None:
+        connection, _address = self.listener.accept()
+        with connection, contextlib.suppress(OSError), connection.makefile("rb") as reader:
+            connection.sendall(b"220 server.example.com ready\r\n")
+            for line in reader:
+                self.received.append(line)
+                if line.upper().startswith(b"BDAT "):
+                    reader.read(int(line.split()[1]))  # the chunk follows its command line
+                connection.sendall(self.answer(line))
+
+    def close(self) -> None:
+        self.thread.join(timeout=5)
+        self.listener.close()
+
+
+def _deliver_to(port: int, message: bytes) -> None:
+    _transport.SmtplibTransport().deliver(
+        host=f"127.0.0.1:{port}",
+        sender="sender@example.com",
+        recipient="recipient@example.com",
+        message=io.BytesIO(message),
+        delivery=DeliveryOptions(credentials=None, use_starttls=False, starttls_verify=False, timeout=5.0, local_hostname="client.example.com", deadline=None),
+    )
+
+
+def _plain_answers(*, mail: bytes = b"250 ok\r\n", data: bytes = b"354 go ahead\r\n", chunking: bool = False) -> Callable[[bytes], bytes]:
+    def answer(line: bytes) -> bytes:
+        command = line[:4].upper()
+        if command == b"EHLO":
+            return b"250-server.example.com\r\n250 CHUNKING\r\n" if chunking else b"250 server.example.com\r\n"
+        if command == b"MAIL":
+            return mail
+        if command == b"DATA":
+            return data
+        return b"250 ok\r\n" if command in (b"RCPT", b"QUIT") else b"500 unexpected\r\n"
+
+    return answer
+
+
+@pytest.mark.os_agnostic
+def test_a_refused_mail_from_is_a_sender_refusal_and_no_recipient_is_named() -> None:
+    peer = _ScriptedPeer(_plain_answers(mail=b"550 5.7.1 sender refused\r\n"))
+    try:
+        with pytest.raises(smtplib.SMTPSenderRefused) as raised:
+            _deliver_to(peer.port, b"Subject: s\r\n\r\nbody\r\n")
+    finally:
+        peer.close()
+    assert raised.value.smtp_code == 550
+    assert not any(line.upper().startswith(b"RCPT") for line in peer.received)
+
+
+@pytest.mark.os_agnostic
+def test_a_refused_data_command_sends_no_message_line() -> None:
+    """Past a refused DATA the server reads commands: a body line sent then would be run as one."""
+    peer = _ScriptedPeer(_plain_answers(data=b"554 5.5.1 no valid recipients\r\n"))
+    try:
+        with pytest.raises(smtplib.SMTPDataError) as raised:
+            _deliver_to(peer.port, b"Subject: s\r\n\r\nRCPT TO:<someone-else@example.com>\r\n")
+    finally:
+        peer.close()
+    assert raised.value.smtp_code == 554
+    assert peer.received[-1].upper().startswith(b"DATA")
+
+
+@pytest.mark.os_agnostic
+def test_a_refused_bdat_chunk_ends_the_transfer() -> None:
+    """A message is lost when a chunk is refused and the rest is sent as if it were not."""
+    answers = _plain_answers(chunking=True)
+    seen_chunks: list[bytes] = []
+
+    def answer(line: bytes) -> bytes:
+        if line.upper().startswith(b"BDAT "):
+            seen_chunks.append(line)
+            return b"552 5.3.4 chunk refused\r\n" if len(seen_chunks) == 1 else b"250 ok\r\n"
+        return answers(line)
+
+    peer = _ScriptedPeer(answer)
+    try:
+        with pytest.raises(smtplib.SMTPDataError) as raised:
+            _deliver_to(peer.port, b"Subject: s\r\n\r\n" + b"x" * (2 * _transport.STREAM_CHUNK_SIZE) + b"\r\n")
+    finally:
+        peer.close()
+    assert raised.value.smtp_code == 552
+    assert len(seen_chunks) == 1
 
 
 # ---------------------------------------------------------------------------
