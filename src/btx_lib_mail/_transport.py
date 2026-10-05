@@ -263,8 +263,12 @@ def _quit_quietly(smtp_connection: smtplib.SMTP) -> None:
 # How often the deadline watchdog looks for a socket that a running connect has not made yet.
 _SOCKET_POLL_SECONDS: Final[float] = 0.05
 
-# A connect started with no time left still gets this long, so it fails as a timeout.
+# A connect started with a sliver of time left still gets this long, so it fails as a
+# timeout rather than as a non-blocking connect.
 _MIN_CONNECT_SECONDS: Final[float] = 0.001
+
+# One entry of socket.getaddrinfo(): family, socket kind, protocol, canonical name, address.
+_AddressInfo = tuple[socket.AddressFamily, socket.SocketKind, int, str, "tuple[str, int] | tuple[str, int, int, int] | tuple[int, bytes]"]
 
 
 class _SessionSMTP(smtplib.SMTP):
@@ -305,18 +309,72 @@ class _SessionSMTP(smtplib.SMTP):
         self._host = host
         if self.ends_at is None:
             return socket.create_connection((host, port), timeout, self.source_address)
-        # The connect is bounded by what is left of the deadline; the reads and
-        # writes after it keep the socket timeout.
-        connect_timeout = max(min(timeout, self.ends_at - time.monotonic()), _MIN_CONNECT_SECONDS)
-        try:
-            connection_socket = socket.create_connection((host, port), connect_timeout, self.source_address)
-        except TimeoutError:
-            # Decided here, not by the clock afterwards: the watchdog can still be
-            # a clock tick away (Windows), and then nothing else says why it ended.
-            self.connect_ran_out = connect_timeout < timeout
-            raise
+        connection_socket = self._connect_in_time_left(host, port, timeout=timeout, ends_at=self.ends_at)
+        # The reads and writes after the connect keep the socket timeout.
         connection_socket.settimeout(timeout)
         self.cut_handle = connection_socket.dup()
+        return connection_socket
+
+    def _connect_in_time_left(self, host: str, port: int, *, timeout: float, ends_at: float) -> socket.socket:
+        """Try each address host resolves to, each attempt bounded by what is left of the deadline.
+
+        socket.create_connection() gives every address the same timeout, so a host
+        name with several addresses that never answer ran the deadline several
+        times over. The name lookup itself cannot be interrupted; once it has used
+        up the deadline, no connect is started.
+
+        Args:
+            host: Host name or address to connect to.
+            port: TCP port.
+            timeout: Socket timeout in seconds; an attempt never gets longer.
+            ends_at: The ``time.monotonic()`` value at which the deadline passes.
+
+        Returns:
+            The connected socket.
+
+        Raises:
+            OSError: The error of the last address tried (TimeoutError when it
+                ran out of time), or a TimeoutError when no time was left to try.
+        """
+        last_error: OSError = OSError(f"no address to connect to for {host!r}")
+        for address_info in socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM):
+            time_left = ends_at - time.monotonic()
+            if time_left <= 0:
+                self.connect_ran_out = True
+                raise TimeoutError("no time left before the delivery deadline to connect") from None
+            connect_timeout = max(min(timeout, time_left), _MIN_CONNECT_SECONDS)
+            try:
+                return self._open_connection(address_info, timeout=connect_timeout)
+            except TimeoutError as error:
+                # Decided here, not by the clock afterwards: the watchdog can still be
+                # a clock tick away (Windows), and then nothing else says why it ended.
+                self.connect_ran_out = connect_timeout < timeout
+                last_error = error
+            except OSError as error:
+                self.connect_ran_out = False
+                last_error = error
+        raise last_error
+
+    def _open_connection(self, address_info: _AddressInfo, *, timeout: float) -> socket.socket:
+        """Connect to one resolved address, closing the socket if the connect fails.
+
+        Args:
+            address_info: One entry of ``socket.getaddrinfo()``.
+            timeout: Seconds the connect may take.
+
+        Returns:
+            The connected socket.
+        """
+        family, kind, protocol, _name, address = address_info
+        connection_socket = socket.socket(family, kind, protocol)
+        try:
+            connection_socket.settimeout(timeout)
+            if self.source_address:
+                connection_socket.bind(self.source_address)
+            connection_socket.connect(address)
+        except BaseException:
+            connection_socket.close()
+            raise
         return connection_socket
 
 

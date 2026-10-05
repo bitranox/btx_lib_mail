@@ -487,6 +487,43 @@ def test_a_deadline_bounds_a_tcp_connect_that_hangs() -> None:
 
 
 @pytest.mark.os_agnostic
+def test_the_deadline_bounds_every_address_a_host_name_resolves_to(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each address got the whole time left, so three that never answer ran the deadline three times over."""
+    with _unanswered_port() as port:
+        resolved = socket.getaddrinfo("127.0.0.1", port, 0, socket.SOCK_STREAM)
+
+        # The name service is the external edge: a host name with three addresses, none answering.
+        def three_addresses(*_args: Any, **_kwargs: Any) -> list[Any]:
+            return resolved * 3
+
+        monkeypatch.setattr(socket, "getaddrinfo", three_addresses)
+        started = time.monotonic()
+        with pytest.raises(TimeoutError, match=r"delivery deadline of 0\.5 seconds"):
+            _deliver(port, deadline=_DEADLINE)
+        elapsed = time.monotonic() - started
+
+    assert elapsed < 2 * _DEADLINE
+
+
+@pytest.mark.os_agnostic
+def test_a_name_lookup_that_outlasts_the_deadline_starts_no_connect(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A lookup cannot be interrupted, but no connect is attempted once it has used up the deadline."""
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        resolved = socket.getaddrinfo("127.0.0.1", listener.getsockname()[1], 0, socket.SOCK_STREAM)
+
+        def slow_lookup(*_args: Any, **_kwargs: Any) -> list[Any]:
+            time.sleep(2 * _DEADLINE)
+            return resolved
+
+        monkeypatch.setattr(socket, "getaddrinfo", slow_lookup)
+        with pytest.raises(TimeoutError, match=r"delivery deadline of 0\.5 seconds"):
+            _deliver(listener.getsockname()[1], deadline=_DEADLINE)
+        listener.settimeout(0.2)
+        with pytest.raises(TimeoutError):
+            listener.accept()  # nothing connected
+
+
+@pytest.mark.os_agnostic
 def test_a_connect_that_runs_out_of_the_deadline_is_reported_as_the_deadline_before_the_watchdog_fires() -> None:
     """On Windows the bounded connect timed out a clock tick before the watchdog ran and read as a plain timeout."""
     connection = _transport._SessionSMTP(local_hostname="client.example.com", timeout=_SOCKET_TIMEOUT)
