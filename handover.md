@@ -1,45 +1,49 @@
-# STALE - read 2026-10-05, work continued
+# Handover - btx_lib_mail, 2026-10-05 (sweep 5 fixed, sweep 6 reviewed and unfixed)
 
 Read `OPEN-WORK.md` first. Open: ranks 21, 22, 30, 40 (USER; 22 and 30 held by the owner until
 release, 40 deferred) and 50 (FOUND, sibling repos).
 
 ## In flight
 
-Nothing is part-done. Rank 21 (the code-quality review loop) stands between sweeps: all 23
-sweep-4 findings are fixed, plus one the reviewers missed (`send(smtphosts="smtp.example.com")`
-delivered to a host named "s"). Sweep 5 has not been dispatched.
+Rank 21, the code-quality review loop. Sweep 5 (30 findings) is fixed and committed. Sweep 6
+ran its three reviewers and every finding is recorded, verified where marked, but NOTHING of
+sweep 6 is fixed yet. The owner granted "full auto for sweep 6 fixes" and chose to start the
+fixing in a fresh session.
+
+- Record: `.private/review-2026-10-05-sweep6.md` (findings, and a Status section with the fix order).
+- Probes that reproduce the findings: `.private/sweep6-probes/revB_probes_keep.py.txt` (24 tests that
+  kill every real surviving mutant) and `.private/sweep6-probes/reviewerA/` (p_*.py; c.pem/k.pem are a
+  throwaway TLS key for p_tlsdrip*.py). The probes were written in another session's scratchpad, so
+  absolute paths inside them may need adjusting.
 
 ## Committed, or not
 
-- Everything is committed; the tree is clean apart from this handover and the rank-22 edit in
-  `OPEN-WORK.md`, committed together with this file. Sweep 4 is 39f7a4f..a3548f1 plus the
-  backlog commit 167481d. All commits since origin/master stay local until the 4.0.0 bump
-  (rank 30).
-- Gitignored, not in git: `.private/review-2026-10-02-sweep4.md` (the 23 findings as reported),
-  `EXECUTION-USER-REVIEW.md` (sweep-4 judgement calls under "Autonomous decisions", the owner's
-  "Full auto" under "User decisions"), `.private/python-send-mail-SKILL.md.sweep2` (held skill
-  text, updated in sweep 4 for F10 and F12).
-- In another, private repo: a consumer's mail helper ignores its `--subject` option; that is
-  filed in that repo's own `OPEN-WORK.md`, not here.
+- Everything is committed. Sweep 5 is 7714e0b..5af977a, plus 0375b82 (backlog). This handover and
+  the rank 21/22 edits in `OPEN-WORK.md` are committed together with this file.
+- All commits since origin/master stay local until the 4.0.0 bump (rank 30).
+- Gitignored, not in git: `.private/review-2026-10-05-sweep{5,6}.md`, `.private/sweep6-probes/`,
+  `.private/python-send-mail-SKILL.md.sweep2` (held skill text, now also naming `logger` and
+  `REDACTED_INPUT`), `EXECUTION-USER-REVIEW.md` (sweep-5 autonomous decisions; the owner's
+  full-auto grants for sweeps 5 and 6).
 
 ## Decided, and why
 
-- Owner, 2026-10-03: "Full auto" covers sweep 4. Each call I made under it is logged in
-  `EXECUTION-USER-REVIEW.md`; the ones a reader might reopen:
-  - F3 refuses a single attachment path, while one `smtphosts` string is wrapped as one host:
-    `ConfMail.smtphosts` and `mail_recipients` already wrap a string, attachments never did.
-  - F5 changes the exception type for non-str arguments (TypeError/AttributeError ->
-    InvalidInputError), accepted for 4.0.0; messages of inputs refused before are unchanged.
-  - F10 refuses host names DNS can never resolve but does not restrict the character set
-    (underscore, IDN) and runs after every older check; a 39-host differential kept all 29 old
-    refusal messages.
+- Sweep 5's judgement calls are logged under "review sweep 5" in `EXECUTION-USER-REVIEW.md`. The
+  ones a reader might reopen: F1 judges the kernel's path for the open descriptor by the same
+  checks rather than requiring equality (hard links, macOS aliases); F2 type checks keep every old
+  refusal message (17-input differential); F10 documents body memory rather than hand-rolling
+  body transfer encoding.
+- Sweep 6 C1 (`invalid type of mail_addresses` wording): not changed. It is an old refusal
+  message, pinned on purpose by `test_recipients_that_are_not_a_string_or_sequence_keep_their_message`.
+- The sweep-5 note that "the device/inode comparison is the only guard" without /proc is WRONG
+  (sweep 6 A-F7 leaked 825 of 1627 with /proc hidden); correct that note when fixing F7.
 
 ## Decided against, and why
 
-- No `ensure_ascii=True` for JSON output: only unencodable characters are escaped, so readable
-  non-ASCII output is unchanged.
-- No blanket refusal of Unicode category Cf in file names: the zero-width joiner in emoji names
-  must keep working; only the bidi set is refused.
+- Sweep 5 C2 (dedupe hosts in ConfMail): docs/configuration.md states the model keeps duplicates
+  and send() drops them.
+- Sweep 5 T5 (more doc-line regex cases): after F8 a caller's key cannot carry a line break, so
+  the loosened-regex mutants have no caller text left to match.
 
 ## Still open, untouched
 
@@ -48,42 +52,47 @@ delivered to a host named "s"). Sweep 5 has not been dispatched.
 
 ## Lessons for the next nap
 
-- When fixing a per-character iteration bug in one parameter, check every sibling parameter of
-  the same `Sequence[str]` shape: `smtphosts` had the same bug and the review missed it.
-- When a commit message states what a mutation arm showed, state only what the run showed: I
-  wrote that a pipe test "fails" under a mutant it merely survives without hanging.
-- When a test input needs `str.splitlines()` to split on a Unicode separator, put the separator
-  mid-string: a trailing U+2028 gives one line, and the mutation arm survived.
-- When replacing `x or default` with a normalising helper, keep the falsy fallback: wrapping
-  first turned `smtphosts=""` from "use the config" into a refusal.
-- When editing tests under pyright strict, run pyright before the gate: a `**{key: value}`
-  literal is matched against named parameters; annotate the dict as `dict[str, Any]`.
-- tooling: the markdown table reformat runs after the Bash call ends, so a width check in the
-  same call reads the unformatted table.
+- When a watchdog cuts a blocked socket read with shutdown(), know Windows does not wake a recv()
+  blocked on a peer that sends nothing at all; close() does there, and POSIX must not close
+  (descriptor reuse under the reader).
+- When a check runs on a path and a later open runs on the same path, judge the path the kernel
+  reports for the open descriptor (/proc/self/fd, F_GETPATH, GetFinalPathNameByHandleW); O_NOFOLLOW
+  guards only the last component.
+- When an attachment name goes into a MIME filename parameter, judge the name the email package
+  will carry (it decodes RFC 2047 encoded words and drops surrounding whitespace incl. NBSP), not
+  the file system name.
+- When pydantic validate_assignment runs a mode="after" model validator, know the new value is
+  already on the instance; validating on a copy breaks private attributes unless they take a
+  separate path (sweep 6 A-F1).
+- When fixing a code-review finding, expect the fix to create the next sweep's findings: two of
+  sweep 6's three MEDIUM security findings were regressions from sweep-5 fixes.
+- When a reviewer's report path lives in a session scratchpad, copy it into the repo's ignored
+  .private/ before a handover; the next session has a different scratchpad.
+- tooling: block-masked-gate-exit refused `gate | tail` twice and a path-limited pyright once;
+  both were right.
 
 ## Exact next action
 
-Rank 21, sweep 5: invoke `bitranox:process-review-enhance-code-quality` and dispatch three
-reviewers (docs/API/CLI/architecture, security/resources, tests/mutations) over
-`3fe4a3f..HEAD` plus the full aspect checklist, as sweep 4 did (records:
-`.private/review-2026-10-02-sweep4.md`). Verify each finding against the code, fix TDD-first,
-and repeat until a full walk finds nothing; then re-score.
+Rank 21, sweep 6: read `.private/review-2026-10-05-sweep6.md`, then fix TDD-first in its Status
+order, starting with reviewer A's F1 (SecretSafeModel private attributes lost on assignment) together
+with reviewer B's T4, then A-F2 (directory rules resolved even with no attachments), A-F3 (deadline
+lost during STARTTLS). Run `env -u VIRTUAL_ENV make test` before committing each group, test
+Windows-touching changes on the local Windows dev box, then dispatch sweep 7.
 
 ## Files that matter
 
-- `src/btx_lib_mail/_validation.py`: `require_text`, `host_entries`, `check_credentials`,
-  `_check_host_name`, `_check_address_literal` (sweep 4).
-- `src/btx_lib_mail/_attachments.py`: `_lstat_or_none`, `_is_symlink`, `_BIDI_CONTROLS`,
-  `coerce_attachment_paths`, `AttachmentSecurityError.__reduce__`.
-- `src/btx_lib_mail/cli/_settings_sources.py` (`_read_bounded_env_file`),
-  `src/btx_lib_mail/cli/_output.py` (`dumps_json`), `src/btx_lib_mail/secret_safety.py`
-  (`_context_from_message`), `src/btx_lib_mail/_compose.py` (`envelope_header_lines`).
-- `tests/log_capture.py` (`assert_never_logged`), `tests/test_log_capture.py`,
-  `tests/test_packaging.py` (planted-stray build).
+- `src/btx_lib_mail/secret_safety.py` (`SecretSafeModel.__setattr__`, `_restore_assignment_state`).
+- `src/btx_lib_mail/_attachments.py` (`AttachmentSecurityOptions.__post_init__`,
+  `_check_descriptor_path`, `_check_directory_restrictions`, `_filename_as_sent`).
+- `src/btx_lib_mail/_descriptor_path.py`, `src/btx_lib_mail/_transport.py` (`_session_deadline`,
+  `_quit_quietly`), `src/btx_lib_mail/lib_mail.py` (`_HostOrder`, `_without_password`),
+  `src/btx_lib_mail/_validation.py` (`check_seconds`, `_shown`).
+- `tests/test_deadline.py` (`_SessionServer`), `tests/transport_doubles.py` (`PerHostTransport`).
 
 ## How to verify
 
-- `env -u VIRTUAL_ENV make test` ends with `{"result":"pass",...}` and refreshes `coverage.xml`.
+- `env -u VIRTUAL_ENV make test` ends with `{"result":"pass",...}` and refreshes `coverage.xml`
+  (last: 15:44, line 97.3%, branch 93.3%).
 - `git status --porcelain` is empty after this handover's commit.
 
 > Read this, then replace the first line with `# STALE - read <date>, work continued`. Do not
