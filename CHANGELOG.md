@@ -212,6 +212,11 @@
   was delivered twice, with one host `send()` raised `DeliveryError` for a message the server
   kept. Once the reply to `DATA` or `BDAT LAST` is `250`, the message counts as delivered and
   the answer to `QUIT` changes nothing.
+- A first host that could not be reached was tried first again for every recipient, so with
+  the default 30-second timeout each recipient waited 30 seconds before the next host was
+  used. Within one `send()` call, a host that failed for a reason other than a reply about the
+  message is tried last for the remaining recipients now; a refused recipient, sender or
+  message keeps the configured order.
 - The attachment header decodes an RFC 2047 encoded word in the file name, so a file named
   `=?utf-8?b?aW52b2ljZS5leGU=?=`, which has no extension to block, reached the recipient as
   `invoice.exe`. A name the message would carry as another name is refused as `FILENAME` now.

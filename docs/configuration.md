@@ -77,7 +77,10 @@ Key behaviours:
   instead of failing the first delivery. A blank entry (an empty environment
   value, a trailing comma) is dropped, and surrounding whitespace and quotes are
   stripped; the model keeps duplicates. `send()` drops exact duplicates and tries the
-  hosts in order.
+  hosts in order. Within one call, a host that failed for a reason other than a reply
+  about the message (no connection, the greeting, TLS, AUTH, a dropped or timed-out
+  session) is tried last for the remaining recipients, so a dead first host costs one
+  timeout per call, not one per recipient.
 - STARTTLS is enabled by default (`smtp_use_starttls=True`). The helper performs
   the handshake with the system SSL context before authenticating; set the flag
   to `False` when connecting to servers that do not support STARTTLS.

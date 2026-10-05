@@ -71,7 +71,7 @@ tests/
 - **Delivery**: `send()` -> `prepare_recipients` -> `prepare_attachments` (each path checked, then the file opened
   ONCE) -> `prepare_hosts` -> `check_subject` / `envelope_header_lines` (all refusals before the first delivery) ->
   `compose_body_once` (shared body + attachments encoded once per call) -> per recipient `message_for` (its header
-  lines + the shared body, read in place) -> `_deliver_to_any_host` (rewinds, failover across hosts) -> injected
+  lines + the shared body, read in place) -> `_deliver_to_any_host` (rewinds, failover across hosts; an unreachable host is tried last for the rest of the call) -> injected
   `Transport` (`SmtplibTransport` streams DATA/BDAT, one connection per recipient)
 - **EHLO name**: `ConfMail.smtp_local_hostname` / `send(local_hostname=)` / `--local-hostname` /
   `BTX_MAIL_SMTP_LOCAL_HOSTNAME`; unset, `_default_local_hostname()` computes smtplib's default once per process

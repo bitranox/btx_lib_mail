@@ -4,6 +4,7 @@ from __future__ import annotations
 # host parser, context builder), which is the tests' job, not an API leak.
 # pyright: reportPrivateUsage=false
 import os
+import smtplib
 import socket
 import ssl
 import sys
@@ -15,7 +16,7 @@ from typing import IO, TYPE_CHECKING, Any, ClassVar, cast
 
 import pytest
 from pydantic import SecretStr, ValidationError
-from transport_doubles import RecordingTransport
+from transport_doubles import PerHostTransport, RecordingTransport
 
 from btx_lib_mail import ConfMail, InvalidInputError, _compose, _transport, _validation, lib_mail
 
@@ -2372,3 +2373,34 @@ def test_a_blocked_directory_keyword_given_as_strings_is_honoured(tmp_path: Path
         lib_mail.send(**_with(attachment_file_paths=[secret], attachment_blocked_directories=[str(secret.parent)]))
 
     assert caught.value.violation_type is lib_mail.AttachmentViolation.DIRECTORY
+
+
+@pytest.mark.os_agnostic
+def test_a_host_that_cannot_be_reached_is_tried_last_for_the_remaining_recipients() -> None:
+    """A dead first host cost one full timeout per recipient; it is tried once per call now."""
+    transport = PerHostTransport({("dead.example.com", None): TimeoutError("timed out")})
+    recipients = ["one@example.com", "two@example.com", "three@example.com"]
+
+    lib_mail.send(**_with(mail_recipients=recipients, smtphosts=["dead.example.com", "live.example.com"], transport=transport))
+
+    assert transport.attempts == [
+        ("dead.example.com", "one@example.com"),
+        ("live.example.com", "one@example.com"),
+        ("live.example.com", "two@example.com"),
+        ("live.example.com", "three@example.com"),
+    ]
+
+
+@pytest.mark.os_agnostic
+def test_a_host_that_refused_one_recipient_keeps_its_place_for_the_next() -> None:
+    """A reply about one recipient says nothing about the host: the configured order holds."""
+    refusal = smtplib.SMTPRecipientsRefused({"one@example.com": (550, b"no such user")})
+    transport = PerHostTransport({("first.example.com", "one@example.com"): refusal})
+
+    lib_mail.send(**_with(mail_recipients=["one@example.com", "two@example.com"], smtphosts=["first.example.com", "second.example.com"], transport=transport))
+
+    assert transport.attempts == [
+        ("first.example.com", "one@example.com"),
+        ("second.example.com", "one@example.com"),
+        ("first.example.com", "two@example.com"),
+    ]

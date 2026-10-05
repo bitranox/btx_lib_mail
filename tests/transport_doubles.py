@@ -71,6 +71,26 @@ class RefusingTransport:
         raise self.error
 
 
+class PerHostTransport:
+    """Fail a delivery with the error *failures* names for its (host, recipient), accept it otherwise.
+
+    Every attempt is recorded as ``(host, recipient)`` in the order it was made, so a test sees
+    which host was tried first for each recipient. A key of ``(host, None)`` fails every
+    recipient on that host.
+    """
+
+    def __init__(self, failures: dict[tuple[str, str | None], BaseException]) -> None:
+        self.failures = failures
+        self.attempts: list[tuple[str, str]] = []
+
+    def deliver(self, *, host: str, sender: str, recipient: str, message: IO[bytes], delivery: DeliveryOptions) -> None:
+        self.attempts.append((host, recipient))
+        error = self.failures.get((host, recipient), self.failures.get((host, None)))
+        if error is not None:
+            raise error
+
+
 if TYPE_CHECKING:
     _RECORDING_IS_A_TRANSPORT: Transport = RecordingTransport()
     _REFUSING_IS_A_TRANSPORT: Transport = RefusingTransport()
+    _PER_HOST_IS_A_TRANSPORT: Transport = PerHostTransport({})

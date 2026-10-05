@@ -302,13 +302,54 @@ class _DeliveryOverrides:
     deadline: float | None
 
 
+class _HostOrder:
+    """The order hosts are tried in for the rest of one `send()` call.
+
+    A host that failed for a reason other than a reply about the message (no
+    connection, a greeting, TLS or AUTH failure, a dropped or timed-out session)
+    moves to the end: a dead first host otherwise cost one full timeout for
+    every recipient before the next host was tried.
+    """
+
+    def __init__(self, hosts: tuple[str, ...]) -> None:
+        self._hosts: list[str] = list(hosts)
+
+    def current(self) -> tuple[str, ...]:
+        return tuple(self._hosts)
+
+    def note_failure(self, host: str, error: BaseException) -> None:
+        if not isinstance(error, _REPLIES_ABOUT_THE_MESSAGE):
+            self._hosts.remove(host)
+            self._hosts.append(host)
+
+
+# A refused sender, recipient or message is about this message, not the host:
+# the next recipient may well be accepted there.
+_REPLIES_ABOUT_THE_MESSAGE: Final[tuple[type[BaseException], ...]] = (
+    smtplib.SMTPRecipientsRefused,
+    smtplib.SMTPSenderRefused,
+    smtplib.SMTPDataError,
+)
+
+
 @dataclass(frozen=True)
 class _DeliveryPlan:
-    """Where and how every recipient of one `send()` call is delivered."""
+    """Where and how every recipient of one `send()` call is delivered.
+
+    Attributes:
+        hosts: The hosts as configured, for the error message.
+        delivery: The resolved delivery options.
+        transport: The transport every message goes through.
+        order: The order hosts are tried in now (see `_HostOrder`).
+    """
 
     hosts: tuple[str, ...]
     delivery: DeliveryOptions
     transport: Transport
+    order: _HostOrder = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "order", _HostOrder(self.hosts))
 
 
 def _resolve_delivery_options(*, settings: ConfMail, overrides: _DeliveryOverrides) -> DeliveryOptions:
@@ -512,7 +553,7 @@ def _deliver_to_any_host(*, sender: str, recipient: str, message: IO[bytes], pla
     Returns:
         `True` if any host accepts the message; `False` otherwise.
     """
-    for host in plan.hosts:
+    for host in plan.order.current():
         try:
             # A host that read part of the message and failed leaves the stream mid-way;
             # every attempt starts from the first byte, whatever the transport does.
@@ -539,6 +580,7 @@ def _deliver_to_any_host(*, sender: str, recipient: str, message: IO[bytes], pla
             )
             return True
         except Exception as error:
+            plan.order.note_failure(host, error)
             clean_recipient = printable(recipient)
             clean_host = printable(host)
             warning_call = (
