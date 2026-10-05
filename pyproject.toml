@@ -231,7 +231,8 @@ layers = [
   "btx_lib_mail._compose",
   "btx_lib_mail._config | btx_lib_mail._transport",
   "btx_lib_mail._attachments | btx_lib_mail._validation",
-  "btx_lib_mail._common | btx_lib_mail._descriptor_path | btx_lib_mail.secret_safety | btx_lib_mail.errors",
+  "btx_lib_mail.secret_safety | btx_lib_mail.errors",
+  "btx_lib_mail._common | btx_lib_mail._descriptor_path",
   "btx_lib_mail.behaviors",
 ]
 

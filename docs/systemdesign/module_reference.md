@@ -70,9 +70,8 @@ lib_mail                                    (send() and the public re-exports)
 _compose                                    (message assembly)
 _config | _transport                        (ConfMail and conf | Transport, SmtplibTransport)
 _attachments | _validation                  (attachment security | address and host checks)
-_common | _descriptor_path | secret_safety | errors
-                                            (logger and printable | the path of an open file |
-                                             SecretSafeModel | exceptions)
+secret_safety | errors                      (SecretSafeModel | exceptions)
+_common | _descriptor_path                  (logger and printable | the path of an open file)
 behaviors                                   (scaffold helpers)
 ```
 

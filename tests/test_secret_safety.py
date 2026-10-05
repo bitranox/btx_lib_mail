@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
-from typing import TYPE_CHECKING, ClassVar, Literal, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
 import pytest
 from log_capture import assert_never_logged
@@ -42,7 +42,7 @@ from pydantic_core import PydanticCustomError
 from transport_doubles import RecordingTransport, RefusingTransport
 
 import btx_lib_mail
-from btx_lib_mail import REDACTED_INPUT, ConfMail, SecretSafeModel, _validation, lib_mail, redact_validation_error, secret_safety
+from btx_lib_mail import REDACTED_INPUT, ConfigurationError, ConfMail, SecretSafeModel, _validation, lib_mail, redact_validation_error, secret_safety
 from btx_lib_mail.secret_safety import _MAX_VISITS
 
 if TYPE_CHECKING:
@@ -1625,3 +1625,19 @@ def test_a_refused_extra_value_is_rolled_back_and_earlier_extras_are_kept() -> N
         model.flag = "bad"  # pyright: ignore[reportAttributeAccessIssue] - extra="allow"
 
     assert model.model_extra == {"note": "kept"}
+
+
+@pytest.mark.os_agnostic
+def test_a_refused_key_holding_control_characters_cannot_forge_lines_in_the_error_text() -> None:
+    """The key of an extra_forbidden error is the caller's text; CR, LF and ESC in it made extra report lines."""
+    key = "smtp_hostz" + chr(13) + chr(10) + "INFO config loaded OK" + chr(27) + "[2K"
+
+    unknown: dict[str, Any] = {key: 1}
+
+    with pytest.raises(ConfigurationError) as caught:
+        ConfMail(**unknown)
+
+    text = str(caught.value)
+    assert not any(character in text for character in (chr(13), chr(27)))
+    assert not any(line.startswith("INFO") for line in text.splitlines())
+    assert "smtp_hostz" in text

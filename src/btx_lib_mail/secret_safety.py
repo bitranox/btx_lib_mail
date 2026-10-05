@@ -50,6 +50,8 @@ from weakref import WeakKeyDictionary
 from pydantic import AliasChoices, AliasPath, BaseModel, ConfigDict, ValidationError
 from pydantic_core import InitErrorDetails, PydanticCustomError, core_schema
 
+from ._common import printable
+
 if TYPE_CHECKING:
     from pydantic import GetCoreSchemaHandler
     from pydantic_core import CoreSchema, ErrorDetails
@@ -350,11 +352,24 @@ def redact_validation_error(
         True
     """
     try:
-        details = [_redacted_detail(error, hidden_locations=credential_fields, declared_names=declared_names) for error in exc.errors(include_url=False)]
+        details = [
+            _redacted_detail(_with_printable_location(error), hidden_locations=credential_fields, declared_names=declared_names)
+            for error in exc.errors(include_url=False)
+        ]
         return error_class.from_exception_data(exc.title, details, hide_input=True)
     except Exception:
         # Fail closed: nothing of the original survives.
         return _failed_redaction(error_class)
+
+
+def _with_printable_location(error: ErrorDetails) -> ErrorDetails:
+    """Return error with control characters in its location replaced.
+
+    An ``extra_forbidden`` location is the caller's own key, and pydantic writes
+    it into the report as its own line; CR, LF or ESC in it would forge lines.
+    """
+    cleaned = tuple(printable(part) if isinstance(part, str) else part for part in error["loc"])
+    return {**error, "loc": cleaned}
 
 
 def _alias_names(alias: str | AliasPath | AliasChoices | None) -> frozenset[str]:

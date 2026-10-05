@@ -212,6 +212,9 @@
   was delivered twice, with one host `send()` raised `DeliveryError` for a message the server
   kept. Once the reply to `DATA` or `BDAT LAST` is `250`, the message counts as delivered and
   the answer to `QUIT` changes nothing.
+- A `ConfMail` key that is not a field is quoted in the error's report on a line of its own;
+  CR, LF or ESC in the key wrote extra lines into it (`INFO config loaded OK`) or terminal
+  sequences. Control characters in an error's location are replaced by spaces now.
 - A refused SMTP host was quoted whole in the message (a bad port, a missing bracket, two
   hosts in one entry, ...), so a host of a megabyte copied a megabyte into the exception and
   the log. A host longer than 300 characters is quoted by its first 300 and its length now;

@@ -119,7 +119,7 @@ tests/
 - `bandit` security scanning
 - `import-linter` enforces one layers contract (a module imports only from layers below it; modules in one layer
   are independent): `cli` > `lib_mail` > `_compose` > `_config | _transport` > `_attachments | _validation` >
-  `_common | _descriptor_path | secret_safety | errors` > `behaviors`
+  `secret_safety | errors` > `_common | _descriptor_path` > `behaviors`
 
 ## Public API
 
