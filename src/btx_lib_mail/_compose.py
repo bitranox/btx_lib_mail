@@ -99,10 +99,11 @@ def _compose_body(content: MessageContent) -> IO[bytes]:
 
 
 def _write_body(spool: IO[bytes], content: MessageContent) -> None:
+    # The text and HTML bodies arrive as str and are encoded in memory; only the
+    # attachments, which arrive as files, are streamed.
     body_message = _build_body_message(content.plain_body, content.html_body)
     if not content.attachments:
-        # No attachments: the body message is the whole message body (it is small).
-        spool.write(_flatten_message(body_message))
+        _flatten_into(spool, body_message)
         return
 
     # With attachments: hand-write a multipart/mixed so each attachment's base64
@@ -113,9 +114,9 @@ def _write_body(spool: IO[bytes], content: MessageContent) -> None:
     outer["Content-Type"] = f'multipart/mixed; boundary="{boundary}"'
     delimiter = b"--" + boundary.encode("ascii") + b"\r\n"
     spool.write(_header_block(outer))
-    # First body part: the (small) text/alternative message, headers and all.
+    # First body part: the text/alternative message, headers and all.
     spool.write(delimiter)
-    spool.write(_flatten_message(body_message))
+    _flatten_into(spool, body_message)
     spool.write(b"\r\n")
     for attachment in content.attachments:
         spool.write(delimiter)
@@ -369,18 +370,14 @@ def _header_block(message: EmailMessage) -> bytes:
     return _header_lines(message) + b"\r\n"
 
 
-def _flatten_message(message: EmailMessage) -> bytes:
-    """Serialise a whole (small) message to CRLF bytes via the SMTP policy.
+def _flatten_into(spool: IO[bytes], message: EmailMessage) -> None:
+    """Serialise a whole message to CRLF bytes via the SMTP policy, straight into spool.
 
     Args:
+        spool: Where the bytes are written.
         message: The message to serialise.
-
-    Returns:
-        The CRLF-encoded message bytes.
     """
-    buffer = io.BytesIO()
-    BytesGenerator(buffer, policy=email_policy.SMTP).flatten(message)
-    return buffer.getvalue()
+    BytesGenerator(spool, policy=email_policy.SMTP).flatten(message)
 
 
 def _write_attachment_part(spool: IO[bytes], attachment: AttachmentPayload) -> None:

@@ -1,8 +1,12 @@
 # Streaming and BDAT
 
-`btx_lib_mail` never buffers a whole message in memory. Both message assembly and
-delivery are streamed, so peak memory stays roughly constant regardless of attachment
-size. No third-party dependency is involved; it is built on the standard library.
+`btx_lib_mail` never buffers an attachment whole. Attachments are streamed from their
+files during message assembly, and the finished message is streamed during delivery, so
+peak memory stays roughly constant regardless of attachment size. The text and HTML bodies
+arrive as `str` and are encoded in memory by the standard library's `email` package (a peak
+of about six times a plain body's UTF-8 size, ten times with an HTML alternative of the same
+size); put a large payload in an attachment, not the body. No third-party dependency is
+involved; it is built on the standard library.
 
 ## Why
 
