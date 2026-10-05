@@ -298,6 +298,10 @@ class _SessionSMTP(smtplib.SMTP):
 
     # smtplib's own hook for the TCP connect (SMTP_SSL and LMTP override it too).
     def _get_socket(self, host: str, port: int, timeout: float) -> socket.socket:
+        # starttls() names the server for TLS by self._host, which connect() sets
+        # only from Python 3.14 on; a session created without a host would
+        # otherwise wrap with an empty server_hostname and refuse.
+        self._host = host
         if self.ends_at is None:
             return socket.create_connection((host, port), timeout, self.source_address)
         # The connect is bounded by what is left of the deadline; the reads and
