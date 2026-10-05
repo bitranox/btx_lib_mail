@@ -779,7 +779,7 @@ def test_a_path_swapped_for_another_regular_file_after_the_check_is_refused_as_c
     swapped: list[bool] = []
 
     def open_after_swap(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
-        if not swapped and os.fspath(path) == os.fspath(report.resolve()):
+        if not swapped and _opens(path, report):
             impostor.replace(report)
             swapped.append(True)
         return real_open(path, flags, *args, **kwargs)
@@ -793,6 +793,11 @@ def test_a_path_swapped_for_another_regular_file_after_the_check_is_refused_as_c
     assert swapped, "positive control: the swap ran inside the open"
     assert caught.value.violation_type is AttachmentViolation.CHANGED
     assert transport.messages == {}
+
+
+def _opens(path: Any, target: Path) -> bool:
+    """Whether an os.open call is the attachment's own open: by full path, or by name below a directory (Linux)."""
+    return os.fspath(path) in {os.fspath(target.resolve()), target.name}
 
 
 def _security(**overrides: Any) -> _attachments.AttachmentSecurityOptions:
@@ -843,11 +848,11 @@ def test_a_parent_directory_swapped_after_the_checks_is_refused_as_changed(tmp_p
 
 
 @pytest.mark.os_agnostic
-def test_a_parent_directory_swapped_for_an_equally_permitted_one_still_sends_what_the_policy_allows(tmp_path: Path) -> None:
-    """The open is judged by the policy, not by the spelling: a file the checks would pass is sent.
+def test_a_parent_directory_swapped_for_an_equally_permitted_one_is_refused_on_linux_and_judged_elsewhere(tmp_path: Path) -> None:
+    """Linux opens the checked path one component at a time and follows no link, /proc or not.
 
-    Positive control for the refusal above: the descriptor names another path, the path checks
-    are run on that one, and it passes them.
+    Elsewhere the open follows the link and the path the system reports for the open file is
+    judged by the same checks, so a file the policy permits is still sent there.
     """
     other = tmp_path / "other"
     other.mkdir()
@@ -859,8 +864,12 @@ def test_a_parent_directory_swapped_for_an_equally_permitted_one_still_sends_wha
     checked = _attachments._validate_attachment_security(shared / "notes.txt", str(shared / "notes.txt"), security)
     _swap_for_link(shared, other)
 
+    if sys.platform.startswith("linux"):
+        with pytest.raises(AttachmentSecurityError) as caught:
+            _attachments._open_attachment(checked, security)
+        assert caught.value.violation_type is AttachmentViolation.CHANGED
+        return
     handle = _attachments._open_attachment(checked, security)
-
     assert handle is not None
     with handle:
         assert handle.read() == b"also fine"
@@ -1016,7 +1025,7 @@ def test_a_file_unlinked_right_after_its_open_is_still_judged_by_its_own_path(tm
 
     def open_then_unlink(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
         descriptor = real_open(path, flags, *args, **kwargs)
-        if not unlinked and os.fspath(path) == os.fspath(report.resolve()):
+        if not unlinked and _opens(path, report):
             report.unlink()
             unlinked.append(True)
         return descriptor

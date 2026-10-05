@@ -769,6 +769,39 @@ _ATTACHMENT_OPEN_FLAGS: Final[int] = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) 
 _NOFOLLOW_ERRNOS: Final[frozenset[int]] = frozenset({errno.ELOOP, errno.EMLINK})
 
 
+if sys.platform == "linux":
+    # A directory on the walk below: O_PATH needs no read permission, O_NOFOLLOW with
+    # O_DIRECTORY refuses a symlink (ENOTDIR).
+    _WALK_FLAGS: Final[int] = os.O_PATH | os.O_NOFOLLOW | os.O_DIRECTORY | os.O_CLOEXEC
+
+    def _open_checked_path(path: pathlib.Path) -> int:
+        """Open the checked path one component at a time, following no symlink anywhere.
+
+        O_NOFOLLOW guards only the last component of a plain open; a parent swapped
+        for a link after the checks would lead it elsewhere. The checked path is
+        resolved, so a link in it now was put there since: refused as ``CHANGED``,
+        whether or not /proc is there to report the path afterwards.
+        """
+        directory = os.open(path.anchor, _WALK_FLAGS)
+        try:
+            for name in path.parts[1:-1]:
+                try:
+                    child = os.open(name, _WALK_FLAGS, dir_fd=directory)
+                except NotADirectoryError:
+                    raise _changed_after_check(path) from None
+                os.close(directory)
+                directory = child
+            return os.open(path.name, _ATTACHMENT_OPEN_FLAGS, dir_fd=directory)
+        finally:
+            os.close(directory)
+
+else:
+
+    def _open_checked_path(path: pathlib.Path) -> int:
+        """Open the checked path; the path the system reports for it is judged afterwards."""
+        return os.open(path, _ATTACHMENT_OPEN_FLAGS)
+
+
 def _changed_after_check(path: pathlib.Path) -> AttachmentSecurityError:
     return AttachmentSecurityError(
         path=path,
@@ -800,10 +833,12 @@ def _open_attachment(path: pathlib.Path, security: AttachmentSecurityOptions) ->
     grown past the limit - reach the message. The file is opened here once,
     compared with what was checked (same device and inode, still a regular
     file, size within the limit), and that open file is what the message body
-    is encoded from. ``O_NOFOLLOW`` guards only the last component, so the
-    path the kernel holds for the open file is judged too
-    (:func:`_check_descriptor_path`): a parent directory swapped for a link
-    cannot lead the open into a blocked directory.
+    is encoded from. ``O_NOFOLLOW`` guards only the last component: on Linux
+    the path is opened one component at a time and a link in any of them is
+    refused (:func:`_open_checked_path`); everywhere the path the kernel holds
+    for the open file is judged too (:func:`_check_descriptor_path`), so a
+    parent directory swapped for a link cannot lead the open into a blocked
+    directory.
 
     Args:
         path: The already-checked, resolved path to open.
@@ -828,7 +863,7 @@ def _open_attachment(path: pathlib.Path, security: AttachmentSecurityOptions) ->
     if not stat.S_ISREG(checked.st_mode):
         return None
     try:
-        descriptor = os.open(path, _ATTACHMENT_OPEN_FLAGS)
+        descriptor = _open_checked_path(path)
     except FileNotFoundError:
         return None
     except OSError as exc:
@@ -855,8 +890,9 @@ def _check_descriptor_path(descriptor: int, path: pathlib.Path, security: Attach
     checked path is the common case; a different one (a parent swapped for a
     link, or another name of a hard-linked file) is judged by the same path
     checks, so a file the policy permits is still sent and one it refuses is
-    not. Where the system cannot say, the device and inode comparison is the
-    remaining guard.
+    not. Where the system cannot say (Linux without /proc), the open has already
+    refused a link in any component; on another system without a lookup, a
+    parent swapped for a link is not detected.
 
     Raises:
         AttachmentSecurityError: ``CHANGED`` when the opened file's path fails

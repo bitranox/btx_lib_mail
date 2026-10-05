@@ -17,8 +17,10 @@
 - Sensitive-path patterns `/.netrc`, `/.pgpass`, `/.git-credentials`, `/.docker/config.json`,
   `/.pypirc`, `/.npmrc` and `/gh/hosts.yml`.
 - `AttachmentViolation.CHANGED`: an attachment path that became a symlink or another file
-  after it was checked, or whose parent directory was swapped for a link into a place the
-  checks refuse (the path the operating system reports for the open file is checked again).
+  after it was checked, or whose parent directory was swapped for a link (on Linux the
+  path is opened one component at a time and follows no link; on macOS and Windows the path
+  the operating system reports for the open file is checked again, so only a link into a
+  place the checks refuse is `CHANGED` there).
 - `AttachmentViolation.FILENAME`: an attachment whose file name holds a control character
   (Unicode category `Cc`: CR, LF, NUL, ESC, DEL, ...).
 - `ConfMail.smtp_delivery_deadline` / `send(delivery_deadline=)` / `--delivery-deadline` /
