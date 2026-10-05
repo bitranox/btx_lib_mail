@@ -15,6 +15,7 @@ import socket
 import ssl
 import sys
 import threading
+import time
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import IO, TYPE_CHECKING, Final, Protocol
@@ -207,7 +208,7 @@ class SmtplibTransport:
         # Not connected yet: the greeting is read while connecting, and that read
         # belongs inside the deadline. No `with`: its exit turns a QUIT reply other
         # than 221 into a failure, after the server has already taken the message.
-        smtp_connection = smtplib.SMTP(local_hostname=local_hostname, timeout=delivery.timeout)
+        smtp_connection = _SessionSMTP(local_hostname=local_hostname, timeout=delivery.timeout)
         try:
             with _session_deadline(smtp_connection, delivery.deadline):
                 smtp_connection.connect(hostname, port or 0)
@@ -261,17 +262,70 @@ def _quit_quietly(smtp_connection: smtplib.SMTP) -> None:
 # How often the deadline watchdog looks for a socket that a running connect has not made yet.
 _SOCKET_POLL_SECONDS: Final[float] = 0.05
 
+# A connect started with no time left still gets this long, so it fails as a timeout.
+_MIN_CONNECT_SECONDS: Final[float] = 0.001
+
+
+class _SessionSMTP(smtplib.SMTP):
+    """smtplib.SMTP whose session the delivery deadline can cut, through STARTTLS too.
+
+    STARTTLS detaches the plain socket and hands its descriptor to an SSL
+    socket, so the socket object the session started with can no longer be
+    shut down. A duplicate descriptor names the same connection whatever wraps
+    it: shutting it down ends a read blocked in the TLS handshake as well as
+    any read after it.
+
+    Attributes:
+        ends_at: The ``time.monotonic()`` value at which the deadline passes,
+            or None when the session has no deadline.
+        cut_handle: Duplicate of the TCP socket for the deadline watchdog,
+            made when a session with a deadline connects.
+        connect_ran_out: True when the TCP connect timed out on the time
+            left before the deadline rather than on the socket timeout.
+    """
+
+    def __init__(self, *, local_hostname: str, timeout: float) -> None:
+        """Create an unconnected session.
+
+        Args:
+            local_hostname: Name announced in EHLO.
+            timeout: Socket timeout in seconds for each read or write.
+        """
+        super().__init__(local_hostname=local_hostname, timeout=timeout)
+        self.ends_at: float | None = None
+        self.cut_handle: socket.socket | None = None
+        self.connect_ran_out = False
+
+    # smtplib's own hook for the TCP connect (SMTP_SSL and LMTP override it too).
+    def _get_socket(self, host: str, port: int, timeout: float) -> socket.socket:
+        if self.ends_at is None:
+            return socket.create_connection((host, port), timeout, self.source_address)
+        # The connect is bounded by what is left of the deadline; the reads and
+        # writes after it keep the socket timeout.
+        connect_timeout = max(min(timeout, self.ends_at - time.monotonic()), _MIN_CONNECT_SECONDS)
+        try:
+            connection_socket = socket.create_connection((host, port), connect_timeout, self.source_address)
+        except TimeoutError:
+            # Decided here, not by the clock afterwards: the watchdog can still be
+            # a clock tick away (Windows), and then nothing else says why it ended.
+            self.connect_ran_out = connect_timeout < timeout
+            raise
+        connection_socket.settimeout(timeout)
+        self.cut_handle = connection_socket.dup()
+        return connection_socket
+
 
 @contextmanager
-def _session_deadline(smtp_connection: smtplib.SMTP, seconds: float | None) -> Generator[None, None, None]:
+def _session_deadline(smtp_connection: _SessionSMTP, seconds: float | None) -> Generator[None, None, None]:
     """Bound the whole SMTP session to seconds, raising TimeoutError past it.
 
     The socket timeout bounds one read or write, so a server that answers a
     byte at a time keeps a session alive indefinitely. When the deadline
-    passes, a watchdog thread shuts the socket down, which ends whatever read
-    or write is blocked; the resulting failure is reported as a TimeoutError
-    naming the deadline, so the host counts as failed and the next one is
-    tried.
+    passes, a watchdog thread shuts the connection down, which ends whatever
+    read or write is blocked; the resulting failure is reported as a
+    TimeoutError naming the deadline, so the host counts as failed and the
+    next one is tried. Each attempt of the TCP connect is bounded by the time
+    left before the deadline.
 
     Args:
         smtp_connection: The SMTP connection to bound.
@@ -287,24 +341,17 @@ def _session_deadline(smtp_connection: smtplib.SMTP, seconds: float | None) -> G
     if seconds is None:
         yield
         return
+    smtp_connection.ends_at = time.monotonic() + seconds
     expired = threading.Event()
     finished = threading.Event()
 
     def cut() -> None:
         expired.set()
         # The deadline can pass while the TCP connect is still running, before the
-        # socket exists; wait for it, or the greeting read after it is unbounded.
+        # socket exists, or in the TLS handshake on Windows; wait for it, or the
+        # read after it is unbounded.
         while not finished.is_set():
-            connection_socket = smtp_connection.sock
-            if connection_socket is not None:
-                with suppress(OSError):
-                    connection_socket.shutdown(socket.SHUT_RDWR)
-                if sys.platform == "win32":
-                    # Windows wakes a blocked recv on close, not on shutdown, when the
-                    # peer sends nothing at all. POSIX may reuse a closed descriptor
-                    # under the reading thread, so there shutdown alone does it.
-                    with suppress(OSError):
-                        connection_socket.close()
+            if _cut_session(smtp_connection):
                 return
             finished.wait(_SOCKET_POLL_SECONDS)
 
@@ -314,12 +361,43 @@ def _session_deadline(smtp_connection: smtplib.SMTP, seconds: float | None) -> G
     try:
         yield
     except OSError as error:
-        if expired.is_set():
+        if expired.is_set() or smtp_connection.connect_ran_out:
             raise TimeoutError(f"SMTP session did not finish within the delivery deadline of {seconds} seconds") from error
         raise
     finally:
         finished.set()
         watchdog.cancel()
+        # Joined before the duplicate is closed, so the watchdog never shuts down
+        # a descriptor number the system has handed out again.
+        watchdog.join()
+        if smtp_connection.cut_handle is not None:
+            smtp_connection.cut_handle.close()
+            smtp_connection.cut_handle = None
+
+
+def _cut_session(smtp_connection: _SessionSMTP) -> bool:
+    """Shut the session's connection down; False while there is nothing to cut yet."""
+    handle = smtp_connection.cut_handle
+    if handle is None:
+        return False  # the TCP connect is still running
+    with suppress(OSError):
+        handle.shutdown(socket.SHUT_RDWR)
+    if sys.platform != "win32":
+        # POSIX may reuse a closed descriptor under the reading thread, so
+        # shutdown alone does it there.
+        return True
+    # Windows wakes a blocked recv on close, not on shutdown, when the peer
+    # sends nothing at all, and only once no handle to the connection is left
+    # open: the duplicate and the session's own socket are both closed, the
+    # latter once STARTTLS has installed it.
+    live_socket = smtp_connection.sock
+    if live_socket is None or live_socket.fileno() == -1:
+        return False
+    with suppress(OSError):
+        handle.close()
+    with suppress(OSError):
+        live_socket.close()
+    return True
 
 
 def _authenticate(smtp_connection: smtplib.SMTP, username: str, password: str) -> None:

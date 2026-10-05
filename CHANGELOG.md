@@ -26,7 +26,9 @@
   socket timeout bounds each read or write, so a server answering one byte at a time kept a
   session open indefinitely; past the deadline the socket is shut down and the host counts
   as failed (`TimeoutError`). It runs from the TCP connect, so a greeting that drips is
-  bounded too, to the server's reply to `QUIT`. Unset by default.
+  bounded too, to the server's reply to `QUIT`; each attempt of the connect gets at most the
+  time left, and a deadline passing inside the STARTTLS handshake still ends the session.
+  Unset by default.
 - CLI: `--json`/`-j` and `--json-bare` on the command group. Every subcommand prints one JSON
   document (`{"ok", "command", "data", "skipped"}`); a failure prints
   `{"ok": false, "command", "error": {"type", "message"}}` instead of a traceback, with the

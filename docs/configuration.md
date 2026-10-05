@@ -106,7 +106,10 @@ Key behaviours:
   `BTX_MAIL_SMTP_TIMEOUT` environment variable / `--env-file` entry. It bounds each socket
   operation; `smtp_delivery_deadline` (`delivery_deadline=`, `--delivery-deadline`,
   `BTX_MAIL_SMTP_DELIVERY_DEADLINE`) bounds a whole SMTP session, which a server answering
-  one byte at a time never lets the socket timeout end. It is unset by default.
+  one byte at a time never lets the socket timeout end. It is unset by default. On Windows a
+  server that falls silent inside the STARTTLS handshake is ended by the socket timeout, not
+  the deadline: Windows wakes such a read only when the socket is closed, and the socket the
+  handshake runs on is not handed back until the handshake ends.
 - The client announces itself in `EHLO` with `smtp_local_hostname` when set
   (or `local_hostname=`, `--local-hostname`, `BTX_MAIL_SMTP_LOCAL_HOSTNAME`).
   Unset, it uses this host's fully qualified name, looked up by reverse DNS

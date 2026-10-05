@@ -92,7 +92,8 @@ tests/
   group (read from the tokens before the subcommand); failures become JSON in `main()`'s exception handler.
   `python -m btx_lib_mail` runs `cli.main()` too
 - **Deadline**: `ConfMail.smtp_delivery_deadline` / `send(delivery_deadline=)` / `--delivery-deadline`; a watchdog
-  thread shuts the socket down when one SMTP session overruns (`_session_deadline`)
+  thread shuts the connection down (through a duplicate descriptor, which survives STARTTLS) when one SMTP session
+  overruns (`_session_deadline`, `_SessionSMTP`)
 
 ## Testing Conventions
 

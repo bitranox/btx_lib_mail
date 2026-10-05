@@ -27,6 +27,7 @@ from smtp_test_server import BdatController as _BdatController
 from smtp_test_server import ChunkingHandler as _ChunkingHandler
 from smtp_test_server import CollectingHandler as _CollectingHandler
 from smtp_test_server import run_server as _run_server
+from smtp_test_server import self_signed_cert
 
 
 def _compose_message(
@@ -411,48 +412,13 @@ def test_bdat_rejection_fails_the_send() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _self_signed_cert(tmp_path: Path) -> tuple[str, str]:
-    import datetime
-    import ipaddress
-
-    from cryptography import x509
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import rsa
-    from cryptography.x509.oid import NameOID
-
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
-    cert = (
-        x509.CertificateBuilder()
-        .subject_name(name)
-        .issuer_name(name)
-        .public_key(key.public_key())
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(datetime.datetime(2020, 1, 1, tzinfo=datetime.timezone.utc))
-        .not_valid_after(datetime.datetime(2100, 1, 1, tzinfo=datetime.timezone.utc))
-        .add_extension(x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]), critical=False)
-        .sign(key, hashes.SHA256())
-    )
-    cert_file = tmp_path / "cert.pem"
-    key_file = tmp_path / "key.pem"
-    cert_file.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
-    key_file.write_bytes(
-        key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.TraditionalOpenSSL,
-            serialization.NoEncryption(),
-        )
-    )
-    return str(cert_file), str(key_file)
-
-
 @pytest.mark.os_agnostic
 def test_starttls_and_auth_path_delivers(tmp_path: Path) -> None:
     import ssl
 
     from aiosmtpd.smtp import AuthResult, LoginPassword
 
-    cert_file, key_file = _self_signed_cert(tmp_path)
+    cert_file, key_file = self_signed_cert(tmp_path)
     tls_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     tls_context.load_cert_chain(certfile=cert_file, keyfile=key_file)
 

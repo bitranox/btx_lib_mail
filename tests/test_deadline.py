@@ -8,20 +8,22 @@ from __future__ import annotations
 import contextlib
 import io
 import math
-import smtplib
 import socket
+import ssl
 import threading
 import time
 from typing import TYPE_CHECKING
 
 import pytest
+from smtp_test_server import self_signed_cert
 from transport_doubles import RecordingTransport
 
 from btx_lib_mail import ConfigurationError, ConfMail, DeliveryOptions, InvalidInputError, _transport, send
 from btx_lib_mail.lib_mail import SmtplibTransport
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator, Iterator
+    from pathlib import Path
 
 # One byte every this many seconds: each read finishes well inside the socket timeout,
 # so only a bound on the whole session can end it.
@@ -84,14 +86,19 @@ def drip_server() -> Iterator[_DripServer]:
         server.close()
 
 
-def _deliver(port: int, *, deadline: float | None) -> None:
+def _deliver(port: int, *, deadline: float | None, use_starttls: bool = False) -> None:
     SmtplibTransport().deliver(
         host=f"127.0.0.1:{port}",
         sender="sender@example.com",
         recipient="recipient@example.com",
         message=io.BytesIO(b"Subject: s\r\n\r\nbody\r\n"),
         delivery=DeliveryOptions(
-            credentials=None, use_starttls=False, starttls_verify=True, timeout=_SOCKET_TIMEOUT, local_hostname="client.example.com", deadline=deadline
+            credentials=None,
+            use_starttls=use_starttls,
+            starttls_verify=False,
+            timeout=_SOCKET_TIMEOUT,
+            local_hostname="client.example.com",
+            deadline=deadline,
         ),
     )
 
@@ -305,13 +312,14 @@ def test_a_refused_quit_after_the_message_was_accepted_is_a_delivery_not_a_host_
 @pytest.mark.os_agnostic
 def test_a_deadline_that_passes_before_the_socket_exists_still_ends_the_read_after_it() -> None:
     """A slow TCP connect can outlast the deadline; the greeting read that follows must still be cut."""
-    connection = smtplib.SMTP(local_hostname="client.example.com")  # not connected: no socket yet
+    connection = _transport._SessionSMTP(local_hostname="client.example.com", timeout=_SOCKET_TIMEOUT)  # not connected: no socket yet
     near, far = socket.socketpair()
     finished_reading = threading.Event()
     try:
         with _transport._session_deadline(connection, 0.1):
             time.sleep(0.3)  # the connect, still running when the deadline passes
-            connection.sock = near
+            connection.sock = near  # what the connect makes once it returns
+            connection.cut_handle = near.dup()
             near.settimeout(_SOCKET_TIMEOUT)
             started = time.monotonic()
             with contextlib.suppress(OSError):
@@ -324,3 +332,149 @@ def test_a_deadline_that_passes_before_the_socket_exists_still_ends_the_read_aft
 
     assert finished_reading.is_set()
     assert elapsed < _SOCKET_TIMEOUT / 2
+
+
+class _SlowHandshakeServer:
+    """Offers STARTTLS, holds the TLS handshake past the deadline, then drips the EHLO reply after it."""
+
+    def __init__(self, directory: Path, *, handshake_delay: float) -> None:
+        cert_file, key_file = self_signed_cert(directory)
+        self._tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        self._tls.load_cert_chain(certfile=cert_file, keyfile=key_file)
+        self._handshake_delay = handshake_delay
+        self._listener = socket.create_server(("127.0.0.1", 0))
+        self.port = self._listener.getsockname()[1]
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        try:
+            connection, _address = self._listener.accept()
+        except OSError:
+            return  # close() shut the listener
+        with connection, connection.makefile("rb") as lines:
+            try:
+                connection.sendall(b"220 tls.example.com ESMTP\r\n")
+                for line in lines:
+                    if line[:4].upper() == b"EHLO":
+                        connection.sendall(b"250-tls.example.com\r\n250 STARTTLS\r\n")
+                    elif line[:8].upper() == b"STARTTLS":
+                        connection.sendall(b"220 go ahead\r\n")
+                        break
+                self._stop.wait(self._handshake_delay)
+                with self._tls.wrap_socket(connection, server_side=True) as secured:
+                    secured.recv(1024)  # EHLO
+                    secured.sendall(b"250-")
+                    while not self._stop.is_set():
+                        secured.sendall(b"x")
+                        time.sleep(_DRIP_INTERVAL)
+            except OSError:
+                return
+
+    def close(self) -> None:
+        self._stop.set()
+        self._listener.close()
+        self._thread.join(timeout=2)
+
+
+@pytest.mark.os_agnostic
+def test_a_deadline_that_passes_during_the_starttls_handshake_still_ends_the_session(tmp_path: Path) -> None:
+    """STARTTLS detached the socket the watchdog held, so its shutdown failed and the deadline was lost for good."""
+    server = _SlowHandshakeServer(tmp_path, handshake_delay=2 * _DEADLINE)
+    outcome: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            _deliver(server.port, deadline=_DEADLINE, use_starttls=True)
+        except BaseException as error:
+            outcome.append(error)
+
+    started = time.monotonic()
+    worker = threading.Thread(target=run, daemon=True)
+    try:
+        worker.start()
+        worker.join(timeout=_SOCKET_TIMEOUT)
+        elapsed = time.monotonic() - started
+        assert not worker.is_alive(), "the deadline did not end the session"
+    finally:
+        server.close()
+
+    assert len(outcome) == 1
+    assert isinstance(outcome[0], TimeoutError)
+    assert "delivery deadline of 0.5 seconds" in str(outcome[0])
+    assert elapsed < 4 * _DEADLINE
+
+
+@contextlib.contextmanager
+def _unanswered_port() -> Generator[int, None, None]:
+    """Yield a port whose connects hang: a listener whose backlog is already full."""
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(0)
+    port = listener.getsockname()[1]
+    queued: list[socket.socket] = []
+    try:
+        for _ in range(4):
+            client = socket.socket()
+            client.setblocking(False)
+            with contextlib.suppress(BlockingIOError):
+                client.connect(("127.0.0.1", port))
+            queued.append(client)
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+        except TimeoutError:
+            yield port
+        except OSError:
+            pytest.skip("this platform refuses a connect past a full backlog instead of leaving it waiting")
+        else:
+            pytest.skip("this platform accepts a connect past a full backlog")
+    finally:
+        for client in queued:
+            client.close()
+        listener.close()
+
+
+@pytest.mark.os_agnostic
+def test_a_deadline_bounds_a_tcp_connect_that_hangs() -> None:
+    """The connect ran under the socket timeout alone; a listener whose backlog is full never answers it."""
+    with _unanswered_port() as port:
+        started = time.monotonic()
+        with pytest.raises(TimeoutError, match=r"delivery deadline of 0\.5 seconds"):
+            _deliver(port, deadline=_DEADLINE)
+        elapsed = time.monotonic() - started
+
+    assert elapsed < _SOCKET_TIMEOUT / 2
+
+
+@pytest.mark.os_agnostic
+def test_a_connect_that_runs_out_of_the_deadline_is_reported_as_the_deadline_before_the_watchdog_fires() -> None:
+    """On Windows the bounded connect timed out a clock tick before the watchdog ran and read as a plain timeout."""
+    connection = _transport._SessionSMTP(local_hostname="client.example.com", timeout=_SOCKET_TIMEOUT)
+    with _unanswered_port() as port, pytest.raises(TimeoutError, match="delivery deadline of 30 seconds"), _transport._session_deadline(connection, 30):
+        connection.ends_at = time.monotonic() + 0.2  # the watchdog's timer is still 30 seconds away
+        connection.connect("127.0.0.1", port)
+
+
+@pytest.mark.os_agnostic
+def test_the_watchdog_stops_when_a_session_that_never_connected_ends() -> None:
+    """The watchdog waits for a socket after the deadline; a session that ends without one must release it."""
+    before = set(threading.enumerate())
+    watchdogs: list[threading.Thread] = []
+
+    def session() -> None:
+        connection = _transport._SessionSMTP(local_hostname="client.example.com", timeout=_SOCKET_TIMEOUT)  # never connected
+        with _transport._session_deadline(connection, 0.05):
+            time.sleep(0.2)  # the deadline passes while there is no socket
+            watchdogs.extend(thread for thread in threading.enumerate() if thread not in before and thread is not threading.current_thread())
+
+    # Bounded by the test: a watchdog that never stops would hold the session open.
+    worker = threading.Thread(target=session, daemon=True)
+    worker.start()
+    worker.join(timeout=2)
+    for watchdog in watchdogs:
+        watchdog.join(timeout=1)
+
+    assert watchdogs, "positive control: the session started a watchdog"
+    assert not worker.is_alive()
+    assert not any(watchdog.is_alive() for watchdog in watchdogs)
