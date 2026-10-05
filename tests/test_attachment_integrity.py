@@ -876,3 +876,63 @@ def test_an_attachment_path_below_a_regular_file_is_not_found(tmp_path: Path) ->
         _send(transport, report / "report.txt")
 
     assert transport.messages == {}
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("tolerate", [False, True], ids=["raise", "tolerate"])
+def test_a_relative_attachment_path_whose_working_directory_is_gone_is_reported_as_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, tolerate: bool
+) -> None:
+    """Resolving a relative path asks for the working directory; a deleted one raised a bare FileNotFoundError."""
+    if sys.platform == "win32":
+        pytest.skip("Windows refuses to delete the working directory of a running process")
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    monkeypatch.chdir(gone)
+    gone.rmdir()
+    transport = RecordingTransport()
+
+    if tolerate:
+        assert _send(transport, "report.txt", raise_on_missing_attachments=False) is True
+        assert "can not be read (ENOENT)" in caplog.text
+    else:
+        with pytest.raises(AttachmentNotFoundError, match=r"can not be read \(ENOENT\)$"):
+            _send(transport, "report.txt")
+
+
+@pytest.mark.os_agnostic
+def test_the_directory_rules_are_resolved_once_per_call_not_once_per_attachment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """100 attachments against 5000 blocked directories took 7.7 s, every directory resolved for every file."""
+    attachments: list[Path] = []
+    for index in range(20):
+        attachment = tmp_path / f"report-{index}.txt"
+        attachment.write_text("x")
+        attachments.append(attachment)
+    blocked = frozenset(tmp_path / "blocked" / str(index) for index in range(200))
+    real_resolve = Path.resolve
+    calls: list[int] = []
+
+    def counting_resolve(self: Path, *, strict: bool = False) -> Path:
+        calls.append(1)
+        return real_resolve(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", counting_resolve)
+
+    _send(RecordingTransport(), attachments[0], attachment_file_paths=attachments, attachment_blocked_directories=blocked)
+
+    assert len(calls) < len(blocked) + 10 * len(attachments)
+
+
+@pytest.mark.os_agnostic
+def test_a_relative_directory_rule_whose_working_directory_is_gone_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    if sys.platform == "win32":
+        pytest.skip("Windows refuses to delete the working directory of a running process")
+    report = tmp_path / "report.txt"
+    report.write_text("x")
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    monkeypatch.chdir(gone)
+    gone.rmdir()
+
+    with pytest.raises(InvalidInputError, match=r"^an attachment directory can not be resolved \(ENOENT\)$"):
+        _send(RecordingTransport(), report, attachment_blocked_directories=frozenset({Path("private")}))

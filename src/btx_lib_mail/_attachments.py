@@ -379,6 +379,40 @@ class AttachmentSecurityOptions:
     raise_on_violation: bool
     max_count: int | None
 
+    def __post_init__(self) -> None:
+        """Resolve the directory sets once; every attachment is compared with these.
+
+        Raises:
+            InvalidInputError: If a relative directory cannot be resolved (the
+                working directory is gone).
+        """
+        if self.allowed_directories is not None:
+            object.__setattr__(self, "allowed_directories", _resolved_directories(self.allowed_directories))
+        object.__setattr__(self, "blocked_directories", _resolved_directories(self.blocked_directories))
+
+
+def _resolved_directories(directories: frozenset[pathlib.Path]) -> frozenset[pathlib.Path]:
+    try:
+        return frozenset(directory.resolve() for directory in directories)
+    except OSError as exc:
+        raise InvalidInputError(f"an attachment directory can not be resolved ({_errno_name(exc.errno)})") from None
+
+
+def _errno_name(error_number: int | None) -> str:
+    return errno.errorcode.get(error_number, "OSError") if error_number is not None else "OSError"
+
+
+def _resolve(path: pathlib.Path) -> pathlib.Path:
+    """``path.resolve()``, reporting a failure (a deleted working directory) as unreadable.
+
+    Raises:
+        _UnreadableAttachmentError: When the operating system cannot resolve path.
+    """
+    try:
+        return path.resolve()
+    except OSError as exc:
+        raise _UnreadableAttachmentError(exc.errno) from None
+
 
 def _check_path_traversal(path: pathlib.Path, original_str: str) -> None:
     """Detect path traversal attempts in the original path string.
@@ -420,7 +454,7 @@ def _check_symlink(*, path: pathlib.Path, allow_symlinks: bool) -> pathlib.Path:
             (``EACCES``, ``ENAMETOOLONG``) or is a symlink loop (``ELOOP``).
     """
     if not _is_symlink(path):
-        return path.resolve()
+        return _resolve(path)
     if not allow_symlinks:
         raise AttachmentSecurityError(
             path=path,
@@ -428,7 +462,7 @@ def _check_symlink(*, path: pathlib.Path, allow_symlinks: bool) -> pathlib.Path:
             violation_type=AttachmentViolation.SYMLINK,
         )
     try:
-        resolved = path.resolve()
+        resolved = _resolve(path)
     except RuntimeError:  # Python < 3.13 reports a symlink loop this way
         raise _UnreadableAttachmentError(errno.ELOOP) from None
     # Python 3.13+ returns a loop unresolved, still a symlink.
@@ -602,34 +636,34 @@ def _check_directory_restrictions(
 
     Args:
         path: The resolved path to check.
-        allowed: When set, path must be under one of these directories.
-        blocked: Path must not be under any of these directories.
+        allowed: When set, path must be under one of these resolved directories.
+        blocked: Path must not be under any of these resolved directories.
 
     Raises:
         AttachmentSecurityError: If a directory restriction is violated.
     """
-    resolved_path = path.resolve()
+    # A resolved path is under a directory exactly when that directory is the path or
+    # one of its ancestors; a set intersection costs the path's depth, not the number
+    # of rules (100 attachments against 5000 blocked directories took seconds).
+    ancestors = {path, *path.parents}
 
     if allowed is not None:
-        # Whitelist mode: path must be under an allowed directory. is_relative_to()
-        # (3.9+) reports membership without raising, so no try/except is needed per
-        # candidate directory.
-        is_allowed = any(resolved_path.is_relative_to(allowed_dir.resolve()) for allowed_dir in allowed)
-        if not is_allowed:
+        if allowed.isdisjoint(ancestors):
             raise AttachmentSecurityError(
                 path=path,
                 reason=f'path not under any allowed directory: "{path}"',
                 violation_type=AttachmentViolation.DIRECTORY,
             )
     else:
-        # Blacklist mode: path must not be under a blocked directory
-        for blocked_dir in blocked:
-            if resolved_path.is_relative_to(blocked_dir.resolve()):
-                raise AttachmentSecurityError(
-                    path=path,
-                    reason=f'path under blocked directory "{blocked_dir}": "{path}"',
-                    violation_type=AttachmentViolation.DIRECTORY,
-                )
+        # The nearest blocked ancestor is named, the same one whatever the set's order.
+        blocked_ancestors = blocked & ancestors
+        if blocked_ancestors:
+            blocked_dir = max(blocked_ancestors, key=lambda directory: len(directory.parts))
+            raise AttachmentSecurityError(
+                path=path,
+                reason=f'path under blocked directory "{blocked_dir}": "{path}"',
+                violation_type=AttachmentViolation.DIRECTORY,
+            )
 
 
 def _check_extension(
@@ -741,7 +775,7 @@ class _UnreadableAttachmentError(Exception):
     """
 
     def __init__(self, error_number: int | None) -> None:
-        self.code = errno.errorcode.get(error_number, "OSError") if error_number is not None else "OSError"
+        self.code = _errno_name(error_number)
         super().__init__(self.code)
 
 

@@ -215,6 +215,14 @@
 - A `ConfMail` key that is not a field is quoted in the error's report on a line of its own;
   CR, LF or ESC in the key wrote extra lines into it (`INFO config loaded OK`) or terminal
   sequences. Control characters in an error's location are replaced by spaces now.
+- A relative attachment path while the working directory had been deleted raised a bare
+  `FileNotFoundError`, even with `raise_on_missing_attachments=False`. It is reported like
+  any file that cannot be examined now (`can not be read (ENOENT)`); a relative directory
+  rule that cannot be resolved then is an `InvalidInputError`.
+- The allowed and blocked directories were resolved again for every attachment and each
+  attachment compared with every one: 100 attachments against 5000 blocked directories took
+  7.7 seconds. They are resolved once per call, and each attachment is checked against its
+  own ancestors (0.05 seconds).
 - A refused SMTP host was quoted whole in the message (a bad port, a missing bracket, two
   hosts in one entry, ...), so a host of a megabyte copied a megabyte into the exception and
   the log. A host longer than 300 characters is quoted by its first 300 and its length now;
