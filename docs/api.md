@@ -329,8 +329,9 @@ credential out of a `pydantic.ValidationError`:
   defined: a name that is not a declared field (a typo, or an alias listed instead of
   its field), a value that is not a set of str (a plain `"password"` would be read as
   its letters), or an annotated `credential_fields` that pydantic turns into a field
-  raises `TypeError` at class definition. A validated assignment that a model-level
-  validator refuses is rolled back, so the instance keeps its previous values.
+  raises `TypeError` at class definition. A validated assignment is validated on a copy and
+  installed only when it passes, so a value a model-level validator refuses never reaches the
+  instance, not even for a moment another thread could read it in.
   `ConfMail` is one such subclass
   (`credential_fields = frozenset({"smtp_password", "smtphosts"})`; `smtphosts` is
   included because a host string carrying `user:password@` is refused there, and that

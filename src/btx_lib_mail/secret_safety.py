@@ -627,24 +627,24 @@ class SecretSafeModel(BaseModel, metaclass=_SecretSafeMeta):
                 value: New value to validate and assign.
 
             Raises:
-                ValidationError: The assignment failed; the model's prior
-                    state is restored first and the error is redacted.
+                ValidationError: The assignment failed; the model is left as
+                    it was and the error is redacted.
             """
-            # pydantic writes the new value before a mode="after" model
-            # validator runs and leaves it there when that validator raises
-            # (whatever it raises), so the state is saved here and put back on
-            # any failure.
-            saved = self._assignment_state()
+            if name not in type(self).model_fields and self.__pydantic_extra__ is None:
+                super().__setattr__(name, value)  # a private or class attribute: nothing to validate
+                return
+            # pydantic writes the new value before a mode="after" model validator
+            # runs, and the global conf is shared: validated on a copy, a refused
+            # value never reaches the live instance, where another thread could
+            # read it before a rollback.
+            candidate = self.model_copy()
             try:
-                super().__setattr__(name, value)
+                super(SecretSafeModel, candidate).__setattr__(name, value)
             except ValidationError as exc:
                 original = exc
-            except BaseException:
-                self._restore_assignment_state(saved)
-                raise
             else:
+                self._restore_assignment_state(candidate._assignment_state())
                 return
-            self._restore_assignment_state(saved)
             raise type(self)._redacted(original)
 
         def _assignment_state(self) -> tuple[dict[str, Any], set[str], dict[str, Any] | None]:
@@ -653,7 +653,7 @@ class SecretSafeModel(BaseModel, metaclass=_SecretSafeMeta):
 
         def _restore_assignment_state(self, saved: tuple[dict[str, Any], set[str], dict[str, Any] | None]) -> None:
             # One swap per attribute, so a reader on another thread never sees
-            # a half-restored __dict__ (the global conf is shared).
+            # a half-written __dict__ (the global conf is shared).
             values, fields_set, extra = saved
             object.__setattr__(self, "__dict__", values)
             object.__setattr__(self, "__pydantic_fields_set__", fields_set)

@@ -1671,3 +1671,45 @@ def test_a_server_echoing_the_auth_line_does_not_put_the_credential_in_the_log(c
     assert "5.7.8 rejected" in caplog.text, "positive control: the reply is logged"
     assert login_line not in caplog.text
     assert_never_logged(caplog, password, user=user)
+
+
+class _WatchedSettings(SecretSafeModel):
+    """Records, from inside its own after-validator, what the live instance holds at that moment."""
+
+    model_config = ConfigDict(validate_assignment=True)
+    blocked: frozenset[str] = frozenset({".exe"})
+    live: ClassVar[list[_WatchedSettings]] = []
+    seen_mid_assignment: ClassVar[list[frozenset[str]]] = []
+
+    @model_validator(mode="after")
+    def _refuse_an_empty_blocklist(self) -> _WatchedSettings:
+        if _WatchedSettings.live:
+            _WatchedSettings.seen_mid_assignment.append(_WatchedSettings.live[0].blocked)
+        if not self.blocked:
+            raise ValueError("blocked must not be empty")
+        return self
+
+
+@pytest.mark.os_agnostic
+def test_a_refused_assignment_is_never_visible_on_the_live_instance() -> None:
+    """Another thread read the refused value between pydantic's write and the rollback: an empty blocklist sent .exe."""
+    settings = _WatchedSettings()
+    _WatchedSettings.live[:] = [settings]
+    _WatchedSettings.seen_mid_assignment.clear()
+
+    with pytest.raises(ValidationError):
+        settings.blocked = frozenset()
+
+    assert _WatchedSettings.seen_mid_assignment == [frozenset({".exe"})]
+    assert settings.blocked == frozenset({".exe"})
+
+
+@pytest.mark.os_agnostic
+def test_an_accepted_assignment_lands_on_the_live_instance() -> None:
+    settings = _WatchedSettings()
+    _WatchedSettings.live[:] = []
+
+    settings.blocked = frozenset({".bat"})
+
+    assert settings.blocked == frozenset({".bat"})
+    assert "blocked" in settings.model_fields_set

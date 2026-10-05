@@ -215,6 +215,10 @@
 - A `ConfMail` key that is not a field is quoted in the error's report on a line of its own;
   CR, LF or ESC in the key wrote extra lines into it (`INFO config loaded OK`) or terminal
   sequences. Control characters in an error's location are replaced by spaces now.
+- A `ConfMail` assignment that a model-level validator refused (an empty blocklist) was
+  written to the instance first and rolled back afterwards, so a `send()` on another thread
+  using the global `conf` could read the refused value in between and send a blocked file. An
+  assignment is validated on a copy now and installed only when it passes.
 - A server that echoed the AUTH line it rejected put the AUTH PLAIN token (base64 of the user
   name and password) into the per-host `WARNING`. The password and its AUTH PLAIN and AUTH
   LOGIN encodings are replaced by `[redacted]` in that line now.
