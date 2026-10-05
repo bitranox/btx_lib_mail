@@ -22,6 +22,7 @@ from btx_lib_mail import ConfMail, InvalidInputError, _compose, _transport, _val
 
 if TYPE_CHECKING:
     from collections.abc import Generator
+    from collections.abc import Set as AbstractSet
 
 _DOTENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 
@@ -2204,6 +2205,17 @@ def test_nul_in_the_configured_user_name_is_refused_before_any_connection() -> N
     assert transport.deliveries == []
 
 
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("hosts", [{"smtp.example.com"}, frozenset({"smtp.example.com"})], ids=["set", "frozenset"])
+def test_a_set_of_hosts_is_accepted(hosts: AbstractSet[str]) -> None:
+    """The docs accept a set or frozenset of hosts, and send()'s annotation admits one: no cast needed under pyright strict."""
+    transport = RecordingTransport()
+
+    assert lib_mail.send("sender@example.com", ["one@example.com"], "s", smtphosts=hosts, transport=transport)
+
+    assert [delivery.host for delivery in transport.deliveries] == ["smtp.example.com"]
+
+
 _CONFIGURED = ConfMail(smtphosts=["configured.example.com"], smtp_username="user", smtp_password=SecretStr("DUMMY-cfg"))
 
 
@@ -2233,8 +2245,24 @@ def test_a_falsy_override_of_the_wrong_type_is_refused(override: dict[str, Any],
 @pytest.mark.os_agnostic
 @pytest.mark.parametrize(
     "override",
-    [{"credentials": ()}, {"credentials": []}, {"smtphosts": []}, {"smtphosts": ()}, {"smtphosts": ""}],
-    ids=["credentials-empty-tuple", "credentials-empty-list", "hosts-empty-list", "hosts-empty-tuple", "hosts-empty-str"],
+    [
+        {"credentials": ()},
+        {"credentials": []},
+        {"smtphosts": []},
+        {"smtphosts": ()},
+        {"smtphosts": ""},
+        {"smtphosts": set[str]()},
+        {"smtphosts": frozenset[str]()},
+    ],
+    ids=[
+        "credentials-empty-tuple",
+        "credentials-empty-list",
+        "hosts-empty-list",
+        "hosts-empty-tuple",
+        "hosts-empty-str",
+        "hosts-empty-set",
+        "hosts-empty-frozenset",
+    ],
 )
 def test_an_empty_override_of_the_accepted_type_falls_back_to_the_configured_value(override: dict[str, Any]) -> None:
     transport = RecordingTransport()
@@ -2253,8 +2281,11 @@ def test_an_empty_override_of_the_accepted_type_falls_back_to_the_configured_val
         (("us" + chr(0xDCFF) + "er", "pw"), "the SMTP user name must be valid Unicode text"),
         (("user", "DUMMY-pw\x00"), "the SMTP password must not contain NUL"),
         (("victim\x00attacker", "pw"), "the SMTP user name must not contain NUL"),
+        # A NUL in the first place too: a check that skips the first character passes every case above.
+        (("user", "\x00DUMMY-pw"), "the SMTP password must not contain NUL"),
+        (("\x00victim", "pw"), "the SMTP user name must not contain NUL"),
     ],
-    ids=["password", "user", "password-nul", "user-nul"],
+    ids=["password", "user", "password-nul", "user-nul", "password-leading-nul", "user-leading-nul"],
 )
 def test_credentials_that_cannot_be_encoded_are_refused_before_any_connection(credentials: tuple[str, str], message: str) -> None:
     # An invalid UTF-8 byte from argv or an env file decodes to a lone surrogate; AUTH would

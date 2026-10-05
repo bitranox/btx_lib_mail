@@ -982,19 +982,28 @@ def test_a_directory_rule_that_cannot_be_resolved_does_not_stop_a_send_without_a
 
 
 @pytest.mark.os_agnostic
-def test_a_directory_rule_that_is_a_symlink_loop_is_refused_as_unresolvable(tmp_path: Path) -> None:
-    """Python before 3.13 raises a bare RuntimeError resolving a loop; 3.13 and later returned it unresolved, an inert rule."""
+@pytest.mark.parametrize("company", ["alone", "beside-an-ordinary-rule"])
+def test_a_directory_rule_that_is_a_symlink_loop_is_refused_as_unresolvable(tmp_path: Path, company: str) -> None:
+    """Python before 3.13 raises a bare RuntimeError resolving a loop; 3.13 and later returned it unresolved, an inert rule.
+
+    Beside an ordinary rule too: a check that refuses only when every rule is a loop passes the rule alone.
+    """
     loop = tmp_path / "loop"
     try:
         loop.symlink_to(loop)
     except OSError:
         pytest.skip("this platform or account cannot create a symlink")
+    rules = {loop}
+    if company == "beside-an-ordinary-rule":
+        ordinary = tmp_path / "ordinary"
+        ordinary.mkdir()
+        rules.add(ordinary)
     report = tmp_path / "report.txt"
     report.write_text("x")
     transport = RecordingTransport()
 
     with pytest.raises(InvalidInputError, match=r"^an attachment directory can not be resolved \(ELOOP\)$"):
-        _send(transport, report, attachment_blocked_directories=frozenset({loop}))
+        _send(transport, report, attachment_blocked_directories=frozenset(rules))
     assert transport.recipients == []
 
 

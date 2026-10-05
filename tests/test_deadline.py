@@ -26,8 +26,10 @@ from btx_lib_mail import ConfigurationError, ConfMail, DeliveryOptions, InvalidI
 from btx_lib_mail.lib_mail import SmtplibTransport
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Iterator
+    from collections.abc import Callable, Generator, Iterator
     from pathlib import Path
+
+    from smtp_test_server import CollectingHandler
 
 # One byte every this many seconds: each read finishes well inside the socket timeout,
 # so only a bound on the whole session can end it.
@@ -107,6 +109,30 @@ def _deliver(port: int, *, deadline: float | None, use_starttls: bool = False) -
     )
 
 
+def _run_bounded(call: Callable[[], object], *, what: str = "the call") -> tuple[BaseException | None, float]:
+    """Run call on a worker bounded by the test, not by the mechanism under test; return what it raised and how long it took.
+
+    A connect left without a timeout waits out the kernel's SYN retries, minutes on Linux;
+    on the test's own thread that stalls the suite instead of failing the test by name.
+    """
+    outcome: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            call()
+        except BaseException as error:
+            outcome.append(error)
+
+    started = time.monotonic()
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(timeout=_SOCKET_TIMEOUT)
+    elapsed = time.monotonic() - started
+    if worker.is_alive():
+        pytest.fail(f"{what} was still running after {_SOCKET_TIMEOUT} seconds")
+    return (outcome[0] if outcome else None), elapsed
+
+
 @pytest.mark.os_agnostic
 def test_without_a_deadline_a_dripping_server_keeps_the_session_open(drip_server: _DripServer) -> None:
     # Positive control: the socket timeout alone does not end this session.
@@ -130,23 +156,9 @@ def _attempt(port: int, *, deadline: float | None) -> None:
 
 @pytest.mark.os_agnostic
 def test_a_deadline_ends_a_session_the_socket_timeout_cannot(drip_server: _DripServer) -> None:
-    outcome: list[BaseException] = []
+    # Without the deadline the session never ends; the fixture's server shutdown releases the worker.
+    outcome, elapsed = _deliver_bounded(drip_server.port)
 
-    def run() -> None:
-        try:
-            _deliver(drip_server.port, deadline=_DEADLINE)
-        except BaseException as error:
-            outcome.append(error)
-
-    started = time.monotonic()
-    worker = threading.Thread(target=run, daemon=True)
-    worker.start()
-    # Bounded by the test, not by the mechanism under test: without the deadline the
-    # session never ends, and the fixture's server shutdown releases the thread.
-    worker.join(timeout=_SOCKET_TIMEOUT)
-    elapsed = time.monotonic() - started
-
-    assert not worker.is_alive(), "the deadline did not end the session"
     assert len(outcome) == 1
     assert isinstance(outcome[0], TimeoutError)
     assert "delivery deadline of 0.5 seconds" in str(outcome[0])
@@ -270,20 +282,8 @@ class _SessionServer:
 
 def _deliver_bounded(port: int) -> tuple[list[BaseException], float]:
     """Deliver once with the short deadline, bounded by the test; return what was raised and how long it took."""
-    outcome: list[BaseException] = []
-
-    def run() -> None:
-        try:
-            _deliver(port, deadline=_DEADLINE)
-        except BaseException as error:
-            outcome.append(error)
-
-    started = time.monotonic()
-    worker = threading.Thread(target=run, daemon=True)
-    worker.start()
-    worker.join(timeout=_SOCKET_TIMEOUT)
-    assert not worker.is_alive(), "the deadline did not end the session"
-    return outcome, time.monotonic() - started
+    raised, elapsed = _run_bounded(lambda: _deliver(port, deadline=_DEADLINE), what="the session the deadline should have ended")
+    return ([] if raised is None else [raised]), elapsed
 
 
 @pytest.mark.os_agnostic
@@ -479,11 +479,10 @@ def _unanswered_port() -> Generator[int, None, None]:
 def test_a_deadline_bounds_a_tcp_connect_that_hangs() -> None:
     """The connect ran under the socket timeout alone; a listener whose backlog is full never answers it."""
     with _unanswered_port() as port:
-        started = time.monotonic()
-        with pytest.raises(TimeoutError, match=r"delivery deadline of 0\.5 seconds"):
-            _deliver(port, deadline=_DEADLINE)
-        elapsed = time.monotonic() - started
+        raised, elapsed = _run_bounded(lambda: _deliver(port, deadline=_DEADLINE), what="the connect")
 
+    assert isinstance(raised, TimeoutError), repr(raised)
+    assert "delivery deadline of 0.5 seconds" in str(raised)
     assert elapsed < _SOCKET_TIMEOUT / 2
 
 
@@ -498,12 +497,44 @@ def test_the_deadline_bounds_every_address_a_host_name_resolves_to(monkeypatch: 
             return resolved * 3
 
         monkeypatch.setattr(socket, "getaddrinfo", three_addresses)
-        started = time.monotonic()
-        with pytest.raises(TimeoutError, match=r"delivery deadline of 0\.5 seconds"):
-            _deliver(port, deadline=_DEADLINE)
-        elapsed = time.monotonic() - started
+        raised, elapsed = _run_bounded(lambda: _deliver(port, deadline=_DEADLINE), what="every connect")
 
+    assert isinstance(raised, TimeoutError), repr(raised)
+    assert "delivery deadline of 0.5 seconds" in str(raised)
     assert elapsed < 2 * _DEADLINE
+
+
+def _closed_port() -> int:
+    """A loopback port nothing listens on, so a connect to it is refused at once."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+@pytest.mark.os_agnostic
+def test_a_host_name_whose_first_address_refuses_is_delivered_through_the_next(
+    data_server: tuple[Any, CollectingHandler], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dual-stack name whose first address (often ::1) refuses must still reach the second."""
+    controller, handler = data_server
+    port = int(controller.port)
+    resolved = socket.getaddrinfo("127.0.0.1", _closed_port(), 0, socket.SOCK_STREAM) + socket.getaddrinfo("127.0.0.1", port, 0, socket.SOCK_STREAM)
+
+    # The name service is the external edge: one refusing address, then the server.
+    def two_addresses(*_args: Any, **_kwargs: Any) -> list[Any]:
+        return resolved
+
+    monkeypatch.setattr(socket, "getaddrinfo", two_addresses)
+    _deliver(port, deadline=_SOCKET_TIMEOUT)
+
+    assert len(handler.messages) == 1
+
+
+@pytest.mark.os_agnostic
+def test_a_refused_connect_under_a_deadline_reports_the_refusal() -> None:
+    """The last address's own error is raised, not a placeholder saying there was no address."""
+    with pytest.raises(ConnectionRefusedError):
+        _deliver(_closed_port(), deadline=_SOCKET_TIMEOUT)
 
 
 _REAL_CONNECT = socket.socket.connect
@@ -578,10 +609,18 @@ def test_a_name_lookup_that_outlasts_the_deadline_starts_no_connect(monkeypatch:
 @pytest.mark.os_agnostic
 def test_a_connect_that_runs_out_of_the_deadline_is_reported_as_the_deadline_before_the_watchdog_fires() -> None:
     """On Windows the bounded connect timed out a clock tick before the watchdog ran and read as a plain timeout."""
-    connection = _transport._SessionSMTP(local_hostname="client.example.com", timeout=_SOCKET_TIMEOUT)
-    with _unanswered_port() as port, pytest.raises(TimeoutError, match="delivery deadline of 30 seconds"), _transport._session_deadline(connection, 30):
-        connection.ends_at = time.monotonic() + 0.2  # the watchdog's timer is still 30 seconds away
-        connection.connect("127.0.0.1", port)
+    with _unanswered_port() as port:
+
+        def connect() -> None:
+            connection = _transport._SessionSMTP(local_hostname="client.example.com", timeout=_SOCKET_TIMEOUT)
+            with _transport._session_deadline(connection, 30):
+                connection.ends_at = time.monotonic() + 0.2  # the watchdog's timer is still 30 seconds away
+                connection.connect("127.0.0.1", port)
+
+        raised, _elapsed = _run_bounded(connect, what="the connect")
+
+    assert isinstance(raised, TimeoutError), repr(raised)
+    assert "delivery deadline of 30 seconds" in str(raised)
 
 
 @pytest.mark.os_agnostic
@@ -668,11 +707,17 @@ def test_a_refused_zero_timeout_reads_as_a_float() -> None:
 
 @pytest.mark.os_agnostic
 def test_a_connect_timing_out_on_the_socket_timeout_is_not_called_the_deadline() -> None:
-    connection = _transport._SessionSMTP(local_hostname="client.example.com", timeout=0.2)
-    with _unanswered_port() as port, pytest.raises(TimeoutError) as raised, _transport._session_deadline(connection, 30):
-        connection.connect("127.0.0.1", port)
+    with _unanswered_port() as port:
 
-    assert "delivery deadline" not in str(raised.value)
+        def connect() -> None:
+            connection = _transport._SessionSMTP(local_hostname="client.example.com", timeout=0.2)
+            with _transport._session_deadline(connection, 30):
+                connection.connect("127.0.0.1", port)
+
+        raised, _elapsed = _run_bounded(connect, what="the connect")
+
+    assert isinstance(raised, TimeoutError), repr(raised)
+    assert "delivery deadline" not in str(raised)
 
 
 @pytest.mark.os_agnostic

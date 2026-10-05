@@ -237,7 +237,8 @@ def test_an_endless_attachment_generator_is_refused_at_the_ceiling(tmp_path: Pat
     with pytest.raises(InvalidInputError, match=r"^attachment_file_paths yields more than attachment_max_count \(3\) paths$"):
         _send(
             RecordingTransport(),
-            attachment_file_paths=_endless(report, stop_after=50),
+            # Exactly one past the ceiling may be read; a second read past it fails the test by name.
+            attachment_file_paths=_endless(report, stop_after=4),
             attachment_blocked_directories=frozenset(),
             config=ConfMail(attachment_max_count=3),
         )
@@ -245,12 +246,21 @@ def test_an_endless_attachment_generator_is_refused_at_the_ceiling(tmp_path: Pat
 
 @pytest.mark.os_agnostic
 def test_an_attachment_generator_within_the_ceiling_is_sent(tmp_path: Path) -> None:
-    """A generator such as Path.glob() stays accepted."""
+    """A generator such as Path.glob() stays accepted, and send()'s annotation admits it: no list() needed under pyright strict."""
     for name in ("a.txt", "b.txt"):
         (tmp_path / name).write_text(name)
     transport = RecordingTransport()
 
-    assert _send(transport, attachment_file_paths=tmp_path.glob("*.txt"), attachment_blocked_directories=frozenset(), config=ConfMail(attachment_max_count=2))
+    assert send(
+        "sender@example.com",
+        ["one@example.com"],
+        "Report",
+        smtphosts=["smtp.example.com"],
+        attachment_file_paths=tmp_path.glob("*.txt"),
+        attachment_blocked_directories=frozenset(),
+        config=ConfMail(attachment_max_count=2),
+        transport=transport,
+    )
     assert len(transport.recipients) == 1
 
 

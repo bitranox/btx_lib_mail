@@ -4,6 +4,9 @@
 
 ### Added
 
+- `send()` annotates `smtphosts` as `Sequence[str] | AbstractSet[str] | None` and
+  `attachment_file_paths` as `Iterable[pathlib.Path | str] | None`, so a strictly type-checked
+  caller can pass a set of hosts or `Path.glob()` as the runtime already accepts.
 - `BtxMailError`, the common base of every exception the library raises on purpose, with
   `InvalidInputError` (also a `ValueError`), `ConfigurationError` (also a pydantic
   `ValidationError`), `AttachmentNotFoundError` (also a `FileNotFoundError`) and

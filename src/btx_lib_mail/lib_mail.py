@@ -68,7 +68,8 @@ from .errors import DeliveryError, InvalidInputError
 
 if TYPE_CHECKING:
     import pathlib
-    from collections.abc import Sequence
+    from collections.abc import Iterable, Sequence
+    from collections.abc import Set as AbstractSet
 
 
 def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called positionally by existing consumers
@@ -77,8 +78,8 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
     mail_subject: str,
     mail_body: str = "",
     mail_body_html: str = "",
-    smtphosts: Sequence[str] | None = None,
-    attachment_file_paths: Sequence[pathlib.Path | str] | None = None,
+    smtphosts: Sequence[str] | AbstractSet[str] | None = None,
+    attachment_file_paths: Iterable[pathlib.Path | str] | None = None,
     *,
     credentials: tuple[str, str] | None = None,
     use_starttls: bool | None = None,
@@ -118,10 +119,12 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
         mail_body: Optional plain-text body. Defaults to "".
         mail_body_html: Optional HTML body. Defaults to "".
         smtphosts: Override hosts: one host string, or a list, tuple, set or
-            frozenset of them. `None` or an empty value (`[]`, `()`, `""`)
-            falls back to the passed `config.smtphosts`, else the global
-            `conf.smtphosts`; any other type (a generator, `0`) is refused.
-        attachment_file_paths: Optional sequence of filesystem paths
+            frozenset of them; a set has no order, so neither has the
+            failover between its hosts. `None` or an empty value (`[]`, `()`,
+            `""`, an empty set) falls back to the passed `config.smtphosts`,
+            else the global `conf.smtphosts`; any other type (a generator,
+            `0`) is refused.
+        attachment_file_paths: Optional iterable of filesystem paths
             (``pathlib.Path`` or ``str``). Each existing, readable file
             becomes an attachment. A generator (``Path.glob()``) is read
             only one entry past ``attachment_max_count``.
