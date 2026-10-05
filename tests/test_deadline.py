@@ -12,13 +12,13 @@ import socket
 import ssl
 import threading
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from smtp_test_server import self_signed_cert
 from transport_doubles import RecordingTransport
 
-from btx_lib_mail import ConfigurationError, ConfMail, DeliveryOptions, InvalidInputError, _transport, send
+from btx_lib_mail import ConfigurationError, ConfMail, DeliveryOptions, InvalidInputError, _transport, _validation, send
 from btx_lib_mail.lib_mail import SmtplibTransport
 
 if TYPE_CHECKING:
@@ -289,7 +289,7 @@ def test_a_deadline_bounds_a_quit_reply_that_drips_and_the_message_still_counts_
 
 
 @pytest.mark.os_agnostic
-@pytest.mark.parametrize("quit_reply", [b"500 no\r\n", b"421 closing\r\n"], ids=["500", "421"])
+@pytest.mark.parametrize("quit_reply", [b"500 no\r\n", b"421 closing\r\n", b""], ids=["500", "421", "hang-up"])
 def test_a_refused_quit_after_the_message_was_accepted_is_a_delivery_not_a_host_failure(quit_reply: bytes) -> None:
     """The server stored the message; trying the next host would deliver it twice."""
     first = _SessionServer(quit_reply=quit_reply)
@@ -478,3 +478,44 @@ def test_the_watchdog_stops_when_a_session_that_never_connected_ends() -> None:
     assert watchdogs, "positive control: the session started a watchdog"
     assert not worker.is_alive()
     assert not any(watchdog.is_alive() for watchdog in watchdogs)
+
+
+_TOO_LONG = [10**400, 1e300, _validation._MAX_SECONDS + 0.001]
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("keyword", ["timeout", "delivery_deadline"])
+@pytest.mark.parametrize("value", _TOO_LONG, ids=["10**400", "1e300", "just-over"])
+def test_send_refuses_a_number_of_seconds_no_timer_can_wait(keyword: str, value: float) -> None:
+    """10**400 raised a bare OverflowError; 1e300 was accepted, then failed every delivery or killed the watchdog."""
+    overrides: dict[str, Any] = {keyword: value}
+    label = {"timeout": "smtp_timeout", "delivery_deadline": "delivery_deadline"}[keyword]  # as for every other refused timeout
+    with pytest.raises(InvalidInputError, match=rf"^{label} must be at most "):
+        send("sender@example.com", "one@example.com", "s", smtphosts=["smtp.example.com"], transport=RecordingTransport(), **overrides)
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("field", ["smtp_timeout", "smtp_delivery_deadline"])
+@pytest.mark.parametrize("value", [1e300, _validation._MAX_SECONDS + 0.001], ids=["1e300", "just-over"])
+def test_conf_mail_refuses_a_number_of_seconds_no_timer_can_wait(field: str, value: float) -> None:
+    with pytest.raises(ConfigurationError, match=f"{field} must be at most "):
+        ConfMail.model_validate({field: value})
+
+
+@pytest.mark.os_agnostic
+def test_the_longest_accepted_timeout_and_deadline_still_deliver() -> None:
+    server = _SessionServer()
+    try:
+        assert send(
+            "sender@example.com",
+            "one@example.com",
+            "s",
+            smtphosts=[f"127.0.0.1:{server.port}"],
+            config=ConfMail(smtp_use_starttls=False, smtp_local_hostname="client.example.com"),
+            timeout=_validation._MAX_SECONDS,
+            delivery_deadline=_validation._MAX_SECONDS,
+        )
+    finally:
+        server.close()
+
+    assert server.stored == 1

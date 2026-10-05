@@ -158,6 +158,10 @@
 - `smtp_timeout` (and `send(timeout=)`) refuses NaN and infinity (`smtp_timeout must be a
   finite number of seconds, got nan`) instead of failing later as an unrelated delivery
   error. A non-positive value keeps its `must be positive` message.
+- A timeout or delivery deadline longer than 2147483 seconds (about 24.8 days, the longest
+  timeout a Windows socket holds) is refused (`... must be at most 2147483 seconds`). `10**400` raised a
+  bare `OverflowError`; `1e300` was accepted and then failed every delivery, or killed the
+  deadline's watchdog thread and left the session unbounded.
 - An attachment whose file name holds CR, LF, VT or FF raised a bare `ValueError` from the
   header serialiser halfway through composing, outside the `BtxMailError` family and past
   warn mode; NUL, ESC and DEL went into the `Content-Disposition` header raw. Such a name is

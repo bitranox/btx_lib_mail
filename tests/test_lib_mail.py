@@ -2404,9 +2404,37 @@ def test_a_host_that_cannot_be_reached_is_tried_last_for_the_remaining_recipient
 
 
 @pytest.mark.os_agnostic
-def test_a_host_that_refused_one_recipient_keeps_its_place_for_the_next() -> None:
-    """A reply about one recipient says nothing about the host: the configured order holds."""
-    refusal = smtplib.SMTPRecipientsRefused({"one@example.com": (550, b"no such user")})
+def test_a_host_that_failed_for_one_recipient_is_still_tried_for_the_next() -> None:
+    """Moved to the end, not dropped: when every host failed once, the next recipient still has them all."""
+    transport = PerHostTransport(
+        {("first.example.com", "one@example.com"): TimeoutError("timed out"), ("second.example.com", "one@example.com"): TimeoutError("timed out")}
+    )
+
+    with pytest.raises(lib_mail.DeliveryError) as caught:
+        lib_mail.send(
+            **_with(mail_recipients=["one@example.com", "two@example.com"], smtphosts=["first.example.com", "second.example.com"], transport=transport)
+        )
+
+    assert caught.value.failed_recipients == ("one@example.com",)
+    assert transport.attempts == [
+        ("first.example.com", "one@example.com"),
+        ("second.example.com", "one@example.com"),
+        ("first.example.com", "two@example.com"),
+    ]
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    "refusal",
+    [
+        smtplib.SMTPRecipientsRefused({"one@example.com": (550, b"no such user")}),
+        smtplib.SMTPSenderRefused(550, b"sender refused", "sender@example.com"),
+        smtplib.SMTPDataError(554, b"message refused"),
+    ],
+    ids=["recipient", "sender", "data"],
+)
+def test_a_host_that_refused_one_recipient_keeps_its_place_for_the_next(refusal: smtplib.SMTPException) -> None:
+    """A reply about one message says nothing about the host: the configured order holds."""
     transport = PerHostTransport({("first.example.com", "one@example.com"): refusal})
 
     lib_mail.send(**_with(mail_recipients=["one@example.com", "two@example.com"], smtphosts=["first.example.com", "second.example.com"], transport=transport))

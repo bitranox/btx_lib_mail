@@ -209,35 +209,69 @@ def check_credentials(credentials: tuple[str, str] | None) -> None:
 
 
 def check_timeout(value: float) -> None:
-    """Raise unless value is a usable socket timeout: positive and finite.
+    """Raise unless value is a usable socket timeout: positive, finite, at most ``_MAX_SECONDS``.
 
     Args:
         value: Candidate timeout in seconds.
 
     Raises:
-        InvalidInputError: If value is not positive and finite.
+        InvalidInputError: If value is not positive and finite, or too long.
     """
     check_seconds(value, label="smtp_timeout")
 
 
+def as_timeout(value: float) -> float:
+    """Return value as a float socket timeout, checked by :func:`check_timeout`.
+
+    An int too large for a float is refused before the conversion, which would
+    raise a bare ``OverflowError``; any other value is converted first, so a
+    refused ``0`` still reads ``got 0.0``.
+
+    Args:
+        value: Candidate timeout in seconds, an ``int`` or ``float``.
+
+    Returns:
+        The timeout as a float.
+
+    Raises:
+        InvalidInputError: If value is not a usable socket timeout.
+    """
+    if isinstance(value, int) and value > _MAX_SECONDS:
+        check_seconds(value, label="smtp_timeout")
+    timeout = float(value)
+    check_timeout(timeout)
+    return timeout
+
+
+# The longest timeout or deadline: 2**31 - 1 milliseconds, the most a Windows
+# socket timeout holds (threading.TIMEOUT_MAX is larger on every platform).
+_MAX_SECONDS: Final = 2_147_483
+
+
 def check_seconds(value: float, *, label: str) -> None:
-    """Raise unless value is a positive, finite number of seconds.
+    """Raise unless value is a positive, finite number of seconds every platform can wait.
 
     The non-positive check runs first, so a timeout refused before keeps its
     message; NaN and infinity, which `value <= 0` let through to fail later
-    as an unrelated delivery error, get their own.
+    as an unrelated delivery error, get their own. Past ``_MAX_SECONDS`` a
+    socket or a timer refuses the value only when it is used; an int too large
+    for a float is refused here without converting it.
 
     Args:
         value: Candidate number of seconds.
         label: Name of the setting or argument to use in the error message.
 
     Raises:
-        InvalidInputError: If value is not positive and finite.
+        InvalidInputError: If value is not positive and finite, or longer than
+            ``_MAX_SECONDS``.
     """
     if value <= 0:
         raise InvalidInputError(f"{label} must be positive, got {value}")
-    if not math.isfinite(value):
+    if isinstance(value, float) and not math.isfinite(value):
         raise InvalidInputError(f"{label} must be a finite number of seconds, got {value}")
+    if value > _MAX_SECONDS:
+        # The value is not echoed: an int this large can have more digits than str() will write.
+        raise InvalidInputError(f"{label} must be at most {_MAX_SECONDS} seconds")
 
 
 def prepare_hosts(hosts: tuple[str, ...]) -> tuple[str, ...]:

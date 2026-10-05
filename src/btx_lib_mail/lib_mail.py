@@ -47,10 +47,10 @@ from ._transport import DEFAULT_TRANSPORT, DeliveryOptions, SmtplibTransport, Tr
 from ._validation import (
     EMAIL_PATTERN,
     address_length_problem,
+    as_timeout,
     check_credentials,
     check_local_hostname,
     check_seconds,
-    check_timeout,
     host_entries,
     prepare_hosts,
     prepare_recipients,
@@ -375,8 +375,7 @@ def _resolve_delivery_options(*, settings: ConfMail, overrides: _DeliveryOverrid
     check_credentials(credentials)
     use_starttls = _flag_or(overrides.use_starttls, setting=settings.smtp_use_starttls, field_name="use_starttls")
     starttls_verify = _flag_or(overrides.starttls_verify, setting=settings.smtp_starttls_verify, field_name="starttls_verify")
-    timeout = float(require_number(overrides.timeout, field_name="timeout") if overrides.timeout is not None else settings.smtp_timeout)
-    check_timeout(timeout)
+    timeout = as_timeout(require_number(overrides.timeout, field_name="timeout") if overrides.timeout is not None else settings.smtp_timeout)
     if overrides.local_hostname is not None:
         require_text(overrides.local_hostname, field_name="local_hostname")
         check_local_hostname(overrides.local_hostname, label="local_hostname")
