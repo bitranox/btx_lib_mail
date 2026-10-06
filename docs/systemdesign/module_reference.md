@@ -204,9 +204,9 @@ redacted at the credential fields (`smtp_password`, `smtphosts`).
   directory sets as `ConfMail` and the `send()` keywords both read them.
 * `prepare_attachments(paths, security, *, raise_on_missing)` - refuses more paths than
   `security.max_count`, then for each path the path checks (`_validate_attachment_security`:
-  NUL anywhere, traversal component, final-component symlink, then on the resolved path the
-  file name (control character, invalid Unicode), sensitive pattern, directories and
-  extension), then
+  NUL or a lone surrogate POSIX cannot encode anywhere (`_check_nameable`), traversal
+  component, final-component symlink, then on the resolved path the file name (control
+  character, invalid Unicode), sensitive pattern, directories and extension), then
   `_open_attachment`: `lstat`, open with `O_NOFOLLOW`/`O_NONBLOCK` where the platform
   has them, `fstat` must show the same device and inode and a regular file, size within
   the limit, and the path the kernel reports for the open file (`_check_descriptor_path`,
@@ -226,7 +226,8 @@ redacted at the credential fields (`smtp_password`, `smtphosts`).
   memory below 1 MiB, on disk above), CRLF via `email.policy.SMTP`, each attachment's
   base64 streamed from its open file in `57 * 1024`-byte reads and counted against its
   size limit. In warn mode a file that grew past the limit is left out and the body
-  composed again.
+  composed again; a violation that names no attachment still in the message is raised
+  even in warn mode, since composing again would meet it again.
 * `envelope_header_lines(...)` - each recipient's `Subject`, `From`, `To`, `Date`; `Subject` and `From` are folded once per call.
 * `message_for(header_lines, body)` - a read-only, seekable stream of those header lines
   followed by the shared body spool, read in place (no copy); closing it leaves the body open.
