@@ -1,4 +1,4 @@
-"""The library logger, the control-character cleaning every log line and message uses, and the UTF-8 test.
+"""The library logger, the skip kinds its warn-mode warnings carry, the control-character cleaning every log line and message uses, and the UTF-8 test.
 
 Private to btx_lib_mail: import the public names from `btx_lib_mail` or `btx_lib_mail.lib_mail`.
 """
@@ -6,8 +6,27 @@ Private to btx_lib_mail: import the public names from `btx_lib_mail` or `btx_lib
 from __future__ import annotations
 
 import logging
+from enum import Enum
 
 logger = logging.getLogger("btx_lib_mail")
+
+
+class SkipKind(str, Enum):
+    """What a warn-mode warning says was left out of the send.
+
+    The warning carries it as the plain string ``.value`` in its ``skipped`` log
+    record attribute, so a log formatter shows the same word on every Python
+    version; the CLI parses it back into a member when it collects the skips.
+
+    Examples:
+        >>> SkipKind("recipient") is SkipKind.RECIPIENT
+        True
+        >>> SkipKind.ATTACHMENT.value
+        'attachment'
+    """
+
+    RECIPIENT = "recipient"
+    ATTACHMENT = "attachment"
 
 
 def printable(text: str) -> str:

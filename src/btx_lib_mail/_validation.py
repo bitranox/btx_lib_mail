@@ -11,7 +11,7 @@ import re
 from collections.abc import Iterable, Sequence
 from typing import Any, Final, cast
 
-from ._common import is_valid_unicode, logger, printable
+from ._common import SkipKind, is_valid_unicode, logger, printable
 from .errors import InvalidInputError
 
 EMAIL_PATTERN: Final[re.Pattern[str]] = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
@@ -328,18 +328,7 @@ def prepare_recipients(
             validation and raise_on_invalid is True, or no valid recipient
             remains.
     """
-    if isinstance(recipients, str):
-        raw_items: Iterable[str] = (recipients,)
-    elif isinstance(recipients, Sequence):  # pyright: ignore[reportUnnecessaryIsInstance] - a caller ignoring the annotation can pass anything
-        raw_items = recipients
-    else:
-        raise InvalidInputError("invalid type of mail_addresses")
-
-    for item in raw_items:
-        require_text(item, field_name="mail_recipients entries")
-    cleaned = [_normalise_email_address(item) for item in raw_items]
-    filtered = [value for value in cleaned if value]
-    unique = tuple(dict.fromkeys(filtered))
+    unique = distinct_recipients(recipients)
     # Counted before validation, so an oversized list costs no regex run per entry.
     if max_count is not None and len(unique) > max_count:
         raise InvalidInputError(f"{len(unique)} recipients, more than recipient_max_count ({max_count})")
@@ -349,6 +338,55 @@ def prepare_recipients(
     if not valid:
         raise InvalidInputError("no valid recipients")
     return tuple(valid)
+
+
+def distinct_recipients(recipients: str | Sequence[str]) -> tuple[str, ...]:
+    """Return the recipients as `send()` considers them: normalised, de-duplicated, in order.
+
+    Each entry is trimmed of whitespace and quotes and lower-cased when ASCII; blank
+    entries are dropped and a repeat is kept once. Invalid addresses are still
+    present; `is_valid_recipient` tells them apart. Nothing is logged.
+
+    Args:
+        recipients: Single email or sequence of emails supplied by callers.
+
+    Returns:
+        The distinct normalised entries, first occurrence first.
+
+    Raises:
+        InvalidInputError: If recipients is not a string or sequence, or an entry is not text.
+
+    Examples:
+        >>> distinct_recipients([" B@Example.com", '"b@example.com"', "", "c@example.com"])
+        ('b@example.com', 'c@example.com')
+    """
+    if isinstance(recipients, str):
+        raw_items: Iterable[str] = (recipients,)
+    elif isinstance(recipients, Sequence):  # pyright: ignore[reportUnnecessaryIsInstance] - a caller ignoring the annotation can pass anything
+        raw_items = recipients
+    else:
+        raise InvalidInputError("invalid type of mail_addresses")
+
+    for item in raw_items:
+        require_text(item, field_name="mail_recipients entries")
+    cleaned = (_normalise_email_address(item) for item in raw_items)
+    return tuple(dict.fromkeys(value for value in cleaned if value))
+
+
+def is_valid_recipient(entry: str) -> bool:
+    """Return whether one normalised entry is an address `send()` delivers to.
+
+    Args:
+        entry: One entry from `distinct_recipients`.
+
+    Returns:
+        True when it is within the RFC 5321 lengths and matches `EMAIL_PATTERN`.
+
+    Examples:
+        >>> is_valid_recipient("b@example.com"), is_valid_recipient("nope")
+        (True, False)
+    """
+    return address_length_problem(entry) is None and EMAIL_PATTERN.fullmatch(entry) is not None
 
 
 def _accept_recipient(entry: str, *, raise_on_invalid: bool) -> bool:
@@ -367,9 +405,9 @@ def _accept_recipient(entry: str, *, raise_on_invalid: bool) -> bool:
     Raises:
         InvalidInputError: If entry is invalid and raise_on_invalid is True.
     """
-    problem = address_length_problem(entry)
-    if problem is None and EMAIL_PATTERN.fullmatch(entry):
+    if is_valid_recipient(entry):
         return True
+    problem = address_length_problem(entry)
     # `entry` is exactly the value that FAILED validation, so unlike
     # `recipients`/`failed_recipients` elsewhere in this module it is not
     # provably free of control characters; clean it before it reaches a log
@@ -382,7 +420,7 @@ def _accept_recipient(entry: str, *, raise_on_invalid: bool) -> bool:
         shown = detail
     if raise_on_invalid:
         raise InvalidInputError(template % detail)
-    logger.warning(template, detail, extra={"recipient": shown, "skipped": "recipient"})
+    logger.warning(template, detail, extra={"recipient": shown, "skipped": SkipKind.RECIPIENT.value})
     return False
 
 

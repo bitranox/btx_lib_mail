@@ -13,6 +13,7 @@ from ..behaviors import CANONICAL_GREETING, emit_greeting, noop_main, raise_inte
 from ..lib_mail import validate_email_address, validate_smtp_host
 from ..typed_click import argument, option, version_option
 from ._output import CliContext, cli_context, emit
+from ._payloads import EmailCheck, Greeting, HostCheck, PackageInfo
 from ._traceback import apply_traceback_preferences
 
 __all__ = ["CLICK_CONTEXT_SETTINGS", "cli", "cli_fail", "cli_hello", "cli_info", "cli_main", "cli_validate_email", "cli_validate_smtp_host"]
@@ -169,15 +170,15 @@ def cli_info(ctx: click.Context) -> None:
     if not cli_context(ctx).machine_readable:
         __init__conf__.print_info()
         return
-    data = {
-        "name": __init__conf__.name,
-        "title": __init__conf__.title,
-        "version": __init__conf__.version,
-        "homepage": __init__conf__.homepage,
-        "author": __init__conf__.author,
-        "author_email": __init__conf__.author_email,
-        "shell_command": __init__conf__.shell_command,
-    }
+    data = PackageInfo(
+        name=__init__conf__.name,
+        title=__init__conf__.title,
+        version=__init__conf__.version,
+        homepage=__init__conf__.homepage,
+        author=__init__conf__.author,
+        author_email=__init__conf__.author_email,
+        shell_command=__init__conf__.shell_command,
+    )
     emit(ctx, "info", data, "")
 
 
@@ -194,7 +195,7 @@ def cli_hello(ctx: click.Context) -> None:
     if not cli_context(ctx).machine_readable:
         emit_greeting()
         return
-    emit(ctx, "hello", {"greeting": CANONICAL_GREETING}, "")
+    emit(ctx, "hello", Greeting(greeting=CANONICAL_GREETING), "")
 
 
 @cli.command("validate-email", context_settings=CLICK_CONTEXT_SETTINGS, help="Check that ADDRESS is a syntactically valid email address.")
@@ -211,7 +212,7 @@ def cli_validate_email(ctx: click.Context, address: str) -> None:
         address: Email address to validate.
     """
     validate_email_address(address)
-    emit(ctx, "validate-email", {"address": address, "valid": True}, f"Valid email address: {address}")
+    emit(ctx, "validate-email", EmailCheck(address=address), f"Valid email address: {address}")
 
 
 @cli.command("validate-smtp-host", context_settings=CLICK_CONTEXT_SETTINGS, help="Check that HOST is a valid host[:port] or [IPv6][:port].")
@@ -227,7 +228,7 @@ def cli_validate_smtp_host(ctx: click.Context, host: str) -> None:
         host: SMTP host string to validate.
     """
     validate_smtp_host(host)
-    emit(ctx, "validate-smtp-host", {"host": host, "valid": True}, f"Valid SMTP host: {host}")
+    emit(ctx, "validate-smtp-host", HostCheck(host=host), f"Valid SMTP host: {host}")
 
 
 @cli.command("fail", context_settings=CLICK_CONTEXT_SETTINGS, help="Raise an intentional error (to check traceback and exit-code handling).")

@@ -198,8 +198,10 @@ redacted at the credential fields (`smtp_password`, `smtphosts`).
 * `AttachmentPayload` - `filename`, `source` (the checked, resolved path), `handle` (the
   file opened once), `size_limit`.
 * `AttachmentSecurityOptions` - the resolved rules for one call.
-* `coerce_attachment_paths(entries)` - each `str` or `pathlib` entry as a `Path`; any
-  other type is an `InvalidInputError`.
+* `coerce_attachment_paths(entries, *, max_count=None)` - each `str` or `pathlib` entry as a
+  `Path`; a single path, a non-iterable or any other entry type is an `InvalidInputError`. A
+  lazy iterable (`Path.glob()`) is read at most one entry past `max_count`, so an endless one
+  is refused rather than read into memory.
 * `normalise_extensions(values)`, `normalise_directories(values)` - the extension and
   directory sets as `ConfMail` and the `send()` keywords both read them.
 * `prepare_attachments(paths, security, *, raise_on_missing)` - refuses more paths than
@@ -271,6 +273,9 @@ redacted at the credential fields (`smtp_password`, `smtphosts`).
 * `prepare_recipients`, `prepare_hosts`, `parse_smtp_host`, `collect_host_inputs`,
   `check_local_hostname`, `check_timeout`, `check_seconds` - the shared checks `send()`
   and `ConfMail` run.
+* `distinct_recipients`, `is_valid_recipient` - the two pure halves of `prepare_recipients`
+  (normalise and de-duplicate; decide validity), which log nothing; the CLI calls them after a
+  successful `send()` to report exactly the addresses delivered to.
 * `require_text`, `require_flag`, `require_number`, `require_ceiling`, `require_collection`,
   `require_credentials` - the type checks for `send()` arguments and keyword overrides, each an
   `InvalidInputError` naming the argument (`timeout must be a number of seconds, got str`).
@@ -284,7 +289,10 @@ redacted at the credential fields (`smtp_password`, `smtphosts`).
 `logger` (`logging.getLogger("btx_lib_mail")`) and `printable(text)`, which replaces
 every non-printable character with a space so no caller-, file- or server-supplied text
 can forge a log line, and `is_valid_unicode(text)`, the UTF-8 test the subject, body and
-attachment-name checks share (each raises its own error).
+attachment-name checks share (each raises its own error). `SkipKind` (`RECIPIENT`,
+`ATTACHMENT`; a `str, Enum`) names what a warn-mode warning left out: the producers in
+`_validation` and `_attachments` put its `.value` in the record's `skipped` attribute, so a
+log formatter prints the plain word on every Python version, and the CLI parses it back.
 
 **Location:** src/btx_lib_mail/_common.py
 
@@ -329,19 +337,31 @@ outer model's `model_validate_json`, where the JSON parser fails before the mode
 * **Commands:** `info`, `hello`, `send`, `validate-email`, `validate-smtp-host`, `fail`.
   Each prints through `emit` (`_output`), which writes the human line or the JSON envelope.
 * **`send`:** `Sources` (`_settings_sources`) reads the environment, then the env file `env_file_to_read`
-  picks: the one named by `--env-file` / `BTX_MAIL_ENV_FILE`, else `./.env` when it is a
+  picks (an empty or whitespace-only value in either counts as unset; the hosts fall back to
+  `conf.smtphosts` last): the one named by `--env-file` / `BTX_MAIL_ENV_FILE`, else `./.env` when it is a
   regular file (parsed once by `read_env_file`, UTF-8, at most 64 KiB). Resolved values are assigned onto one copy of `conf`, so
   `ConfMail`'s checks run before delivery; a refusal is re-raised as `InvalidInputError`
   with the validator's message (`refusals_as_value_error`). `--password-file` reads one
-  line (`-` is stdin). `collect_skipped` (a logger filter) gathers the warn-mode skips for
-  the envelope's `skipped`.
+  line (`-` is stdin). `collect_skipped` (a logger filter) parses each warn-mode warning's
+  `skipped` attribute into a `SkipKind` and keeps a `SkippedItem` for the envelope's
+  `skipped`; `send` reports in its `SendResult` the recipients `distinct_recipients` and
+  `is_valid_recipient` say were delivered to.
+* **Subcommand position (`_dispatch`):** every group option is a value-less flag, so the first
+  argument that is not an option is the subcommand's position; the JSON mode is read from the
+  options before it and the failure envelope's `command` from the word in it.
+* **JSON output (`_output`, `_payloads`):** each command's payload is a frozen pydantic model
+  (`PackageInfo`, `Greeting`, `EmailCheck`, `HostCheck`, `SendResult`); `emit` wraps it in a
+  `SuccessEnvelope`, the failure handler builds a `FailureEnvelope` around an `ErrorPayload`
+  (whose `failed_recipients` and `hosts` are left out unless the error is a `DeliveryError`),
+  and `dumps_json` dumps the model once. Field order is the wire's key order.
 * **`main(argv)`:** runs the group through `lib_cli_exit_tools.run_cli`; with `--json` or
   `--json-bare` in argv, `_json_exception_handler` prints a failure as JSON on stdout and
   returns the exit code the plain run would give. Traceback state is restored afterwards.
 
 **Location:** src/btx_lib_mail/cli/ - `__init__.py` is the public surface (`cli`, `main`,
 `CliContext`, the commands, the traceback helpers); the private submodules hold one concern
-each: `_settings_sources`, `_output`, `_traceback`, `_commands`, `_send_command`, `_dispatch`.
+each: `_settings_sources`, `_output`, `_payloads`, `_traceback`, `_commands`, `_send_command`,
+`_dispatch`.
 
 ### `typed_click` Module (Type Boundary)
 

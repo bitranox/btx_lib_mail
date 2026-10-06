@@ -1,4 +1,4 @@
-# Handover - btx_lib_mail, 2026-10-06 (data-architecture pass 1 analysed; fix step next, then 4.0.0)
+# STALE - read 2026-10-06, work continued
 
 Read `OPEN-WORK.md` first. Open: ranks 15, 22, 30, 40 (all USER). Rank 21 (code-quality loop) is
 CLOSED: severity gate met, re-score 8.7 (record `.private/review-2026-10-06-sweep11.md`).

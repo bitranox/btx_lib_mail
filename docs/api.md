@@ -1,7 +1,10 @@
 # Public API reference
 
 Everything importable from `btx_lib_mail` is described here; the internal design is in
-[the module reference](systemdesign/module_reference.md). Run
+[the module reference](systemdesign/module_reference.md). `btx_lib_mail.lib_mail` re-exports
+all of it, plus `EMAIL_PATTERN`, `SmtplibTransport`, and `AttachmentPayload` and
+`AttachmentSecurityOptions`, two types the delivery path passes between its own modules
+(not a stable API). Run
 `python -c "import btx_lib_mail as m; help(m)"` for the docstrings of the installed version.
 
 ## Configuration Surface
@@ -25,11 +28,11 @@ original object. To use a different settings object, pass it as `send(config=...
 | `raise_on_invalid_recipient`   | `bool`              | `True`  | When `True`, invalid recipient addresses raise `InvalidInputError` (a `ValueError`); otherwise a warning is logged and the address is skipped.                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `recipient_max_count`          | `int \| None`       | `1000`  | Most recipients one `send()` call accepts, counted after duplicates are dropped; more is refused with `InvalidInputError` before any delivery. `None` sets no limit; when set, positive.                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `smtp_username`                | `str \| None`       | `None`  | Username used for SMTP authentication. Must be paired with `smtp_password`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `smtp_password`                | `SecretStr \| None` | `None`  | Password paired with `smtp_username`. Ignored when either value is missing. Masked in `repr()` and `model_dump()`; call `.get_secret_value()` for the plaintext. A plain `str` or an `int` is coerced; a validation error of `ConfMail` never carries it.                                                                                                                                                                                                                                                                                                                                 |
+| `smtp_password`                | `SecretStr \| None` | `None`  | Password paired with `smtp_username`. Ignored when either value is missing. Masked in `repr()` and `model_dump()`; call `.get_secret_value()` for the plaintext. A `str`, UTF-8 `bytes` or an `int` is coerced and any other type refused; a validation error of `ConfMail` never carries it. NUL or invalid Unicode in it is refused by `send()`.                                                                                                                                                                                                                                        |
 | `smtp_use_starttls`            | `bool`              | `True`  | Enables `STARTTLS` negotiation before authentication. Set to `False` for servers that do not support STARTTLS.                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `smtp_starttls_verify`         | `bool`              | `True`  | Verifies the server certificate and hostname during `STARTTLS`. Set to `False` for internal self-signed relays (encrypted, unverified).                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `smtp_timeout`                 | `float`             | `30.0`  | Socket timeout in seconds applied to SMTP connections. Must be positive and finite (NaN and infinity are refused) and at most 2147483 (about 24.8 days, the longest timeout a Windows socket holds).                                                                                                                                                                                                                                                                                                                                                                                      |
-| `smtp_local_hostname`          | `str \| None`       | `None`  | Name announced in `EHLO`. When `None`, this host's name is looked up once per process and reused (an address literal such as `[192.0.2.7]` when it has no dot). Set it where reverse DNS is slow. Must be non-empty printable ASCII without spaces.                                                                                                                                                                                                                                                                                                                                       |
+| `smtp_local_hostname`          | `str \| None`       | `None`  | Name announced in `EHLO`. When `None`, this host's name is looked up once per process and reused (an address literal such as `[192.0.2.7]` when it has no dot). Set it where reverse DNS is slow. Must be non-empty printable ASCII without spaces, at most 255 characters.                                                                                                                                                                                                                                                                                                               |
 | `smtp_delivery_deadline`       | `float \| None`     | `None`  | Upper bound in seconds for one SMTP session (one recipient via one host), from the TCP connect to the reply to `QUIT`, the server's greeting and the STARTTLS handshake included; each address the host name resolves to is tried with at most the time left, and none once it has run out (the name lookup itself is not interrupted). `smtp_timeout` bounds each socket operation, so a server answering one byte at a time never trips it; this bounds the whole session, after which the host counts as failed. `None` sets no bound; when set, positive, finite and at most 2147483. |
 
 **Attachment Security Settings:**
@@ -88,8 +91,10 @@ subcommand), ensuring the scaffold remains predictable.
 
 #### `send(...) -> bool`
 
-Entry point for SMTP delivery. Returns `True` when all recipients succeed and
-raises when every host fails for at least one recipient. The first seven parameters may be
+Entry point for SMTP delivery. Returns `True`; every failure raises instead, so there is no
+`False` to check. Every recipient is attempted, each through the hosts in turn, before a
+`DeliveryError` is raised for those every host refused; a recipient it does not name was
+delivered. The first seven parameters may be
 passed positionally; every other one is keyword-only.
 
 **Core Parameters:**
@@ -103,7 +108,7 @@ passed positionally; every other one is keyword-only.
 | `mail_body_html`               | `str`                                       | `""`    | Optional HTML body (UTF-8).                                                                                                                                                                                                                                                                                                                                                                                  |
 | `smtphosts`                    | `Sequence[str] \| AbstractSet[str] \| None` | `None`  | Host override: a list, tuple, set or frozenset of hosts, or one host as a string; a set has no order, so neither has the failover between its hosts. A lazy iterable (a generator, a `range`) or any other type is refused with `InvalidInputError`. `None` or an empty value (`[]`, `()`, `""`, an empty set) falls back to `smtphosts` of the config in use (the passed `config`, else the global `conf`). |
 | `attachment_file_paths`        | `Iterable[pathlib.Path \| str] \| None`     | `None`  | Attachment paths, an iterable of `Path` or `str` entries; a single path passed alone, or any other entry, is refused with `InvalidInputError`. A generator (such as `Path.glob()`) is read only one entry past `attachment_max_count`, and refused when it yields more. Missing or unreadable files raise unless `raise_on_missing_attachments` is `False` on the config in use.                             |
-| `credentials`                  | `tuple[str, str] \| None`                   | `None`  | Keyword-only, like every parameter below. `(username, password)` override; neither may contain NUL. `None` or an empty pair defaults to `resolved_credentials()` of the config in use; any other value that is not a pair of `str` is refused.                                                                                                                                                               |
+| `credentials`                  | `tuple[str, str] \| None`                   | `None`  | Keyword-only, like every parameter below. `(username, password)` override; neither may contain NUL or invalid Unicode (a lone surrogate), and the same check applies to credentials taken from the config. `None` or an empty pair defaults to `resolved_credentials()` of the config in use; any other value that is not a pair of `str` is refused.                                                        |
 | `use_starttls`                 | `bool \| None`                              | `None`  | When `None`, the helper uses `smtp_use_starttls` of the config in use.                                                                                                                                                                                                                                                                                                                                       |
 | `starttls_verify`              | `bool \| None`                              | `None`  | When `None`, the helper uses `smtp_starttls_verify` of the config in use. `False` skips certificate verification.                                                                                                                                                                                                                                                                                            |
 | `timeout`                      | `float \| None`                             | `None`  | When `None`, the helper uses `smtp_timeout` of the config in use.                                                                                                                                                                                                                                                                                                                                            |
@@ -162,17 +167,17 @@ spaces are dropped (Windows saves `x.exe.` as `x.exe`) and compared without case
 
 #### Default Blocked Directories
 
-**POSIX (Linux/macOS):**
+**`DANGEROUS_DIRECTORIES_POSIX`** (Linux/macOS):
 ```
 /etc, /var, /root, /boot, /sys, /proc, /dev, /usr/bin, /usr/sbin, /bin, /sbin
 ```
 
-**Windows:**
+**`DANGEROUS_DIRECTORIES_WINDOWS`**:
 ```
 C:\Windows, C:\Windows\System32, C:\Program Files, C:\Program Files (x86), C:\ProgramData
 ```
 
-#### Sensitive Path Patterns (always blocked, all platforms)
+#### `SENSITIVE_PATH_PATTERNS` (always blocked, all platforms)
 
 Matched as substrings of the resolved path (forward slashes); ignoring case on macOS and
 Windows, whose file systems do, and exactly on Linux:
@@ -192,7 +197,11 @@ Windows, whose file systems do, and exactly on Linux:
   a keyword of the wrong type (a string as an extension or directory set, a flag that is not
   `True` or `False`, a size that is not a positive `int`, `timeout` or `delivery_deadline` that
   is not a number, `credentials` that are not a `(user, password)` pair of `str`, `config` that
-  is not a `ConfMail`), or no valid recipient left after validation.
+  is not a `ConfMail`), `attachment_file_paths` given as one path or holding an entry that is
+  neither `str` nor a path, more distinct recipients than `recipient_max_count` or more
+  attachments than `attachment_max_count`, no SMTP host in the call or the config in use, a
+  user name or password (passed or configured) containing NUL or invalid Unicode, or no valid
+  recipient left after validation.
 - `AttachmentNotFoundError` (a `FileNotFoundError`)  -  when a required attachment is missing,
   is not a regular file (a directory, a FIFO), or cannot be examined or opened (`can not be read
   (EACCES)`, the errno name in brackets; a symlink loop reads `ELOOP`) and `raise_on_missing_attachments` is `True`.
@@ -202,11 +211,12 @@ Windows, whose file systems do, and exactly on Linux:
   [attachment security](attachment-security.md)).
 - `DeliveryError` (a `RuntimeError`)  -  when every configured host fails for a recipient; its
   message lists recipients and host roster, and `failed_recipients` / `hosts` carry them as
-  tuples.
+  tuples. It is raised after every recipient was attempted; one it does not name was delivered.
 
-An `OSError` the operating system raises while opening an attachment that exists (for
-example `PermissionError` on an unreadable file) is not a `BtxMailError`; it propagates
-unchanged, before any delivery.
+An attachment that exists but cannot be opened (no read permission, a name too long, a
+symlink loop) is reported like a missing one, never as a bare `OSError`: an
+`AttachmentNotFoundError` naming the errno, or a warning and a skip when
+`raise_on_missing_attachments` is `False`.
 
 **Per-host failure log:** when a host raises during delivery, `send` logs one
 credential-free `WARNING` for that host and moves on to the next one; no traceback is
@@ -268,8 +278,8 @@ member, never on the message text.
   64 characters before the `@` and 254 in all. A refusal for length names the length, not the
   address.
 - `validate_smtp_host(host: str) -> None` raises `InvalidInputError` unless `host` is one of
-  `hostname`, `hostname:port`, `[IPv6]`, `[IPv6]:port`, with a port of ASCII digits in
-  1-65535. A host carrying `@` or `/` or an interior whitespace or control character is
+  `hostname`, `hostname:port`, `[IP]`, `[IP]:port` (an IPv6 or IPv4 address in brackets),
+  with a port of ASCII digits in 1-65535. A host carrying `@` or `/` or an interior whitespace or control character is
   refused without the value appearing in the message; a comma (two hosts in one string),
   an unbracketed IPv6 address, bracket content that is not an IP address (`[zz]`), and a
   name DNS can never resolve (an empty label as in `a..b`, a label starting or ending with
@@ -315,8 +325,9 @@ assert transport.sent[0][0] == "oncall@example.com"
 ## Logging and metadata
 
 - `logger` is the library's `logging.Logger` (`"btx_lib_mail"`). It logs one `WARNING` per
-  failed host, per skipped attachment and per skipped recipient, and a `DEBUG` line per
-  delivery; no record carries a password.
+  failed host, per skipped attachment, per skipped recipient, and per session that sends
+  credentials with STARTTLS off (`sending SMTP credentials to host "<host>" without TLS
+  (STARTTLS is off)`), and a `DEBUG` line per delivery; no record carries a password.
 - `print_info()` prints the package metadata (name, version, homepage, author), as the CLI's
   `info` command does. `CANONICAL_GREETING` is the `"Hello World"` text `emit_greeting()`
   writes.

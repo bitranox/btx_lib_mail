@@ -55,6 +55,11 @@
 
 ### Changed
 
+- The CLI builds its JSON output from typed models: one per command payload, plus the
+  success and failure envelopes, the error and the skip record, with the skip kind an enum
+  shared by the library's warn-mode warnings and the CLI. The printed JSON is unchanged,
+  byte for byte, and tests now pin its exact text and key order, which a dict comparison
+  could not see.
 - `send(credentials=)` refuses any value that is not a `(user, password)` pair of `str`; only
   `None` or an empty pair fall back to the configured credentials. `0`, `False` and `""` used
   the configured ones silently. Likewise `smtphosts=0` or `False` is refused rather than
@@ -121,6 +126,19 @@
 
 ### Fixed
 
+- `btx-lib-mail send` reports in `data.recipients` (and the "Mail sent to" line) exactly the
+  addresses it delivered to: trimmed, lower-cased when ASCII, each once. It listed them as typed,
+  so a recipient given twice in different case appeared twice, and a skipped recipient whose
+  logged form had been cleaned or shortened (quoted, non-ASCII, overlong) was reported as
+  delivered.
+- The CLI takes the subcommand, and with it the JSON mode and the failure envelope's `command`,
+  from the first argument that is not a group option. A mistyped subcommand is now reported with
+  `"command": null` instead of under the name of a later argument (`--json sned --subject hello`
+  named `hello`), and a `--json` after it no longer switches JSON on.
+- `send` reads a whitespace-only `BTX_MAIL_*` variable as unset, like an empty one, so it no
+  longer hides the env file's value for that key.
+- `send` falls back to `conf.smtphosts` when no option, variable or env file names a host, as
+  the documented order of sources says; it stopped with a usage error.
 - A server reply is refused, and the session closed, once it carries more than 100 lines. smtplib
   read continuation lines for as long as the server sent them, so a hostile server, or anyone on
   the path before STARTTLS, could exhaust the client's memory; the delivery deadline bounds time,

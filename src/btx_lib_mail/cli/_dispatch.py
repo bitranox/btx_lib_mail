@@ -16,7 +16,7 @@ from .. import __init__conf__
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 from ._commands import cli
-from ._output import FAILED_RUN_SKIPPED, dumps_json, error_payload
+from ._output import FAILED_RUN_SKIPPED, FailureEnvelope, dumps_json, error_payload
 from ._traceback import (
     TRACEBACK_SUMMARY_LIMIT,
     TRACEBACK_VERBOSE_LIMIT,
@@ -180,13 +180,38 @@ def main(
         _restore_when_requested(state=previous_state, should_restore=restore_traceback)
 
 
+def _split_at_command(argv: Sequence[str]) -> tuple[list[str], str | None]:
+    """Return the group options, and the word in the subcommand's position.
+
+    Every group option is a flag that takes no value, so the first argument that
+    is not an option (or the one after ``--``) is where the subcommand goes,
+    whether or not it names one.
+
+    Args:
+        argv: Command-line arguments, including the subcommand and its options.
+
+    Returns:
+        The arguments before that position, and the word in it (``None`` when there is none).
+
+    Examples:
+        >>> _split_at_command(["--json", "sned", "--json", "hello"])
+        (['--json'], 'sned')
+    """
+    for index, argument in enumerate(argv):
+        if argument == "--":
+            return list(argv[:index]), argv[index + 1] if index + 1 < len(argv) else None
+        if argument == "-" or not argument.startswith("-"):
+            return list(argv[:index]), argument
+    return list(argv), None
+
+
 def _json_mode(argv: Sequence[str]) -> tuple[bool, bool]:
     """Return ``(as_json, bare)`` from the group options in *argv*, before the subcommand.
 
     Read from argv rather than the Click context: an error can escape before the
     context exists (a malformed option), and its report must still be JSON. Only
-    the tokens before the subcommand count, so an option VALUE spelled like the
-    flag (``--body --json``) does not switch JSON on.
+    the group options count, so an option VALUE spelled like the flag
+    (``--body --json``), or a flag after a mistyped subcommand, does not switch JSON on.
 
     Args:
         argv: Command-line arguments, including the subcommand and its options.
@@ -194,11 +219,7 @@ def _json_mode(argv: Sequence[str]) -> tuple[bool, bool]:
     Returns:
         A tuple of ``(as_json, bare)``.
     """
-    group_options: list[str] = []
-    for token in argv:
-        if token in cli.commands:
-            break
-        group_options.append(token)
+    group_options, _word = _split_at_command(argv)
     bare = "--json-bare" in group_options
     return bare or "--json" in group_options or "-j" in group_options, bare
 
@@ -210,9 +231,10 @@ def _command_named(argv: Sequence[str]) -> str | None:
         argv: Command-line arguments, including the subcommand and its options.
 
     Returns:
-        The subcommand name, or ``None`` when *argv* names no known subcommand.
+        The word in the subcommand's position when it names a command, else ``None``.
     """
-    return next((token for token in argv if token in cli.commands), None)
+    _group_options, word = _split_at_command(argv)
+    return word if word in cli.commands else None
 
 
 def _json_exception_handler(argv: Sequence[str], *, bare: bool) -> Callable[[BaseException], int]:
@@ -236,8 +258,7 @@ def _json_exception_handler(argv: Sequence[str], *, bare: bool) -> Callable[[Bas
         if isinstance(exc, SystemExit):
             return int(exc.code or 0) if isinstance(exc.code, int) or exc.code is None else 1
         error = error_payload(exc)
-        skipped = [dict(item) for item in FAILED_RUN_SKIPPED.get()]
-        click.echo(dumps_json(error if bare else {"ok": False, "command": _command_named(argv), "error": error, "skipped": skipped}))
+        click.echo(dumps_json(error if bare else FailureEnvelope(command=_command_named(argv), error=error, skipped=FAILED_RUN_SKIPPED.get())))
         if isinstance(exc, click.ClickException):
             return exc.exit_code
         return lib_cli_exit_tools.get_system_exit_code(exc)

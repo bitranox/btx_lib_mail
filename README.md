@@ -43,7 +43,7 @@ What you get:
   refused by default, so you do not email your private key by accident. Each file is opened
   once, right after its checks, and the bytes sent are the bytes of the file that was
   checked.
-- **One error type to catch.** Every refusal and delivery failure is a `BtxMailError`, and
+- **One error type to catch.** Every refusal by the library and every delivery failure is a `BtxMailError`, and
   the CLI has `--json` output and documented exit codes for scripts and agents.
 
 The part that costs us and earns your trust is the unglamorous part: every wire path is

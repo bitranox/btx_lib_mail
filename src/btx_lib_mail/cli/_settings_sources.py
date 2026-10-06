@@ -72,8 +72,9 @@ _QUOTED_MIN_LEN: Final[int] = 2
 class Sources:
     """The values a command may read for an option it was not given.
 
-    The process environment wins over the env file; a key set to an empty
-    string in either counts as unset. The env file is the one ``--env-file``
+    The process environment wins over the env file; a key set to an empty or
+    whitespace-only string in either counts as unset, so a blank variable does not
+    hide the env file's value. The env file is the one ``--env-file``
     names, otherwise ``.env`` in the working directory when it is a file.
     """
 
@@ -81,10 +82,11 @@ class Sources:
     env_file: Mapping[str, str] = field(default_factory=lambda: {})
 
     def value(self, key: str) -> str | None:
-        env_value = self.environ.get(key)
-        if env_value not in (None, ""):
-            return env_value
-        return self.env_file.get(key) or None
+        for source in (self.environ, self.env_file):
+            found = source.get(key)
+            if found is not None and found.strip():
+                return found
+        return None
 
 
 def env_file_to_read(named: Path | None) -> Path | None:
@@ -194,12 +196,31 @@ def _split_values(values: Sequence[str]) -> list[str]:
     return flattened
 
 
-def resolve_list(cli_values: Sequence[str], env_key: str, *, label: str, sources: Sources) -> list[str]:
+def resolve_list(cli_values: Sequence[str], env_key: str, *, label: str, sources: Sources, default: Sequence[str] = ()) -> list[str]:
+    """Return the option's values, else the environment's or env file's, else default.
+
+    Each value is split on commas and trimmed; blank items are dropped.
+
+    Args:
+        cli_values: The repeated option's values.
+        env_key: The variable read when the option was not given.
+        label: What the values are, for the refusal.
+        sources: The environment and the env file.
+        default: The values `conf` holds, used when no other source gives one.
+
+    Returns:
+        The values, in order.
+
+    Raises:
+        click.UsageError: If no source gives a value.
+    """
     values = _split_values(cli_values)
     if not values:
         env_raw = sources.value(env_key)
         if env_raw:
             values = _split_values([env_raw])
+    if not values:
+        values = list(default)
     if not values:
         raise click.UsageError(f"Provide at least one {label} via options or {env_key}.")
     return values

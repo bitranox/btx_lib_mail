@@ -83,7 +83,9 @@ Key behaviours:
   timeout per call, not one per recipient.
 - STARTTLS is enabled by default (`smtp_use_starttls=True`). The helper performs
   the handshake with the system SSL context before authenticating; set the flag
-  to `False` when connecting to servers that do not support STARTTLS.
+  to `False` when connecting to servers that do not support STARTTLS. With
+  credentials configured, each such session then sends them unencrypted and logs a
+  `WARNING` saying so.
 - Certificate verification is on by default (`smtp_starttls_verify=True`). For an
   internal relay whose certificate is self-signed or has a hostname mismatch, set
   `smtp_starttls_verify=False` (or pass `starttls_verify=False` / use
@@ -91,7 +93,8 @@ Key behaviours:
   validated. This trades away MITM protection, so prefer adding the relay's CA to
   the trust store where you can.
 - Credentials are optional. If both `smtp_username` and `smtp_password` are
-  provided, `send` will call `SMTP.login`. The helper also accepts
+  provided, `send` authenticates after STARTTLS: `SMTP.login` for ASCII credentials,
+  UTF-8 AUTH PLAIN otherwise (see [Credentials](#credentials)). The helper also accepts
   one-off credentials via the `credentials=` argument.
 - Messages are always rendered as UTF-8; attachments retain their binary
   payload via base64 encoding. Failed hosts are logged at WARNING level and the

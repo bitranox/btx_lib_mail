@@ -13,6 +13,7 @@ from typing import IO, TYPE_CHECKING
 import rich_click as click
 from pydantic import SecretStr
 
+from .._validation import distinct_recipients, is_valid_recipient
 from ..lib_mail import ConfMail, conf, send
 from ..typed_click import option
 
@@ -20,6 +21,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 from ._commands import CLICK_CONTEXT_SETTINGS, cli
 from ._output import cli_context, collect_skipped, emit
+from ._payloads import SendResult
 from ._settings_sources import (
     Sources,
     checked_hosts,
@@ -269,7 +271,7 @@ def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per sett
             a warning and skip (warn).
     """
     sources = Sources(environ=os.environ, env_file=read_env_file(env_file_to_read(env_file)))
-    requested_hosts = resolve_list(hosts, "BTX_MAIL_SMTP_HOSTS", label="SMTP host", sources=sources)
+    requested_hosts = resolve_list(hosts, "BTX_MAIL_SMTP_HOSTS", label="SMTP host", sources=sources, default=conf.smtphosts)
     resolved_recipients = resolve_list(recipients, "BTX_MAIL_RECIPIENTS", label="recipient", sources=sources)
     sender_value = sender or sources.value("BTX_MAIL_SENDER") or resolved_recipients[0]
 
@@ -323,9 +325,11 @@ def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per sett
             transport=cli_context(ctx).transport,
         )
 
-    skipped_recipients = {item["value"] for item in collector.skipped if item["kind"] == "recipient"}
-    delivered = [recipient for recipient in resolved_recipients if recipient.lower() not in skipped_recipients]
-    data = {"sender": sender_value, "recipients": delivered, "hosts": list(settings.smtphosts)}
+    # send() returned, so every distinct valid recipient was delivered to; the same two
+    # functions decide it here as inside send(), never a match against the logged skips,
+    # whose values may be cleaned or shortened.
+    delivered = tuple(entry for entry in distinct_recipients(resolved_recipients) if is_valid_recipient(entry))
+    data = SendResult(sender=sender_value, recipients=delivered, hosts=tuple(settings.smtphosts))
     emit(ctx, "send", data, f"Mail sent to {', '.join(delivered)} via {', '.join(settings.smtphosts)}", skipped=collector.skipped)
 
 

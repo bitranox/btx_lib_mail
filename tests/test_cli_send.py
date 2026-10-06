@@ -262,6 +262,30 @@ def test_the_environment_wins_over_the_dotenv_in_the_working_directory(monkeypat
 
 
 @pytest.mark.os_agnostic
+@pytest.mark.parametrize("blank", ["", " ", "\t "], ids=["empty", "space", "tab-space"])
+def test_a_blank_environment_value_falls_through_to_the_dotenv(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner, tmp_path: Path, blank: str) -> None:
+    (tmp_path / ".env").write_text("BTX_MAIL_SMTP_HOSTS=dotenv.example.com\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BTX_MAIL_SMTP_HOSTS", blank)
+
+    result, transport = _invoke(cli_runner, ["send", "--recipient", "one@example.com", *_MESSAGE])
+
+    assert result.exit_code == 0, result.output
+    assert transport.only.host == "dotenv.example.com"
+
+
+@pytest.mark.os_agnostic
+def test_the_hosts_fall_back_to_conf_when_no_other_source_names_one(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(lib_mail.conf, "smtphosts", ["conf.example.com"])
+
+    result, transport = _invoke(cli_runner, ["send", "--recipient", "one@example.com", *_MESSAGE])
+
+    assert result.exit_code == 0, result.output
+    assert transport.only.host == "conf.example.com"
+
+
+@pytest.mark.os_agnostic
 def test_a_dotenv_that_is_not_a_file_is_ignored(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner, tmp_path: Path) -> None:
     (tmp_path / ".env").mkdir()
     monkeypatch.chdir(tmp_path)
@@ -939,6 +963,47 @@ def test_a_json_delivery_failure_names_the_failed_recipients_and_what_was_skippe
     assert envelope["error"]["failed_recipients"] == ["one@example.com"]
     assert envelope["error"]["hosts"] == ["127.0.0.1:1"]
     assert [(item["kind"], item["value"]) for item in envelope["skipped"]] == [("attachment", str(script))]
+    # Key ORDER is part of docs/cli.md's contract, and a dict comparison cannot see it;
+    # json.loads keeps the document's order, so the key lists pin it.
+    assert list(envelope) == ["ok", "command", "error", "skipped"]
+    assert list(envelope["error"]) == ["type", "message", "failed_recipients", "hosts"]
+    assert list(envelope["skipped"][0]) == ["kind", "value", "reason"]
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    ("argv", "printed"),
+    [
+        (["--json", "hello"], '{"ok": true, "command": "hello", "data": {"greeting": "Hello World"}, "skipped": []}'),
+        (["--json-bare", "hello"], '{"greeting": "Hello World"}'),
+        (
+            ["--json", "validate-email", "a@example.com"],
+            '{"ok": true, "command": "validate-email", "data": {"address": "a@example.com", "valid": true}, "skipped": []}',
+        ),
+        (["--json-bare", "validate-smtp-host", "[::1]:25"], '{"host": "[::1]:25", "valid": true}'),
+        (
+            ["--json", "validate-email", "nope"],
+            '{"ok": false, "command": "validate-email", "error": {"type": "InvalidInputError", "message": "invalid email address: \'nope\'"}, "skipped": []}',
+        ),
+        (["--json-bare", "validate-email", "nope"], '{"type": "InvalidInputError", "message": "invalid email address: \'nope\'"}'),
+        (["--json", "nosuch"], '{"ok": false, "command": null, "error": {"type": "NoSuchCommand", "message": "No such command \'nosuch\'."}, "skipped": []}'),
+    ],
+    ids=["success", "success-bare", "validate-email", "validate-smtp-host-bare", "failure", "failure-bare", "no-command"],
+)
+def test_the_json_output_is_written_exactly_as_documented(
+    capsys: pytest.CaptureFixture[str], isolated_traceback_config: None, argv: list[str], printed: str
+) -> None:
+    """The exact text: key order, `command: null`, and no delivery keys on any other failure."""
+    _code, out = _main(argv, capsys)
+
+    assert out == printed + "\n"
+
+
+@pytest.mark.os_agnostic
+def test_the_json_info_payload_lists_the_metadata_in_its_documented_order(capsys: pytest.CaptureFixture[str], isolated_traceback_config: None) -> None:
+    _code, out = _main(["--json-bare", "info"], capsys)
+
+    assert list(json.loads(out)) == ["name", "title", "version", "homepage", "author", "author_email", "shell_command"]
 
 
 @pytest.mark.os_agnostic
@@ -947,6 +1012,27 @@ def test_an_option_value_spelled_like_the_json_flag_does_not_switch_json_on(caps
 
     assert code != 0
     assert not out.lstrip().startswith("{"), out
+
+
+@pytest.mark.os_agnostic
+def test_a_json_flag_after_a_mistyped_command_does_not_switch_json_on(capsys: pytest.CaptureFixture[str], isolated_traceback_config: None) -> None:
+    """The mistyped word sits where the subcommand goes, so what follows it is not a group option."""
+    code, out = _main(["sned", "--json", "hello"], capsys)
+
+    assert code == 2
+    assert not out.lstrip().startswith("{"), out
+
+
+@pytest.mark.os_agnostic
+def test_a_mistyped_command_is_reported_as_no_command_even_when_a_later_word_names_one(
+    capsys: pytest.CaptureFixture[str], isolated_traceback_config: None
+) -> None:
+    code, out = _main(["--json", "sned", "--subject", "hello", "--body", "b"], capsys)
+
+    assert code == 2
+    envelope = json.loads(out)
+    assert envelope["command"] is None
+    assert envelope["error"]["type"] == "NoSuchCommand"
 
 
 @pytest.mark.os_agnostic
@@ -1116,6 +1202,30 @@ def test_a_skipped_recipient_given_in_capitals_is_not_reported_as_delivered() ->
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout)["data"]["recipients"] == ["one@example.com"]
     assert transport.recipients == ["one@example.com"]
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.usefixtures("_no_ambient")
+@pytest.mark.parametrize(
+    "given",
+    [
+        ["B@example.com", "b@example.com"],
+        ["one@example.com", '"NOPE"'],
+        ["one@example.com", "ÄBC"],
+        ["one@example.com", "x" * 400],
+        [" Two@Example.com ", "one@example.com", "TWO@example.com"],
+    ],
+    ids=["duplicate-in-other-case", "quoted-invalid", "non-ascii-invalid", "overlong-invalid", "padded-duplicate"],
+)
+def test_the_reported_recipients_are_exactly_the_ones_delivered_to(given: list[str]) -> None:
+    """A skip's logged value can be shortened or cleaned, so the report cannot be derived by matching it."""
+    args = ["--json", "send", "--host", "smtp.example.com", *[f"--recipient={entry}" for entry in given], *_CLI_MESSAGE]
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(lib_mail.conf, "raise_on_invalid_recipient", False)
+        result, transport = _invoke(CliRunner(), args)
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["data"]["recipients"] == transport.recipients
 
 
 @pytest.mark.os_agnostic

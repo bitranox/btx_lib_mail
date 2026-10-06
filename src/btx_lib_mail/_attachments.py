@@ -18,7 +18,7 @@ from email.message import EmailMessage
 from enum import Enum
 from typing import IO, Final, cast
 
-from ._common import is_valid_unicode, logger, printable
+from ._common import SkipKind, is_valid_unicode, logger, printable
 from ._descriptor_path import descriptor_path
 from .errors import AttachmentNotFoundError, BtxMailError, InvalidInputError
 
@@ -1215,7 +1215,7 @@ def _unavailable(path: pathlib.Path, problem: str, *, raise_on_missing: bool) ->
         'Attachment File "%s" %s',
         clean_path,
         problem,
-        extra={"attachment_path": clean_path, "skipped": "attachment"},
+        extra={"attachment_path": clean_path, "skipped": SkipKind.ATTACHMENT.value},
     )
 
 
@@ -1273,7 +1273,7 @@ def log_violation(exc: AttachmentSecurityError, original_path_str: str) -> None:
         extra={
             "attachment_path": _quoted(original_path_str),
             "violation_type": exc.violation_type.value,
-            "skipped": "attachment",
+            "skipped": SkipKind.ATTACHMENT.value,
         },
     )
 

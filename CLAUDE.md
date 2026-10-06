@@ -25,7 +25,8 @@ src/btx_lib_mail/
   cli/                 # rich-click CLI adapter (send, validate-email, validate-smtp-host, info, hello, fail)
     __init__.py        #   public surface: cli, main, CliContext, the commands, traceback helpers
     _settings_sources.py #   options > environment > env file: Sources, resolve_*, env/password files
-    _output.py         #   CliContext, emit (human or JSON), error_payload, collect_skipped
+    _output.py         #   CliContext, emit (human or JSON), the envelope/error/skip models, collect_skipped
+    _payloads.py       #   one frozen pydantic model per command's JSON payload (field order = key order)
     _traceback.py      #   traceback limits and the lib_cli_exit_tools state helpers
     _commands.py       #   the cli group and info, hello, validate-email, validate-smtp-host, fail
     _send_command.py   #   send: one ConfMail from options > environment > env file > conf
@@ -36,7 +37,7 @@ src/btx_lib_mail/
   _validation.py       # email and host syntax, EHLO name, durations, recipient and host lists
   _compose.py          # message assembly: shared body encoded once, per-recipient header lines
   _transport.py        # Transport protocol, DeliveryOptions, SmtplibTransport (BDAT/DATA), deadline
-  _common.py           # logger, printable(), is_valid_unicode()
+  _common.py           # logger, SkipKind (what a warn-mode warning left out), printable(), is_valid_unicode()
   _descriptor_path.py  # descriptor_path(): the path the kernel holds for an open file (per OS)
   errors.py            # BtxMailError and its subclasses
   secret_safety.py     # SecretSafeModel, redact_validation_error: credential-safe pydantic errors
