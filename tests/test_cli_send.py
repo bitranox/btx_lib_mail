@@ -1276,6 +1276,10 @@ def test_the_cli_writes_a_skipped_attachment_warning_to_stderr_and_only_json_to_
                 "--body",
                 "B",
                 "--no-starttls",
+                # A fresh process computes the default EHLO name with a reverse DNS lookup, which
+                # takes 35-70 s on macOS CI runners and outlasts the timeout below.
+                "--local-hostname",
+                "client.example.com",
                 "--attachment",
                 str(tool),
                 "--attachment-warn",
