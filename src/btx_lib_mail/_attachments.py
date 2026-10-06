@@ -1005,16 +1005,7 @@ def _open_attachment(path: pathlib.Path, security: AttachmentSecurityOptions) ->
         raise _UnreadableAttachmentError(exc.errno) from None
     except ValueError:
         raise _too_long_to_name() from None
-    # Judged on the raw descriptor: os.fdopen raises a bare IsADirectoryError for a
-    # directory swapped in during the open (POSIX opens one for reading), and the
-    # descriptor it was handed would leak with it.
-    try:
-        opened = os.fstat(descriptor)
-        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (checked.st_dev, checked.st_ino):
-            raise _changed_after_check(path)
-    except BaseException:
-        os.close(descriptor)
-        raise
+    opened = _require_checked_descriptor(descriptor, checked, path)
     handle = os.fdopen(descriptor, "rb")
     try:
         _check_descriptor_path(handle.fileno(), path, security)
@@ -1023,6 +1014,35 @@ def _open_attachment(path: pathlib.Path, security: AttachmentSecurityOptions) ->
         handle.close()
         raise
     return handle
+
+
+def _require_checked_descriptor(descriptor: int, checked: os.stat_result, path: pathlib.Path) -> os.stat_result:
+    """Prove a raw descriptor is still the regular file that was checked, or close it.
+
+    Judged on the raw descriptor, before :func:`os.fdopen`: that raises a bare
+    ``IsADirectoryError`` for a directory swapped in during the open (POSIX
+    opens one for reading), and the descriptor it was handed would leak with it.
+
+    Args:
+        descriptor: The descriptor just opened on path; closed here on refusal.
+        checked: The ``lstat`` result recorded when path was checked.
+        path: The checked path, named in the refusal.
+
+    Returns:
+        The descriptor's ``fstat`` result.
+
+    Raises:
+        AttachmentSecurityError: ``CHANGED`` when the descriptor is not a
+            regular file or not the checked file (device and inode differ).
+    """
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (checked.st_dev, checked.st_ino):
+            raise _changed_after_check(path)
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return opened
 
 
 def _check_descriptor_path(descriptor: int, path: pathlib.Path, security: AttachmentSecurityOptions) -> None:
