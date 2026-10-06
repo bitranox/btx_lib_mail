@@ -6,6 +6,7 @@ from __future__ import annotations
 # since send() leaves no window between them for a test to act in.
 # pyright: reportPrivateUsage=false
 import contextlib
+import errno
 import gc
 import logging
 import math
@@ -824,32 +825,38 @@ def test_a_path_swapped_for_a_directory_inside_the_open_is_refused_and_leaks_no_
     report.write_bytes(b"quarterly numbers")
     real_open = os.open
     swapped: list[bool] = []
+    # The descriptors opened on the swapped path. Checked one by one: a lowest-free-number
+    # comparison misses the leak, because the POSIX open walks the parent directory first and
+    # closes it, so the leaked descriptor sits above a free one.
+    opened: list[int] = []
 
     def open_after_swap(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
         if not swapped and _opens(path, report):
             report.unlink()
             report.mkdir()
             swapped.append(True)
-        return real_open(path, flags, *args, **kwargs)
+        descriptor = real_open(path, flags, *args, **kwargs)
+        if _opens(path, report):
+            opened.append(descriptor)
+        return descriptor
 
-    # The lowest free descriptor number: a leaked one keeps it taken.
-    free_before = real_open(os.devnull, os.O_RDONLY)
-    os.close(free_before)
     monkeypatch.setattr(os, "open", open_after_swap)
     transport = RecordingTransport()
 
     with pytest.raises((AttachmentSecurityError, AttachmentNotFoundError)) as caught:
         _send(transport, report)
 
-    free_after = real_open(os.devnull, os.O_RDONLY)
-    os.close(free_after)
     assert swapped, "positive control: the swap ran inside the open"
+    for descriptor in opened:
+        with pytest.raises(OSError) as closed:
+            os.fstat(descriptor)
+        assert closed.value.errno == errno.EBADF, f"descriptor {descriptor} was left open"
     if sys.platform == "win32":
         assert str(caught.value).endswith("can not be read (EACCES)")
     else:
+        assert opened, "positive control: the directory was opened"
         assert isinstance(caught.value, AttachmentSecurityError)
         assert caught.value.violation_type is AttachmentViolation.CHANGED
-    assert free_after == free_before, "the descriptor of the directory was left open"
     assert transport.messages == {}
 
 
