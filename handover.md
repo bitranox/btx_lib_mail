@@ -1,87 +1,93 @@
-# STALE - read 2026-10-06, work continued
+# Handover - btx_lib_mail, 2026-10-06 (4.0.0 released; rank 40 is the only open item)
 
-Read `OPEN-WORK.md` first. Open: ranks 22, 30, 40 (all USER). Rank 15 (data architecture) is
-finished and committed in bb14dae, together with a full doc and skill audit and four CLI fixes.
+Read `OPEN-WORK.md` first. Ranks 30 (release) and 22 (skill) are closed; rank 40 (CLI template
+rollout) is the one open item and its deferral condition is now met.
 
 ## In flight
 
-Nothing part-done. bb14dae is the last commit; the tree was clean after it (this file and the
-rank 30 line in `OPEN-WORK.md` are the only edits since).
+Nothing part-done. btx_lib_mail 4.0.0 is on PyPI (tag v4.0.0 on 1555c53; CI, CodeQL and Release
+green). The skill twin `coding-python-send-mail` is on bitranox-skills master as 8.0.3
+(c30d38a6, its CI green).
 
 ## Committed, or not
 
-- bb14dae on master, NOT pushed (about 111 commits ahead of origin).
-- Gates green at bb14dae: `make test`, `make test-all` (3.10-3.14), pyright for Linux, Windows,
-  Darwin and `--pythonversion 3.10`. The Windows suite on the Windows dev box was NOT re-run since
-  c2f5ca6; rank 30's next step now includes it.
-- Uncommitted by design: `EXECUTION-USER-REVIEW.md` (gitignored; this session's autonomous
-  decisions are logged there), `.private/` records.
+- a6c234e (backlog: close ranks 30 and 22) and this handover are committed locally, NOT pushed;
+  they ride with the next push.
+- Uncommitted by design: `EXECUTION-USER-REVIEW.md` (gitignored; this session's decisions are
+  logged under 2026-10-06 "4.0.0 release"), `.private/`.
+- `make clean-all` ran after the release: every `.venv*` is gone and rebuilds on the next `make`.
 
 ## Decided, and why
 
-- The `skipped` log-record attribute carries the plain `SkipKind.X.value` string; the CLI parses
-  it into `SkipKind` in its logging filter. A `str, Enum` member formats as `SkipKind.X` on 3.11+,
-  and an embedding app's log formatter reads that attribute.
-- The doc audit found four CLI code defects; they were fixed in code (RED-first tests, CHANGELOG
-  Fixed entries), not documented: delivered-recipient report, subcommand position, blank env
-  values, `conf.smtphosts` fallback. `data.recipients` now reports normalised addresses (`B@x` as
-  `b@x`): a deliberate wire-content change.
-- The skill text audited and corrected is `.private/python-send-mail-SKILL.md.sweep2`, the copy
-  rank 22 ships; `skills/python-send-mail/SKILL.md` stays the old published text until then.
+- Owner: tfbpr fix mode ask-big; the audited skill shipped IN 4.0.0, the twin pushed only after
+  PyPI served 4.0.0.
+- The btx_lib_mail side went out through `make push` because repo-gate's two mirror gates
+  deadlock a change made on both sides at once (each reads the other at its published text); the
+  twin commit then passed its gate. Deadlock queued in contrib_queue.
+- The macOS-only CI failure was the CLI subprocess test's default EHLO lookup (35-70 s reverse
+  DNS on macOS runners); the test passes `--local-hostname` (1555c53). Test-only, no version bump.
+- `/tmp` ran out of inodes (57,797 leaked `claude-ci-watch-*.json` from a hook test suite); I
+  deleted my own stale ones with no real-session entry. Leak queued in contrib_queue.
 
 ## Decided against, and why
 
-- Making `--attachment-allowed-ext` / `--attachment-blocked-ext` repeatable: documented as
-  single-value (last wins) instead; changing it is a CLI surface change nobody asked for.
-- Changing `send()` to return the delivered recipients: the CLI recomputes them with the same two
-  pure functions `send()` uses, so the public return value (`True`) did not have to change.
+- No push of the backlog/handover commit on its own: it would run the full CI matrix for two
+  tracked text files.
+- Did not fast-forward the shared main bitranox-skills checkout (215 behind, with another
+  session's staged `TODO-JEV.md`): not needed once the twin was pushed.
 
 ## Still open, untouched
 
-- Rank 30 (4.0.0 release), rank 22 (ship the skill), rank 40 (template rollout): see `OPEN-WORK.md`.
+- Rank 40 (template rollout to 19 apps plus the private template): see `OPEN-WORK.md`. Its fix
+  lands in the template and the derived apps, not here, so it is a candidate to move to the
+  template repo's backlog.
 
 ## Lessons for the next nap
 
-- When a report must say what a call acted on (the recipients delivered to), recompute it with the
-  same functions the call used, never by matching its logged output, which may be cleaned or cut.
-- When a CLI reads options before Click parses (JSON mode, failure envelope), locate the
-  subcommand by POSITION (the first non-option argument), not by the first token naming a command.
-- When a doc audit finds the doc faithfully describing a defect, fix the code with a RED test; do
-  not rewrite the doc to match the defect.
-- When counting needles in captured output stored as a JSON string field, `json.loads` first: a
-  grep on the raw line sees escaped quotes and reports 0.
-- When ruff S105 fires on a loop variable named `token` compared with a literal, rename the
-  variable; it is a name heuristic, not a secret.
-- tooling: block-partial-typecheck reads a shell variable in a pyright loop (`pyright $a`) as a
-  path argument and blocks; write each pyright run out explicitly.
-- (carried from the previous handover, not yet confirmed napped) When a test checks for a leaked
-  descriptor by the lowest free number, it misses a leak above a closed lower descriptor; assert
-  EBADF on the recorded descriptor.
-- (carried) When a house rule states a hard limit (complexity <= 10), check the gate's ruff
-  `select` names the rule.
-- (carried) When a doc states a closed-stdout exit code, measure both a broken pipe and a stdout
-  closed at start: they differ.
+- When ENOSPC or pytest "could not create numbered dir" appears with gigabytes free, check
+  `df -i` first (captured this session as feedback-enospc-with-free-gigabytes-means-inodes-check-df-i-first).
+- When a test spawns the btx_lib_mail CLI (or any SMTP client) as a fresh process, pass an
+  explicit EHLO name: a fresh process's reverse DNS lookup takes 35-70 s on macOS CI runners.
+- Proposed, awaiting the owner: rewrite the btx_lib_mail fact
+  reference-aiosmtpd-controller-start-flakes-on-macos-ci-retry-fresh-port-then-skip; its
+  "runner flake" diagnosis is wrong, the cause is the ~30 s `getfqdn` on macOS runners
+  (`server_hostname` / `local_hostname` fix it).
+- When a mirrored skill changes on both sides, expect repo-gate's commit gates to deadlock; the
+  tool-repo side can go out through its release push, then the marketplace side commits.
+- When `git filter-branch --msg-filter` rewrites an unpushed range, delete the backup branch and
+  `refs/original` afterwards: both keep the old messages reachable.
+- tooling: a `grep -v '^\['` filter on probe output hid a line that legitimately began with `[]`.
+- (carried, not yet confirmed napped) When a report must say what a call acted on, recompute it
+  with the call's own functions, never by matching its logged output.
+- (carried) When a CLI reads options before Click parses, locate the subcommand by POSITION.
+- (carried) When a doc audit finds the doc faithfully describing a defect, fix the code.
+- (carried) When counting needles in JSON-string captured output, `json.loads` first.
+- (carried) When ruff S105 fires on a loop variable named `token`, rename the variable.
+- (carried) tooling: block-partial-typecheck reads a shell variable in a pyright loop as a path.
+- (carried) When a leak check uses the lowest free descriptor, assert EBADF on the recorded one.
+- (carried) When a house rule states a hard limit, check the gate's ruff `select` names the rule.
+- (carried) When a doc states a closed-stdout exit code, measure a broken pipe and a closed-at-start
+  stdout separately.
 
 ## Exact next action
 
-Rank 30: ask the owner the release pipeline's fix-mode question (auto / ask-big / ask-per-scope),
-one decision with upsides, downsides and a recommendation. Then follow rank 30's `next:` field in
-`OPEN-WORK.md`, starting with the Windows suite at bb14dae or later.
+Rank 40: decide with the owner whether the item moves to the bitranox_template_py_cli backlog
+(its code lands there and in the derived apps), then write the rollout plan with
+bitranox:process-plan-writing-plans in a fresh session, starting from the template: raise its
+floor to `btx_lib_mail>=4.0.0` and drop `EmailConfig._check_hosts` (adapters/email/config.py).
 
 ## Files that matter
 
-- `OPEN-WORK.md` (rank 30 carries the release steps and the commit-message scrub)
-- `CHANGELOG.md` (`[3.1.0]` and `[Unreleased]` merge into `[4.0.0]`)
-- `.private/python-send-mail-SKILL.md.sweep2` (the skill text rank 22 ships)
-- `.claude-plugin/plugin.json` (still 3.1.0; `make bump` updates it)
+- `OPEN-WORK.md` (rank 40)
+- `EXECUTION-USER-REVIEW.md` (gitignored; the 2026-10-06 release decisions)
+- `tests/test_cli_send.py` (the `--local-hostname` fix for macOS CI)
 
 ## How to verify
 
-- `env -u VIRTUAL_ENV python3 <compuse-toolbox>/scripts/gate.py --gate "make test" --gate "make test-all"`
-  ends with both `[PASS]`.
-- `.venv/bin/pyright --pythonpath .venv/bin/python --pythonplatform Windows` (and Darwin, and
-  `--pythonversion 3.10`, each run written out) reports 0 errors.
-- `git log origin/master..HEAD --format=%B | grep -ci vm-` is 0 only after the rank 30 scrub.
+- `curl -s https://pypi.org/pypi/btx_lib_mail/json` reports `info.version` 4.0.0.
+- `git ls-remote --tags origin v4.0.0` lists the tag.
+- `python3 <bitranox-skills checkout>/plugins/bitranox/hooks/repo-gate.py --mirror-of .`
+  prints `in sync` once the main bitranox-skills checkout is fetched past c30d38a6.
 
 > Read this, then replace the first line with `# STALE - read <date>, work continued`. Do not
 > delete it - if this session ends badly it is the only record of where things stood.
