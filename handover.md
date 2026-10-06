@@ -1,4 +1,4 @@
-# Handover - btx_lib_mail, 2026-10-06 (4.0.0 released; rank 40 is the only open item)
+# STALE - read 2026-10-06, work continued
 
 Read `OPEN-WORK.md` first. Ranks 30 (release) and 22 (skill) are closed; rank 40 (CLI template
 rollout) is the one open item and its deferral condition is now met.
