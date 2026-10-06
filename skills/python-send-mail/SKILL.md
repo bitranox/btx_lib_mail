@@ -1,6 +1,6 @@
 ---
 name: python-send-mail
-description: Use when sending email from Python or the shell, especially with large attachments that must not be loaded into memory, RFC 3030 BDAT/CHUNKING, STARTTLS with authentication, multi-host failover, or correct UTF-8 subject and body encoding; when testing code that sends mail without an SMTP server; or when a script or agent needs machine-readable mail-sending output. Prefer the `btx_lib_mail` library or its `btx-lib-mail` CLI (zero-install via `uvx btx-lib-mail send ...`) over hand-rolling `smtplib`/`email`, MIME assembly, dot-stuffing, or attachment security checks.
+description: Use when sending email from Python or the shell, especially with large attachments that must not be loaded into memory, RFC 3030 BDAT/CHUNKING, STARTTLS with authentication, multi-host failover, or correct UTF-8 subject and body encoding; when testing code that sends mail without an SMTP server; when a script or agent needs machine-readable mail-sending output; when a pydantic settings model's ValidationError must not leak a password; or when an SMTP relay hangs mid-session or refuses the EHLO greeting. Prefer the `btx_lib_mail` library or its `btx-lib-mail` CLI (zero-install via `uvx btx-lib-mail send ...`) over hand-rolling `smtplib`/`email`, MIME assembly, dot-stuffing, or attachment security checks.
 ---
 
 # btx_lib_mail - send email from Python or the shell, streamed
@@ -55,7 +55,7 @@ from btx_lib_mail import send
 send(
     mail_from="alerts@example.com",
     mail_recipients=["oncall@example.com"],  # str or sequence; trimmed, lower-cased, deduped, validated
-    mail_subject="build failed",  # UTF-8 is fine (Grüße, emoji, CJK); control characters other than TAB are refused
+    mail_subject="build failed",  # UTF-8 is fine (Grüße, emoji, CJK); line breaks, control characters other than TAB, and over 4096 characters are refused
     mail_body="See CI logs.",
     mail_body_html="<p>See CI logs.</p>",  # optional HTML alternative
     smtphosts=["smtp.example.com:587", "smtp-dr.example.com:587"],  # tried in order (failover)
@@ -66,8 +66,16 @@ send(
 
 The first seven parameters may be positional; every other one (`credentials`, `use_starttls`,
 `timeout`, `delivery_deadline`, the `attachment_*` rules, `config`, `transport`, ...) is
-keyword-only. `send` returns `True` when every recipient is accepted. Each refusal happens before
-the first delivery. Set global defaults on `conf` and override per call:
+keyword-only. `send` returns `True`; every failure raises (see Errors), so there is no `False` to
+check. `raise_on_missing_attachments=False` / `raise_on_invalid_recipient=False` (also `ConfMail`
+fields) log a warning and skip a missing or unreadable attachment / an invalid recipient instead
+of raising; at least one valid recipient is still required. Each refusal happens before
+the first delivery. One call takes at most 1000 recipients (`ConfMail.recipient_max_count`, counted
+after duplicates are dropped) and 100 attachments (`attachment_max_count`); `None` lifts either
+limit: `send(..., config=ConfMail(recipient_max_count=5000))`, or `conf.attachment_max_count = None`
+for every call (`--recipient-max-count` and `--attachment-max-count` on the CLI). An address longer
+than RFC 5321 allows (64 characters before the `@`, 254 in all) is refused. Set global defaults on
+`conf` and override per call:
 
 ```python
 import os
@@ -124,6 +132,7 @@ _RENAMED = {
     "timeout": "smtp_timeout",
     "starttls_verify": "smtp_starttls_verify",
     "delivery_deadline": "smtp_delivery_deadline",
+    "local_hostname": "smtp_local_hostname",
 }
 _NOT_SMTP_SETTINGS = ("sender", "recipients")  # yours, not ConfMail's
 
@@ -136,11 +145,22 @@ def build_conf(section: Mapping[str, object]) -> ConfMail:
 A `credentials` pair is not a `ConfMail` key either: split it into `smtp_username` and
 `smtp_password` before validating.
 
+The `send()` overrides fall back to the config only on `None` or an empty value of their own type.
+For `credentials`, `()` uses the configured credentials, while `""`, `0` or `False` raise
+`InvalidInputError`. For `smtphosts`, `[]`, `()` or `""` use the configured hosts, while `0` or
+`False` raise `InvalidInputError`. `smtphosts` takes one host
+string or a list, tuple, set or frozenset of them; a generator or `range` is refused. A NUL in the
+user name or password is refused before any connection (AUTH PLAIN separates its fields with NUL).
+`attachment_file_paths` may be a generator such as `Path.glob("*.pdf")`; it is read only one entry
+past `attachment_max_count` and refused when it yields more.
+
 `ConfMail` checks every `smtphosts` entry with `validate_smtp_host` when it is built, validated or
 assigned, so a malformed host raises `ConfigurationError` (`loc` `("smtphosts",)`, the host never
 repeated) at load time instead of at the first `send()`: a port outside 1-65535 or not plain ASCII
 digits (`smtp.example.com:58o7`, `:+25`, `:2_5`), an unclosed IPv6 bracket, an IPv6 address
-without brackets (`fe80::1`; write `[fe80::1]:25`), a port with no host name (`:25`), and two hosts
+without brackets (`fe80::1`; write `[fe80::1]:25`), bracket content that is not an IP address, a
+name DNS can never resolve (`a..b`, `-bad-.example.com`, over 253 characters), a port with no host
+name (`:25`), and two hosts
 in one entry (`smtphosts="a.example.com:25,b.example.com:25"` is refused; write
 `ConfMail(smtphosts=["a.example.com:25", "b.example.com:25"])`). A blank entry, such as an
 environment variable that is set but empty, is dropped, so `""` means no hosts. Only the CLI splits
@@ -162,7 +182,7 @@ the builtin a caller would otherwise catch:
 |---------------------------|----------------------------|--------------------------------------------------------------------------------------------|
 | `InvalidInputError`       | `ValueError`               | a refused sender, recipient, host, subject, EHLO name, timeout or deadline                 |
 | `ConfigurationError`      | pydantic `ValidationError` | a refused `ConfMail` setting (construction, `model_validate*`, assignment)                 |
-| `AttachmentNotFoundError` | `FileNotFoundError`        | a required attachment is missing or not a regular file                                     |
+| `AttachmentNotFoundError` | `FileNotFoundError`        | a required attachment is missing, not a regular file, or cannot be opened                  |
 | `AttachmentSecurityError` | -                          | an attachment breaks a security rule (`violation_type` says which)                         |
 | `DeliveryError`           | `RuntimeError`             | every host failed for a recipient; `failed_recipients` and `hosts` are tuples to branch on |
 
@@ -177,8 +197,9 @@ except BtxMailError as refused:
     report(refused)  # anything else the library refused, before any delivery
 ```
 
-An `OSError` from the operating system while opening an existing attachment (`PermissionError`
-on an unreadable file) is not a `BtxMailError`; it propagates unchanged, before any delivery.
+An attachment the operating system refuses to open (no read permission, a name too long, a
+symlink loop) is reported like a missing file, never as a bare `OSError`: `AttachmentNotFoundError`
+(`... can not be read (EACCES)`), or a warning and a skip with `raise_on_missing_attachments=False`.
 
 ### Testing code that sends mail (no server, no patching)
 
@@ -250,7 +271,7 @@ The default extension blocklist also refuses common archive and package formats 
 
 ### A deadline for the whole SMTP session
 
-`smtp_timeout` bounds each socket read or write, so a relay that answers one byte at a time never
+`smtp_timeout` (`--timeout`, `BTX_MAIL_SMTP_TIMEOUT`) bounds each socket read or write, so a relay that answers one byte at a time never
 trips it and a session can hang for hours. Bound the whole session (one recipient via one host)
 with `delivery_deadline=` (or `ConfMail.smtp_delivery_deadline`, `--delivery-deadline`,
 `BTX_MAIL_SMTP_DELIVERY_DEADLINE`), in seconds. Past it the socket is shut down, that host counts
@@ -276,7 +297,9 @@ uvx btx-lib-mail send \
 ```
 
 Authentication needs both a username and a password; with only one of them the mail is sent
-without authenticating.
+without authenticating. STARTTLS is on by default; for a relay without TLS (port 25 on an internal
+network) pass `--no-starttls` or set `BTX_MAIL_SMTP_USE_STARTTLS=false`, otherwise every host fails
+with `SMTPNotSupportedError: STARTTLS extension not supported by server`.
 
 Settings resolve, per setting: the command-line option, then the `BTX_MAIL_*` environment
 variable, then the `KEY=value` env file, then the library's `conf`. The env file is `.env` in the
@@ -284,15 +307,22 @@ working directory when it is a regular file; `--env-file PATH` (or `BTX_MAIL_ENV
 another file to read INSTEAD (a key it lacks is not looked up in `./.env`). A `.env` can set the
 relay and switch STARTTLS off, so run `send` only where you trust it; when no source gives a host
 (`conf.smtphosts` is empty by default), `send` stops with "Provide at least one SMTP host",
-exit code `2`, and sends nothing. The environment variable names
+exit code `2`, and sends nothing. The recipients have no `conf` value: they come from
+`--recipient`, `BTX_MAIL_RECIPIENTS` or the env file. An empty or whitespace-only value counts as
+unset. The environment variable names
 are NOT mechanically derived from the flags - `--host` reads `BTX_MAIL_SMTP_HOSTS`, `--recipient`
 reads `BTX_MAIL_RECIPIENTS`, `--sender` reads `BTX_MAIL_SENDER` (else the first recipient),
-`--username` reads `BTX_MAIL_SMTP_USERNAME`. The MESSAGE-CONTENT options have no environment
+`--username` reads `BTX_MAIL_SMTP_USERNAME`, `--starttls/--no-starttls` reads
+`BTX_MAIL_SMTP_USE_STARTTLS`, `--starttls-verify` reads `BTX_MAIL_SMTP_STARTTLS_VERIFY`, `--timeout`
+reads `BTX_MAIL_SMTP_TIMEOUT`, `--recipient-max-count` reads `BTX_MAIL_RECIPIENT_MAX_COUNT`, and the
+`--attachment-*` rules read `BTX_MAIL_ATTACHMENT_{ALLOWED_EXT,BLOCKED_EXT,ALLOWED_DIRS,BLOCKED_DIRS,
+MAX_SIZE,MAX_COUNT,ALLOW_SYMLINKS,RAISE_ON_SECURITY}` (booleans take `1/true/yes/on` and
+`0/false/no/off`). The MESSAGE-CONTENT options have no environment
 variable at all: `--subject`, `--body` (both required), `--html-body` and `--attachment` must be
 passed on the command line.
 
-For a script or an agent, put `--json` (or `--json-bare` for the payload alone) BEFORE the
-subcommand. Every command prints exactly one JSON document on stdout; warnings stay on stderr:
+For a script or an agent, put `--json` (`-j`; or `--json-bare` for the payload alone) BEFORE the
+subcommand; `btx-lib-mail --version` shows which release `uvx` resolved. Every command prints exactly one JSON document on stdout; warnings stay on stderr:
 
 ```bash
 btx-lib-mail --json send --host smtp.example.com:587 --recipient a@example.com --subject s --body b
@@ -301,12 +331,18 @@ btx-lib-mail --json send --host smtp.example.com:587 --recipient a@example.com -
 #              "failed_recipients": [...], "hosts": [...]}, "skipped": [...]}
 ```
 
-`skipped` lists the attachments and recipients left out in warn mode (`--attachment-warn`), so a
-partial delivery reads differently from a complete one. Exit codes are the same with and without
+`failed_recipients` and `hosts` appear only for a `DeliveryError`; every other failure carries
+`type` and `message` alone. `data.recipients` lists the addresses delivered to (trimmed,
+lower-cased when ASCII, each once). `skipped` lists what was left out, each as `{"kind":
+"attachment" | "recipient", "value": ..., "reason": ...}`: with `--attachment-warn`, the attachments
+that broke a security rule (a missing attachment still fails); recipients appear only when an
+embedding application sets `conf.raise_on_invalid_recipient = False`. So a partial delivery reads
+differently from a complete one. Exit codes are the same with and without
 `--json`: `0` success, `1` delivery failed or an attachment broke a security rule, `2` a usage
 error or a missing attachment, `22` (Windows `87`) a refused value. Other commands: `info`,
 `hello`, `validate-email`, `validate-smtp-host` (the two `validate-*` take a positional
-argument). Run `uvx btx-lib-mail send --help` for every option.
+argument), and `fail`, which raises on purpose to show the traceback and exit-code handling
+(`--traceback fail` prints the full traceback). Run `uvx btx-lib-mail send --help` for every option.
 
 ## Streaming and BDAT (how delivery works)
 
@@ -346,10 +382,15 @@ the container's hostname is not needed.
 ## Attachment security
 
 Attachments are checked before any bytes are read, and rejected for: a `..` path component, a
-symlink as the last path component (off by default), sensitive paths (`/.ssh/`, `/id_rsa`, `/.env`,
+symlink as the last path component (unless `attachment_allow_symlinks=True` /
+`--attachment-allow-symlinks`), sensitive paths (`/.ssh/`, `/id_rsa`, `/.env`,
 `/.aws/credentials`, `/.netrc`, `/.git-credentials`, `/.pypirc`, `/token`, `/password`, and more;
 case ignored on macOS and Windows, exact on Linux), system directories, dangerous extensions, and
-oversize payloads.
+oversize payloads. The defaults are exported constants: `SENSITIVE_PATH_PATTERNS` (always applied),
+`DANGEROUS_DIRECTORIES_POSIX` / `DANGEROUS_DIRECTORIES_WINDOWS` (the running platform's set is the
+default blocked directories), and the two extension sets below. Extend a default from its constant
+rather than retyping it:
+`send(..., attachment_blocked_extensions=DANGEROUS_EXTENSIONS_POSIX | DANGEROUS_EXTENSIONS_WINDOWS | {".docm"})`.
 The dangerous-extension default is the SAME on every platform: the union of
 `DANGEROUS_EXTENSIONS_POSIX` and `DANGEROUS_EXTENSIONS_WINDOWS`, because the recipient's system
 decides what an attachment runs as, so a Linux sender refuses `invoice.exe` and `run.bat`. The
@@ -360,17 +401,23 @@ without case; an extension set given to `send()` or `ConfMail` is normalised the
 After its checks each file is opened ONCE, compared with what was checked, and encoded once; every
 recipient gets the bytes of that file. A path swapped afterwards for a symlink or another file is
 refused as `CHANGED`, and a file that grows past the size limit while it is read is refused as
-`SIZE`.
+`SIZE`. A file name holding a control character (CR, LF, NUL, ESC, ...), a bidirectional
+formatting character (U+202E can make `.xlsm` display as `.pdf`) or an invalid UTF-8 byte is
+refused as `FILENAME`.
 
 Violations raise `AttachmentSecurityError` by default, or log-and-skip with
-`attachment_raise_on_security_violation=False`. There are whitelist modes
+`attachment_raise_on_security_violation=False`; even then, a violation found while the message is
+composed that names no attachment still in it is raised, because composing again would meet it
+again. There are whitelist modes
 (`attachment_allowed_extensions`, `attachment_allowed_directories`). Because dangerous extensions
 and system directories are blocked by default, pass `attachment_blocked_extensions=frozenset()` (or
-an allowlist) as a `send()` keyword when you deliberately send such a file.
+an allowlist) as a `send()` keyword when you deliberately send such a file. On the CLI an empty
+`--attachment-blocked-ext` keeps the default; pass `--attachment-allowed-ext .exe` (allowlist mode
+replaces the blocklist) instead.
 
 Branch on the refusal's `violation_type`, an `AttachmentViolation` member (`PATH_TRAVERSAL`,
-`SYMLINK`, `SENSITIVE_PATTERN`, `DIRECTORY`, `EXTENSION`, `SIZE`, `CHANGED`), never on the message
-text:
+`SYMLINK`, `SENSITIVE_PATTERN`, `DIRECTORY`, `EXTENSION`, `SIZE`, `CHANGED`, `FILENAME`), never on
+the message text:
 
 ```python
 from btx_lib_mail import AttachmentSecurityError, AttachmentViolation, send
@@ -392,7 +439,9 @@ with a `ConfigurationError` unless that axis's allowlist is set or
 `attachment_allow_empty_blocklists=True` (one bool for both axes; it changes nothing while both
 sets are non-empty), because it would block nothing. A config file whose `[]` means "use the
 library defaults" must have that key DROPPED before the mapping reaches `ConfMail`, never passed
-through (the mapping here is already keyed by `ConfMail` field names):
+through (the mapping here is already keyed by `ConfMail` field names). A blank entry is dropped from
+every extension and directory set, so `[""]`, what splitting an empty setting yields, is an empty
+set too:
 
 ```python
 from collections.abc import Mapping
@@ -402,8 +451,12 @@ from btx_lib_mail import ConfMail
 _EMPTY_MEANS_DEFAULT = ("attachment_blocked_extensions", "attachment_blocked_directories")
 
 
+def _is_empty(value: object) -> bool:
+    return isinstance(value, list) and not any(str(item).strip() for item in value)
+
+
 def build_conf(loaded: Mapping[str, object]) -> ConfMail:
-    kept = {key: value for key, value in loaded.items() if not (key in _EMPTY_MEANS_DEFAULT and value == [])}
+    kept = {key: value for key, value in loaded.items() if not (key in _EMPTY_MEANS_DEFAULT and _is_empty(value))}
     return ConfMail.model_validate(kept)
 ```
 
@@ -463,8 +516,12 @@ The API and CLI surface is discoverable from the INSTALL (always matches your ve
 `Transport`, `DeliveryOptions`, `validate_email_address`, `validate_smtp_host`, the exceptions
 (`BtxMailError`, `InvalidInputError`, `ConfigurationError`, `AttachmentNotFoundError`,
 `AttachmentSecurityError`, `DeliveryError`), `AttachmentViolation`, `SecretSafeModel`,
-`redact_validation_error`, and the attachment-security constants, all re-exported from the package
-root.
+`redact_validation_error`, `REDACTED_INPUT` (the `"[redacted]"` stand-in a redacted error input
+reads as), `logger` (the `btx_lib_mail` logger, to attach a handler or set a level), and the
+attachment-security constants, all re-exported from the package root. The root also exports the
+scaffold helpers behind the `hello` and `fail` commands (`CANONICAL_GREETING`, `emit_greeting`,
+`noop_main`, `raise_intentional_failure`, `print_info`);
+they are left out of this skill on purpose, since nothing about sending mail uses them.
 
 Narrative detail (every `ConfMail` field, settings precedence, JSON output, exit codes, streaming,
 attachment security) lives in the repo docs (NOT shipped in the pip wheel), on the default branch

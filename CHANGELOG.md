@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [4.0.0] 2026-10-06 12:59:22
+
 ### Added
 
 - `send()` annotates `smtphosts` as `Sequence[str] | AbstractSet[str] | None` and
@@ -123,6 +125,21 @@
   `InvalidInputError` before the first delivery (`mail_subject must not contain control
   characters (only TAB is allowed)`); CR and LF keep the email package's message. Before,
   NUL, ESC and the rest were sent raw.
+- The `send` command builds one validated `ConfMail` (a copy of `conf` with each resolved
+  option assigned) and passes it to `send()` as `config=`, instead of passing each setting as a
+  separate keyword. `ConfMail`'s checks now run on CLI and environment input before any
+  delivery, and settings the CLI has no option for keep their `conf` value.
+- The `send` command names a refused EHLO name `smtp_local_hostname` (the field) rather than
+  `local_hostname` (the `send()` keyword): `ValueError: smtp_local_hostname must be non-empty
+  printable ASCII without spaces`, still exit code `22`.
+- When one `send` command has several faults, a refused setting (host, timeout, EHLO name,
+  attachment size) is now reported before a refused sender, recipient or attachment, because
+  settings are checked when they are read.
+- `validate_smtp_host` (and so `ConfMail.smtphosts` and the CLI) refuses a port that is not
+  plain ASCII digits: a sign (`host:+25`), a digit separator (`host:2_5`) or non-ASCII digits
+  (Arabic-Indic or fullwidth) are refused as `invalid smtp port in "<host>"`. Python's `int()`
+  accepted them before. A port the range check already refused (`host:-25`) keeps its
+  `port must be 1-65535` message.
 
 ### Fixed
 
@@ -347,29 +364,6 @@
   megabyte-long name was copied whole into the `DeliveryError` and the log. They are
   refused when given now; every host refused before keeps its message. An EHLO name
   (`local_hostname`) over 255 characters is refused too.
-
-## [3.1.0] 2026-10-02 11:58:41
-
-### Changed
-
-- The `send` command builds one validated `ConfMail` (a copy of `conf` with each resolved
-  option assigned) and passes it to `send()` as `config=`, instead of passing each setting as a
-  separate keyword. `ConfMail`'s checks now run on CLI and environment input before any
-  delivery, and settings the CLI has no option for keep their `conf` value.
-- The `send` command names a refused EHLO name `smtp_local_hostname` (the field) rather than
-  `local_hostname` (the `send()` keyword): `ValueError: smtp_local_hostname must be non-empty
-  printable ASCII without spaces`, still exit code `22`.
-- When one `send` command has several faults, a refused setting (host, timeout, EHLO name,
-  attachment size) is now reported before a refused sender, recipient or attachment, because
-  settings are checked when they are read.
-- `validate_smtp_host` (and so `ConfMail.smtphosts` and the CLI) refuses a port that is not
-  plain ASCII digits: a sign (`host:+25`), a digit separator (`host:2_5`) or non-ASCII digits
-  (Arabic-Indic or fullwidth) are refused as `invalid smtp port in "<host>"`. Python's `int()`
-  accepted them before. A port the range check already refused (`host:-25`) keeps its
-  `port must be 1-65535` message.
-
-### Fixed
-
 - A whitespace-only `BTX_MAIL_SMTP_USE_STARTTLS` or `BTX_MAIL_SMTP_STARTTLS_VERIFY` (in the
   environment, or quoted in `.env`) keeps the default (`true`) instead of switching STARTTLS or
   certificate verification off. An unset or empty value already kept the default.
@@ -377,6 +371,12 @@
   refused as `ValueError: attachment_max_size_bytes must be positive, got 0` (exit code `22`).
   Before, the CLI passed it straight to `send()`, which refused every attachment as larger than
   the limit.
+
+### Documentation
+
+- The `python-send-mail` Claude Code skill (`skills/python-send-mail/SKILL.md`) describes this
+  release: the JSON output modes, the delivery deadline, the EHLO name, the error classes, the
+  per-call limits, `--env-file` and `--password-file`, and the attachment rules added above.
 
 ## [3.0.1] 2026-10-02 00:26:45
 

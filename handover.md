@@ -1,4 +1,4 @@
-# Handover - btx_lib_mail, 2026-10-06 (rank 15 done and committed; 4.0.0 release next)
+# STALE - read 2026-10-06, work continued
 
 Read `OPEN-WORK.md` first. Open: ranks 22, 30, 40 (all USER). Rank 15 (data architecture) is
 finished and committed in bb14dae, together with a full doc and skill audit and four CLI fixes.
