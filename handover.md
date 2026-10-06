@@ -1,94 +1,93 @@
-# STALE - read 2026-10-05, work continued
+# Handover - btx_lib_mail, 2026-10-06 (sweep 10 fixed; one narrow check and the re-score left)
 
-Read `OPEN-WORK.md` first. Open: ranks 21, 22, 30, 40 (USER; 22 and 30 held by the owner until
-the 4.0.0 release, 40 deferred) and 50 (FOUND, sibling repos).
+Read `OPEN-WORK.md` first. Open: ranks 21, 22, 30, 40 (all USER; 22 and 30 held by the owner until
+the 4.0.0 release, 40 deferred until 21, 30 and 22 are done).
 
 ## In flight
 
-Rank 21 (code-quality loop), sweep 8. Fixed this session: sweep 7 entirely (6c9a4cb..2d2d13a)
-and sweep 8's B0 regression, A1-A3 and C1-C3 (e612129..711ddbf). Still open from sweep 8:
-reviewer B's T2-T8, all LOW, with 9 ready probe tests. The owner granted "full auto" for sweep 8,
-which covers fixing T2-T8.
+Nothing is part-done. Rank 21 (code-quality loop) has sweeps 1-10 fixed and committed on master.
+The owner changed the loop's exit rule: it stops when a full sweep finds no SEVERE and no MEDIUM
+finding a realistic caller can reach (CLAUDE.md "# Code Quality"); exotic findings are fixed when
+cheap, otherwise recorded there as accepted. What is left of rank 21: ONE narrow review of the
+sweep-10 fix diff, then the re-score.
 
 ## Committed, or not
 
-- All code committed; 85 commits ahead of origin/master, local until the 4.0.0 bump (rank 30).
-- `make test` green after every commit; `make test-all` (3.10-3.14) green at 2d2d13a, NOT yet run
-  after e612129..711ddbf.
-- Gitignored, not in git: `.private/review-2026-10-05-sweep7.md` and `-sweep8.md` (findings and
-  Status), `.private/sweep8-probes/` (reviewer A probes; reviewer B's `probes_keep.py.txt`),
-  `.private/python-send-mail-SKILL.md.sweep2` (held skill text, updated for sweep 7's contract
-  changes), `EXECUTION-USER-REVIEW.md` (decisions under "review sweep 7" and the sweep-8 entries).
+- All code is committed on master; about 100 commits ahead of origin/master, NOT pushed (pushing
+  waits for the 4.0.0 bump, rank 30; two commit messages need rewording first, see rank 30).
+- `make test`, `make test-all` (3.10-3.14), pyright on Linux/Windows/Darwin/3.10 and the Windows
+  suite on the Windows dev box were all green at 4046894.
+- Gitignored, not in git: `.private/review-2026-10-05-sweep9.md` and `-sweep10.md` (findings,
+  triage, Status), `.private/sweep9-probes/` and `.private/sweep10-probes/` (reviewer B's reports
+  and probes), `.private/python-send-mail-SKILL.md.sweep2` (held skill text, current through
+  sweep 10), `EXECUTION-USER-REVIEW.md` (every decision of this session, user and autonomous).
+- Outside this repo: bitranox-skills 7.42.0 (534cee2, CI success) ships the severity-gated exit
+  rule in `process-review-enhance-code-quality`; the contrib-queue entry for it is dropped.
 
 ## Decided, and why
 
 All logged in `EXECUTION-USER-REVIEW.md`. The ones a reviewer might reopen:
 
-- Fallback rule (A4): None or an EMPTY value of the accepted type falls back to the config
-  (`credentials=()`, `smtphosts=[]/()/""`), keeping the sweep-4 decision; only falsy values of
-  the WRONG type are refused. NUL in credentials is refused in check_credentials at send(), not
-  in ConfMail (lone-surrogate precedent).
-- smtphosts takes str or list/tuple/set/frozenset (generators refused); attachment_file_paths keeps
-  accepting generators (Path.glob), cut at max_count + 1.
-- C2: the wrong-type smtphosts message stays "a string, list of strings, or tuple of strings":
-  every input it refused before keeps its message; docs name all four types instead.
-- Directory rules: a rule that resolves to a symlink or whose lstat fails with ELOOP is refused on
-  every version; any other unreadable rule (EACCES) is compared as written.
-- Windows deadline: C-level close of the live socket, then a placeholder socket takes the freed
-  handle number (OpenSSL still holds it; Windows reuses it 50/50), then the dup is closed;
-  `_SessionSMTP.close()` releases the placeholder.
-- A connect timeout counts as the deadline only when the attempt used its time (50 ms slack) and
-  the flag is cleared on a successful connect.
+- Exit rule (owner, after asking "do we over-engineer?"): no SEVERE since sweep 7, MEDIUM flat at
+  4-7 per sweep, three of sweep 10's four MEDIUM+ findings caused by sweep 9's own fixes.
+- Accepted in CLAUDE.md "# Code Quality": quadratic warn-mode recomposition with growing files,
+  path aliases past the directory blocklist, the Windows handle-reuse window during a deadline cut,
+  KeyboardInterrupt in the watchdog join, and the closed-stdout exit codes (click turns the broken
+  pipe into exit 1 before library code runs).
+- T5: send() annotates `smtphosts: Sequence[str] | AbstractSet[str] | None` and
+  `attachment_file_paths: Iterable[pathlib.Path | str] | None`. T8: hanging connect tests run on a
+  bounded worker thread, not pytest-timeout.
+- Windows path limits are counted in UTF-16 units; a Windows `ValueError` from a file-system call
+  maps to unreadable ENAMETOOLONG; a lone surrogate POSIX cannot encode is refused as FILENAME.
+- Blank and surrounding-whitespace directory strings are dropped/stripped; a `Path` is kept as is.
+- A blank `smtphosts` passed to send() stays refused; only an EMPTY value falls back to config.
 
 ## Decided against, and why
 
-- Changing the smtphosts type-error message (see C2 above).
+- pytest-timeout (T8): new dependency, kills the whole run on Windows.
+- Another full sweep after sweep 10: the severity gate replaces it with one narrow check.
 
 ## Still open, untouched
 
-- Ranks 22 and 30 held until 4.0.0; rank 40 deferred; rank 50 sibling repos. See `OPEN-WORK.md`.
+- Ranks 22, 30, 40: see `OPEN-WORK.md`.
 
 ## Lessons for the next nap
 
-- When a review loop fixes things for several commits without pushing, run `make test-all` after
-  each transport or stdlib-sensitive fix: sweep 6's 5cc24d1 broke STARTTLS on 3.10-3.13 and stayed
-  green under `make test` (3.14 only) for a whole sweep.
-- When a fix reuses an existing helper at a new call site, read its Raises: first: 2d2d13a called
-  `_is_symlink` outside the handler for its private error and leaked it from send() (captured).
-- When a test asserts an endless input is refused, use a generator that raises after N reads and
-  run RED under `ulimit -v`: an endless one reached 36 GB RSS (captured).
-- When probing a Windows handle-reuse premise, free exactly the handle in question before opening
-  the newcomer: freeing two (live then dup) made the newcomer take the dup's number, 0/50, and read
-  as "no reuse".
+- When subagents are running in the background, never switch the session with EnterWorktree:
+  it locked every running subagent's Bash; create the worktree with git and use absolute paths.
+- When a change adds platform-specific code or tests, run pyright with `--pythonplatform Windows`
+  and `Darwin` too: a Linux-only check let an `os.O_NONBLOCK` CI breaker through.
+- When an adversarial review loop keeps finding things, tabulate findings per sweep by severity;
+  a flat MEDIUM count with no SEVERE means stop on a severity gate, not on "nothing found".
+- When moving text between sections of a file programmatically, cut by an exact end marker:
+  slicing to "the next heading" moved a whole block of unrelated entries along with mine.
+- When a reviewer subagent cleans up with a glob such as `rm -rf /tmp/<dir>/tmp*`, it can delete
+  siblings' scratch dirs; name scratch dirs per agent and clean only your own.
 - tooling: none.
 
 ## Exact next action
 
-Rank 21: copy the 9 tests from `.private/sweep8-probes/reviewerB/probes_keep.py.txt` into the
-matching test files (deadline/connect ones into tests/test_deadline.py, rule ones into
-tests/test_attachment_integrity.py, credential/host ones into tests/test_lib_mail.py or
-tests/test_limits.py), keep ruff/pyright clean, then decide T5 (annotate smtphosts as
-`Sequence[str] | AbstractSet[str]` and attachment_file_paths as `Iterable[...]`, or narrow the
-docs) and T8 (pytest-timeout vs bounded joins), then `make test`, `make test-all`, commit, and
-dispatch sweep 9 over `49d0b55..HEAD` plus the full checklist.
+Rank 21: dispatch ONE reviewer (opus) over `e65d5c4..HEAD` with the severity gate stated in the
+brief (only realistic-caller SEVERE/MEDIUM count; exotic findings fixed if cheap, else accepted in
+CLAUDE.md). If it finds none, re-score with the rubric (Step 3 of the review skill) and close
+rank 21; then rank 30 once the owner lifts the hold.
 
 ## Files that matter
 
-- `src/btx_lib_mail/_transport.py` (`_SessionSMTP._get_socket`, `_connect_in_time_left`,
-  `_open_connection`, `close`, `_cut_session`, `_DotStuffer`).
-- `src/btx_lib_mail/_attachments.py` (`_resolved_directories`, `_resolves_to_a_link`,
-  `coerce_attachment_paths`).
-- `src/btx_lib_mail/_validation.py` (`check_credentials`, `host_entries`),
-  `src/btx_lib_mail/lib_mail.py` (`_requested_or_configured_hosts`, `_resolve_delivery_options`).
-- `tests/test_deadline.py`, `tests/test_attachment_integrity.py`, `tests/test_lib_mail.py`,
-  `tests/test_limits.py`, `tests/test_streaming.py`.
+- `src/btx_lib_mail/_attachments.py` (`_check_nameable`, `_too_long_to_name`, `_utf16_length`,
+  `normalise_directories`, `_open_attachment`, `_resolves_to_a_link`, `_quoted`).
+- `src/btx_lib_mail/_transport.py` (`_SessionSMTP.getreply`, `_reply_line`, `_get_socket`).
+- `src/btx_lib_mail/_compose.py` (`compose_body_once`), `src/btx_lib_mail/cli/_dispatch.py`.
+- `CLAUDE.md` "# Code Quality", `docs/attachment-security.md`, `docs/api.md`, `docs/cli.md`.
 
 ## How to verify
 
-- `env -u VIRTUAL_ENV make test` via compuse-toolbox gate.py ends `[PASS] make test (rc=0)`.
-- `env -u VIRTUAL_ENV make test-all` shows PASS for 3.10, 3.11, 3.12, 3.13 and 3.14.
-- Windows: copy src/tests to the Windows dev box and run its `.venv-win` pytest on
-  tests/test_deadline.py and tests/test_streaming.py (99 passed last time).
+- `env -u VIRTUAL_ENV python3 <compuse-toolbox>/scripts/gate.py --gate "make test" --gate "make test-all"`
+  ends with both `[PASS]`.
+- `.venv/bin/pyright --pythonpath .venv/bin/python --pythonplatform Windows` (and Darwin) reports
+  0 errors.
+- Windows: copy src/tests to the Windows dev box and run the suite there (scratch script
+  `winrun9.sh` pattern; 1002 passed on 3.14 at 4046894).
 
 > Read this, then replace the first line with `# STALE - read <date>, work continued`. Do not
 > delete it - if this session ends badly it is the only record of where things stood.
