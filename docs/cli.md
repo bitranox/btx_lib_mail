@@ -182,9 +182,10 @@ The same in every output mode and for every entry point:
 | `22` (Windows `87`) | A value was refused (`InvalidInputError`): sender, recipient, host, subject, timeout, size, ...                                                     |
 | `130`               | Interrupted (Ctrl+C).                                                                                                                               |
 
-A run whose standard output is closed, or whose reader has gone away (a broken pipe), is outside
-this table: nobody receives the result, and the code is `1` when click meets the closed stream
-while it prints, or `120` when the interpreter does at exit, so it can differ between output modes.
+A run whose standard output reader has gone away (a broken pipe) is outside this table: nobody
+receives the result, and the code is `1` when click meets the broken pipe while it prints, or `120`
+when the interpreter does at exit, so it can differ between output modes. A run started with
+standard output already closed exits as the table says, since nothing is written.
 
 ## Invalid `--host` values
 

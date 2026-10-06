@@ -274,9 +274,10 @@ Deliberately accepted items - do not flag in future reviews unless the stated re
 - **A handle number freed by a Windows deadline cut can be taken by another thread's new socket**
   between the C-level close and the placeholder socket that holds it: a window of microseconds,
   never observed (every cut measured ended with WinError 10038).
-- **A closed or broken standard output gives the CLI a mode-dependent exit code**: `--json info`
-  exits 1 (click meets the broken pipe inside its own `echo` and exits 1), plain `info` exits 120
-  (the interpreter's exit flush meets it), and `docs/cli.md` says so under its exit code table.
+- **A broken standard output (its reader went away) gives the CLI a mode-dependent exit code**:
+  `--json info` exits 1 (click meets the broken pipe inside its own `echo` and exits 1), plain
+  `info` exits 120 (the interpreter's exit flush meets it), and `docs/cli.md` says so under its exit
+  code table. A standard output already closed at start writes nothing and keeps the table's codes.
   Nobody reads the result either way. One code for both needs detecting click's private
   `_PacifyFlushWrapper` swap, or redirecting the process's file descriptor 1 from inside a `main()`
   that embedding applications call; both cost more than the difference. Re-open if a caller keys
