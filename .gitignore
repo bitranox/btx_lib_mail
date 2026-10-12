@@ -183,7 +183,6 @@ result
 # Optional lockfiles (for alternative managers)
 poetry.lock
 pdm.lock
-uv.lock
 /.github_bak/
 /.github.bak/
 

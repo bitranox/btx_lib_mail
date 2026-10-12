@@ -4,7 +4,7 @@ version = "4.0.0"
 description = "Send email from Python or the shell: streamed large attachments (bounded memory), RFC 3030 BDAT/CHUNKING, STARTTLS, multi-host failover, and attachment security."
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["rich-click>=1.9.9", "lib_cli_exit_tools>=2.4.0", "pydantic>=2.13.5"]
+dependencies = ["rich-click>=1.9.9", "lib_cli_exit_tools>=2.4.1", "pydantic>=2.14.1"]
 license = { text = "MIT" }
 authors = [{ name = "bitranox", email = "bitranox@gmail.com" }]
 keywords = ["email", "smtp", "mail", "attachments", "bdat", "starttls", "streaming", "cli"]
@@ -41,7 +41,7 @@ Issues = "https://github.com/bitranox/btx_lib_mail/issues"
 dev = [
   "pytest>=9.1.1",
   "pytest-cov>=7.1.0",
-  "ruff>=0.16.10",
+  "ruff>=0.17.0",
   "pyright[nodejs]>=1.1.414",
   "bandit>=1.9.4",
   # 1.5.1 was yanked upstream (unintended breaking changes); the floor below skips past it.
@@ -247,3 +247,7 @@ ignore-vulns = []
 # bashate style settings for .sh files (E003 excluded: indent handled by shfmt)
 max-line-length = 120
 ignores = ["E003"]
+
+[tool.uv]
+exclude-newer = "1 day"
+exclude-newer-package = {lib-cli-exit-tools = false}
