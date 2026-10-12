@@ -173,7 +173,8 @@ module-global instance `send()` reads when no `config` is passed.
 tabled in [docs/api.md](../api.md#confmail-fields).
 
 **Validation:** hosts through `validate_smtp_host` (a blank entry is dropped);
-`smtp_password` accepts text or a whole int; `smtp_timeout` and `smtp_delivery_deadline`
+`smtp_password` accepts text or a whole int; a number in `smtp_username` or
+`smtp_local_hostname` becomes its decimal text (`coerce_numbers_to_str`, bool refused); `smtp_timeout` and `smtp_delivery_deadline`
 positive and finite; `smtp_local_hostname` printable ASCII without spaces; extension and
 directory sets normalised; an empty blocked set without its allowlist refused unless
 `attachment_allow_empty_blocklists`; an unknown key refused (`extra="forbid"`).

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [4.1.0] 2026-10-12 23:07:06
+
 ### Changed
 - `ConfMail` takes a number given to a text field (`smtp_username`, `smtp_local_hostname`) as its
   decimal text instead of refusing it: a layered config loader reads an unquoted all-digit value such

@@ -63,6 +63,11 @@ Common helpers:
   `ConfMail(use_starttls=False, timeout=5)` is refused; the fields are `smtp_use_starttls`
   and `smtp_timeout`. A subclass inherits the refusal; one that must accept extra keys sets
   `model_config = ConfigDict(extra="ignore")` itself.
+- A number given to a text field (`smtp_username`, `smtp_local_hostname`) is taken as its
+  decimal text (`coerce_numbers_to_str=True`), because a layered config loader parses an
+  unquoted all-digit value as a number; a bool is refused. `smtp_password` takes a whole
+  int the same way and refuses a float. A subclass keeps the rule even when it sets its own
+  `model_config`.
 - Assignment to a field (`conf.smtp_timeout = 10.0`) is validated like construction
   (`validate_assignment=True`); there is no bulk-update method, so update the global
   `conf` field by field, or pass your own instance with `send(config=...)`.
