@@ -37,6 +37,11 @@ class ConfMail(SecretSafeModel):
     The CLI resolves its defaults through this model, and `send` reads
     resolved values when per-call overrides are absent.
 
+    A number given to a text field (`smtp_username`, `smtp_local_hostname`)
+    is taken as its decimal text, since layered config loaders parse an
+    unquoted all-digit value as a number; a bool is refused. Subclasses keep
+    this rule even when they set their own `model_config`.
+
     Attributes:
         smtphosts: Ordered hosts in `host[:port]` form. Empty by default so
             callers must supply at least one host.
@@ -149,7 +154,11 @@ class ConfMail(SecretSafeModel):
     # extra="forbid": a name ConfMail does not have is refused rather than
     # dropped, so send()'s use_starttls/timeout passed here cannot silently
     # leave STARTTLS on and the default timeout in force.
-    model_config = ConfigDict(validate_assignment=True, arbitrary_types_allowed=True, extra="forbid")
+    # coerce_numbers_to_str: layered config loaders read an unquoted all-digit
+    # value (EMAIL__LOCAL_HOSTNAME=4711) as an int, so a text field takes its
+    # digits instead of refusing the type. A bool is still refused. Subclasses
+    # inherit it, since pydantic merges a subclass's model_config into this one.
+    model_config = ConfigDict(validate_assignment=True, arbitrary_types_allowed=True, extra="forbid", coerce_numbers_to_str=True)
 
     # smtphosts is listed because a host that carries user:password@ is refused
     # there, and that refusal must not echo the value.

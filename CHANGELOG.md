@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Changed
+- `ConfMail` takes a number given to a text field (`smtp_username`, `smtp_local_hostname`) as its
+  decimal text instead of refusing it: a layered config loader reads an unquoted all-digit value such
+  as `EMAIL__LOCAL_HOSTNAME=4711` as an int, which used to fail with "Input should be a valid string".
+  A bool is still refused. Subclasses keep the rule even when they set their own `model_config`. A
+  Python caller passing an int there now gets its digits rather than a `ConfigurationError`.
+
 ## [4.0.1] 2026-10-12 22:45:19
 
 ### Added

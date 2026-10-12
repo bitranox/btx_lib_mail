@@ -137,12 +137,14 @@ Key behaviours:
   (a `RuntimeError`) once every configured host has failed. Do not write
   `except smtplib.SMTPNotSupportedError` around `send()`; catch `DeliveryError`, or inspect
   `error_type` in the log record.
-- **All-digit passwords from environment layers.** A layered config loader (env vars,
+- **All-digit values from environment layers.** A layered config loader (env vars,
   some dotenv readers) can parse an all-digit value as a number before it reaches
-  `ConfMail`; `smtp_password` accepts an `int` and coerces it to its decimal text, so the
-  password still works. But if the original password had a leading zero (`0123`), the
-  loader has already lost it when it parsed the digits as a number, and `ConfMail` cannot
-  restore what it never saw. Quote the value in a TOML config file (`smtp_password =
+  `ConfMail`; `smtp_password`, `smtp_username` and `smtp_local_hostname` accept an `int`
+  and take its decimal text, so `EMAIL__LOCAL_HOSTNAME=4711` still names the host `4711`.
+  A bool is refused, and so is a float given as the password. A subclass of `ConfMail`
+  keeps this rule even when it sets its own `model_config`. But if the original value had
+  a leading zero (`0123`), the loader has already lost it when it parsed the digits as a
+  number, and `ConfMail` cannot restore what it never saw. Quote the value in a TOML config file (`smtp_password =
   "0123"`) so the loader keeps it as text in the first place.
 - **Host strings never carry credentials, whitespace, or control characters.** A host
   string in `smtphosts` must be `host[:port]`; it must not carry `user:password@` or a

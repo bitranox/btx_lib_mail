@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, ClassVar, cast
 
 import pytest
-from pydantic import SecretStr, ValidationError
+from pydantic import ConfigDict, SecretStr, ValidationError
 from transport_doubles import PerHostTransport, RecordingTransport
 
 from btx_lib_mail import ConfMail, DeliveryError, InvalidInputError, _compose, _transport, _validation, lib_mail
@@ -2136,6 +2136,55 @@ def test_the_config_supplies_the_ehlo_name_and_a_keyword_beats_it() -> None:
     lib_mail.send("sender@example.com", "rcpt@example.com", "s", local_hostname="kw.example.test", config=config, transport=transport)
 
     assert [delivery.options.local_hostname for delivery in transport.deliveries] == ["cfg.example.test", "kw.example.test"]
+
+
+# ---------------------------------------------------------------------------
+# A whole number from a config layer is its digits
+# ---------------------------------------------------------------------------
+#
+# Layered config loaders read an unquoted all-digit value (EMAIL__LOCAL_HOSTNAME=4711)
+# as an int, so a text field must take the digits rather than refuse the type.
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("field", ["smtp_local_hostname", "smtp_username"])
+def test_a_whole_number_in_a_text_field_becomes_its_digits(field: str) -> None:
+    config = ConfMail.model_validate({field: 4711})
+
+    assert getattr(config, field) == "4711"
+
+
+@pytest.mark.os_agnostic
+def test_a_whole_number_assigned_to_a_text_field_becomes_its_digits() -> None:
+    config = ConfMail()
+
+    config.smtp_local_hostname = 4711  # pyright: ignore[reportAttributeAccessIssue] - an int is what a config loader hands over
+
+    assert config.smtp_local_hostname == "4711"
+
+
+@pytest.mark.os_agnostic
+def test_a_whole_number_ehlo_name_from_the_config_reaches_delivery_as_its_digits() -> None:
+    config = ConfMail.model_validate({"smtphosts": ["cfg.example.com"], "smtp_local_hostname": 4711})
+    transport = RecordingTransport()
+
+    lib_mail.send("sender@example.com", "rcpt@example.com", "s", config=config, transport=transport)
+
+    assert [delivery.options.local_hostname for delivery in transport.deliveries] == ["4711"]
+
+
+@pytest.mark.os_agnostic
+def test_a_bool_in_a_text_field_is_still_refused() -> None:
+    with pytest.raises(ValidationError, match="smtp_username"):
+        ConfMail.model_validate({"smtp_username": True})
+
+
+@pytest.mark.os_agnostic
+def test_a_subclass_with_its_own_model_config_keeps_the_digits_rule() -> None:
+    class DerivedConf(ConfMail):
+        model_config = ConfigDict(str_strip_whitespace=False)
+
+    assert DerivedConf.model_validate({"smtp_local_hostname": 4711}).smtp_local_hostname == "4711"
 
 
 @pytest.mark.os_agnostic
