@@ -290,7 +290,7 @@ Deliberately accepted items - do not flag in future reviews unless the stated re
   socket existed), and nothing leaks past collection.
 - **IDN label looseness**: the internationalised address pattern accepts a combining mark after a
   hyphen, a digit-only non-ASCII label and a label starting with a digit of category No or
-  Nl). The relay refuses what it cannot route, and the ASCII pattern is at least as loose (it accepts
+  Nl. The relay refuses what it cannot route, and the ASCII pattern is at least as loose (it accepts
   `a@-x.com`), so a stricter rule would only tighten the new path. Re-open if a caller meets a
   relay that accepts such an address and mis-delivers it.
 - **A non-ASCII address keeps its case**: recipients that differ only in the case of a non-ASCII
