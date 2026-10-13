@@ -1,4 +1,4 @@
-# Handover - 2026-10-13 14:20, SMTPUTF8 Tasks 1-5 done, Task 6 (docs) next
+# STALE - read 2026-10-13 14:22, work continued
 
 Read `OPEN-WORK.md` first. Rank 8 (SMTPUTF8) and rank 9 (your uv/cooldown install docs) both land in
 plan Task 6.
