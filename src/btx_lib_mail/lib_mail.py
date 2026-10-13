@@ -61,6 +61,7 @@ from ._validation import (
     require_flag,
     require_number,
     require_text,
+    to_nfc,
     validate_email_address,
     validate_smtp_host,
 )
@@ -112,9 +113,10 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
     before `send()` returns.
 
     Args:
-        mail_from: Envelope sender address. Must be a syntactically valid email.
+        mail_from: Envelope sender address, normalised to NFC; ASCII or internationalised (RFC 6531).
         mail_recipients: Single recipient or iterable of recipients. Values
-            are trimmed, deduplicated, lower-cased, and validated.
+            are trimmed, deduplicated, lower-cased, and validated. Each is
+            normalised to NFC; an ASCII address is also lower-cased.
         mail_subject: Subject line; UTF-8 is supported.
         mail_body: Optional plain-text body. Defaults to "".
         mail_body_html: Optional HTML body. Defaults to "".
@@ -221,6 +223,8 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
     settings = _settings_from(config)
 
     require_text(mail_from, field_name="mail_from")
+    # NFC, as RFC 6532 asks, so a decomposed letter reaches the mailbox the caller saw.
+    mail_from = to_nfc(mail_from)
     # An overlong sender is reported by its length; the generic message below quotes the value.
     sender_problem = address_length_problem(mail_from)
     if sender_problem is not None:

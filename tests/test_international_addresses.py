@@ -8,6 +8,7 @@ is patched.
 from __future__ import annotations
 
 import contextlib
+import json
 import smtplib
 from typing import IO, TYPE_CHECKING
 
@@ -17,11 +18,15 @@ from smtp_test_server import BdatController, ChunkingHandler, CollectingHandler,
 from transport_doubles import RecordingTransport
 
 from btx_lib_mail import DeliveryError, InvalidInputError, _compose, lib_mail, validate_email_address
+from btx_lib_mail import cli as cli_mod
 from btx_lib_mail._transport import SMTPUTF8NotSupportedError
 from btx_lib_mail._validation import address_length_problem, distinct_recipients, needs_smtputf8, to_nfc
+from btx_lib_mail.cli import CliContext
 
 if TYPE_CHECKING:
     from collections.abc import Generator
+
+    from click.testing import CliRunner
 
     from btx_lib_mail import DeliveryOptions
 
@@ -282,3 +287,46 @@ def test_a_relay_without_smtputf8_stays_first_for_the_ascii_recipients_after_it(
 @pytest.mark.os_agnostic
 def test_the_smtputf8_refusal_is_still_an_smtp_not_supported_error() -> None:
     assert issubclass(SMTPUTF8NotSupportedError, smtplib.SMTPNotSupportedError)
+
+
+DECOMPOSED_SENDER = "user@mu" + chr(0x308) + "ller.de"
+
+
+@pytest.mark.os_agnostic
+def test_send_normalises_a_decomposed_sender_and_recipient_to_nfc() -> None:
+    transport = RecordingTransport()
+
+    lib_mail.send(DECOMPOSED_SENDER, DECOMPOSED_LOCAL, "s", smtphosts=["smtp.example.com"], transport=transport)
+
+    assert (transport.only.sender, transport.only.recipient) == (UMLAUT_DOMAIN, UMLAUT_LOCAL)
+    assert b"\r\nFrom: " + UMLAUT_DOMAIN.encode() + b"\r\n" in transport.only.raw
+
+
+@pytest.mark.os_agnostic
+def test_send_normalises_a_kelvin_sign_sender_to_ascii_without_lower_casing() -> None:
+    transport = RecordingTransport()
+
+    lib_mail.send(chr(0x212A) + "elvin@example.com", "to@example.com", "s", smtphosts=["smtp.example.com"], transport=transport)
+
+    assert transport.only.sender == "Kelvin@example.com"
+    assert b"\r\nFrom: Kelvin@example.com\r\n" in transport.only.raw
+
+
+@pytest.mark.os_agnostic
+def test_the_cli_validates_an_internationalised_address(cli_runner: CliRunner) -> None:
+    result = cli_runner.invoke(cli_mod.cli, ["--json", "validate-email", UMLAUT_LOCAL])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["data"]["address"] == UMLAUT_LOCAL
+
+
+@pytest.mark.os_agnostic
+def test_the_cli_sends_to_an_internationalised_address(cli_runner: CliRunner) -> None:
+    transport = RecordingTransport()
+    args = ["--json", "send", "--host", "smtp.example.com", "--sender", "absender@example.com", "--recipient", UMLAUT_LOCAL, "--subject", "S", "--body", "B"]
+
+    result = cli_runner.invoke(cli_mod.cli, args, obj=CliContext(transport=transport))
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["ok"] is True
+    assert transport.only.recipient == UMLAUT_LOCAL
