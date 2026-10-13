@@ -44,7 +44,7 @@ from ._attachments import (
 from ._common import logger, printable
 from ._compose import MessageContent, check_body, check_subject, compose_body_once, envelope_header_lines, message_for
 from ._config import ConfMail, conf
-from ._transport import DEFAULT_TRANSPORT, DeliveryOptions, SmtplibTransport, Transport
+from ._transport import DEFAULT_TRANSPORT, DeliveryOptions, SmtplibTransport, SMTPUTF8NotSupportedError, Transport
 from ._validation import (
     EMAIL_PATTERN,
     address_length_problem,
@@ -333,11 +333,13 @@ class _HostOrder:
 
 
 # A refused sender, recipient or message is about this message, not the host:
-# the next recipient may well be accepted there.
+# the next recipient may well be accepted there. A relay without SMTPUTF8
+# refuses only messages with a non-ASCII address; ASCII ones still go there.
 _REPLIES_ABOUT_THE_MESSAGE: Final[tuple[type[BaseException], ...]] = (
     smtplib.SMTPRecipientsRefused,
     smtplib.SMTPSenderRefused,
     smtplib.SMTPDataError,
+    SMTPUTF8NotSupportedError,
 )
 
 

@@ -29,15 +29,19 @@ def free_port() -> int:
 
 
 class CollectingHandler:
-    """aiosmtpd handler that captures each delivered message (DATA path)."""
+    """aiosmtpd handler that captures each delivered message and its envelope (DATA path)."""
 
     def __init__(self) -> None:
         self.messages: list[bytes] = []
         self.rcpts: list[str] = []
+        self.senders: list[str] = []
+        self.mail_options: list[list[str]] = []
 
     async def handle_DATA(self, server: Any, session: Any, envelope: Any) -> str:
         self.messages.append(bytes(envelope.content))
         self.rcpts.extend(envelope.rcpt_tos)
+        self.senders.append(envelope.mail_from)
+        self.mail_options.append(list(envelope.mail_options))
         return "250 Message accepted"
 
 

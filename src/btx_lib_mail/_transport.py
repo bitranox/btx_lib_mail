@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from typing import IO, TYPE_CHECKING, Final, Protocol, cast
 
 from ._common import logger, printable
-from ._validation import parse_smtp_host
+from ._validation import needs_smtputf8, parse_smtp_host
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -133,6 +133,12 @@ _SMTP_AUTH_CONTINUE: Final[int] = 334
 
 # smtplib.SMTP.login treats 503 ("already authenticated") as success; mirrored here.
 _SMTP_ALREADY_AUTHENTICATED: Final[int] = 503
+
+
+# MAIL FROM parameters for a message with a non-ASCII address: RFC 6531 SMTPUTF8, and
+# BODY=8BITMIME because its header holds 8-bit bytes (RFC 6531 obliges an SMTPUTF8 server to
+# offer 8BITMIME; stdlib smtplib.send_message sends the same pair).
+_SMTPUTF8_MAIL_OPTIONS: Final[tuple[str, ...]] = ("SMTPUTF8", "BODY=8BITMIME")
 
 
 # Length of a CRLF line terminator; used to detect whether the DATA phase
@@ -620,8 +626,25 @@ def _require_socket(smtp_connection: smtplib.SMTP) -> socket.socket:
     return sock
 
 
+class SMTPUTF8NotSupportedError(smtplib.SMTPNotSupportedError):
+    """The relay does not offer SMTPUTF8, which a message with a non-ASCII address needs.
+
+    A subclass of `smtplib.SMTPNotSupportedError`, so code catching that still
+    catches it. Its own class lets `send()` count it as a refusal of this
+    message rather than of the relay: ASCII recipients later in the same call
+    still try the relay first. The message never quotes the address.
+
+    Examples:
+        >>> issubclass(SMTPUTF8NotSupportedError, smtplib.SMTPNotSupportedError)
+        True
+    """
+
+
 def _open_envelope(smtp_connection: smtplib.SMTP, sender: str, recipient: str) -> None:
     """Issue MAIL FROM / RCPT TO, raising on rejection (shared by DATA and BDAT).
+
+    A message with a non-ASCII address announces SMTPUTF8 and BODY=8BITMIME on
+    MAIL FROM (`_mail_options`); smtplib then sends both commands as UTF-8.
 
     Args:
         smtp_connection: The SMTP connection to issue the commands on.
@@ -629,15 +652,45 @@ def _open_envelope(smtp_connection: smtplib.SMTP, sender: str, recipient: str) -
         recipient: Envelope recipient address.
 
     Raises:
+        SMTPUTF8NotSupportedError: The message needs SMTPUTF8 and the relay does not offer it.
         smtplib.SMTPSenderRefused: The server rejected MAIL FROM.
         smtplib.SMTPRecipientsRefused: The server rejected RCPT TO.
     """
-    code, resp = smtp_connection.mail(sender)
+    code, resp = smtp_connection.mail(sender, _mail_options(smtp_connection, sender, recipient))
     if code != _SMTP_OK:
         raise smtplib.SMTPSenderRefused(code, resp, sender)
     code, resp = smtp_connection.rcpt(recipient)
     if code not in (_SMTP_OK, _SMTP_WILL_FORWARD):
         raise smtplib.SMTPRecipientsRefused({recipient: (code, resp)})
+
+
+def _mail_options(smtp_connection: smtplib.SMTP, sender: str, recipient: str) -> tuple[str, ...]:
+    """Return the MAIL FROM parameters this message needs, refusing a relay that cannot take it.
+
+    smtplib checks the advertisement only in an ESMTP session; after a HELO
+    fallback it would send the address in its ASCII command encoding and raise
+    `UnicodeEncodeError`. So the advertisement is checked here, for both.
+
+    Args:
+        smtp_connection: The session, after EHLO or HELO.
+        sender: Envelope sender address.
+        recipient: Envelope recipient address.
+
+    Returns:
+        `("SMTPUTF8", "BODY=8BITMIME")` when either address holds non-ASCII, else `()`.
+
+    Raises:
+        SMTPUTF8NotSupportedError: The message needs SMTPUTF8 and the relay does not offer it.
+
+    Examples:
+        >>> _mail_options(smtplib.SMTP(), "a@example.com", "b@example.com")
+        ()
+    """
+    if not needs_smtputf8(sender, recipient):
+        return ()
+    if not smtp_connection.has_extn("smtputf8"):
+        raise SMTPUTF8NotSupportedError("the relay does not offer SMTPUTF8, which a non-ASCII address needs")
+    return _SMTPUTF8_MAIL_OPTIONS
 
 
 def _send_via_data(smtp_connection: smtplib.SMTP, sender: str, recipient: str, message: IO[bytes]) -> None:

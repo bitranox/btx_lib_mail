@@ -7,10 +7,23 @@ is patched.
 
 from __future__ import annotations
 
-import pytest
+import contextlib
+import smtplib
+from typing import IO, TYPE_CHECKING
 
-from btx_lib_mail import InvalidInputError, _compose, validate_email_address
+import pytest
+from aiosmtpd.controller import Controller
+from smtp_test_server import BdatController, ChunkingHandler, CollectingHandler, run_server
+from transport_doubles import RecordingTransport
+
+from btx_lib_mail import DeliveryError, InvalidInputError, _compose, lib_mail, validate_email_address
+from btx_lib_mail._transport import SMTPUTF8NotSupportedError
 from btx_lib_mail._validation import address_length_problem, distinct_recipients, needs_smtputf8, to_nfc
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
+
+    from btx_lib_mail import DeliveryOptions
 
 UMLAUT_LOCAL = "empfänger@example.com"
 UMLAUT_DOMAIN = "user@müller.de"
@@ -172,3 +185,100 @@ def test_the_subject_and_from_lines_are_the_same_for_ascii_and_utf8_recipients()
     ascii_block, utf8_block = _compose.envelope_header_lines(sender="absender@example.com", subject=subject, recipients=["a@example.com", UMLAUT_LOCAL])
 
     assert ascii_block.split(b"To: ")[0] == utf8_block.split(b"To: ")[0]
+
+
+@contextlib.contextmanager
+def _relay(*, smtputf8: bool, chunking: bool = False) -> Generator[tuple[str, CollectingHandler]]:
+    """Run an in-process relay that does or does not offer SMTPUTF8; yield its host and handler."""
+    handler: CollectingHandler = ChunkingHandler() if chunking else CollectingHandler()
+    controller = run_server(handler, controller_cls=BdatController if chunking else Controller, enable_SMTPUTF8=smtputf8)
+    try:
+        yield f"127.0.0.1:{controller.port}", handler
+    finally:
+        controller.stop()
+
+
+def _send_via(hosts: list[str], *, sender: str = "absender@example.com", recipients: str | list[str] = UMLAUT_LOCAL) -> bool:
+    return lib_mail.send(
+        mail_from=sender,
+        mail_recipients=recipients,
+        mail_subject="Grüße",
+        mail_body="Hallo",
+        smtphosts=hosts,
+        use_starttls=False,
+        local_hostname="client.example.com",
+    )
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("chunking", [False, True], ids=["DATA", "BDAT"])
+def test_a_non_ascii_recipient_travels_as_smtputf8(chunking: bool) -> None:
+    with _relay(smtputf8=True, chunking=chunking) as (host, handler):
+        assert _send_via([host]) is True
+
+    assert handler.rcpts == [UMLAUT_LOCAL]
+    assert [option.upper() for option in handler.mail_options[0]] == ["SMTPUTF8", "BODY=8BITMIME"]
+    assert b"\r\nTo: " + UMLAUT_LOCAL.encode() + b"\r\n" in handler.messages[0]
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("chunking", [False, True], ids=["DATA", "BDAT"])
+def test_a_non_ascii_sender_travels_as_smtputf8(chunking: bool) -> None:
+    with _relay(smtputf8=True, chunking=chunking) as (host, handler):
+        assert _send_via([host], sender=UMLAUT_DOMAIN, recipients="b@example.com") is True
+
+    assert handler.senders == [UMLAUT_DOMAIN]
+    assert b"\r\nFrom: " + UMLAUT_DOMAIN.encode() + b"\r\n" in handler.messages[0]
+
+
+@pytest.mark.os_agnostic
+def test_ascii_mail_sends_no_mail_parameter_even_where_smtputf8_is_offered() -> None:
+    with _relay(smtputf8=True) as (host, handler):
+        assert _send_via([host], recipients="b@example.com") is True
+
+    assert handler.mail_options == [[]]
+
+
+@pytest.mark.os_agnostic
+def test_a_relay_without_smtputf8_fails_over_to_one_with_it() -> None:
+    with _relay(smtputf8=False) as (old_host, old_handler), _relay(smtputf8=True) as (new_host, new_handler):
+        assert _send_via([old_host, new_host]) is True
+
+    assert old_handler.rcpts == []
+    assert new_handler.rcpts == [UMLAUT_LOCAL]
+
+
+@pytest.mark.os_agnostic
+def test_with_no_relay_offering_smtputf8_the_umlaut_recipient_fails_and_an_ascii_one_is_delivered() -> None:
+    with _relay(smtputf8=False) as (host, handler), pytest.raises(DeliveryError) as raised:
+        _send_via([host], recipients=[UMLAUT_LOCAL, "b@example.com"])
+
+    assert raised.value.failed_recipients == (UMLAUT_LOCAL,)
+    assert handler.rcpts == ["b@example.com"]
+
+
+@pytest.mark.os_agnostic
+def test_a_relay_without_smtputf8_stays_first_for_the_ascii_recipients_after_it() -> None:
+    transport_hosts: list[str] = []
+
+    class _OldFirstRelay(RecordingTransport):
+        def deliver(self, *, host: str, sender: str, recipient: str, message: IO[bytes], delivery: DeliveryOptions) -> None:
+            transport_hosts.append(host)
+            if host == "old.example.com" and not recipient.isascii():
+                raise SMTPUTF8NotSupportedError("the relay does not offer SMTPUTF8, which a non-ASCII address needs")
+            super().deliver(host=host, sender=sender, recipient=recipient, message=message, delivery=delivery)
+
+    lib_mail.send(
+        "absender@example.com",
+        [UMLAUT_LOCAL, "b@example.com"],
+        "s",
+        smtphosts=["old.example.com", "new.example.com"],
+        transport=_OldFirstRelay(),
+    )
+
+    assert transport_hosts == ["old.example.com", "new.example.com", "old.example.com"]
+
+
+@pytest.mark.os_agnostic
+def test_the_smtputf8_refusal_is_still_an_smtp_not_supported_error() -> None:
+    assert issubclass(SMTPUTF8NotSupportedError, smtplib.SMTPNotSupportedError)
