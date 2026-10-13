@@ -1,10 +1,21 @@
 # Installation
 
+Install with uv and a cooldown, so a release younger than 7 days is never picked up
+([why](../INSTALL.md#why-we-recommend-uv-supply-chain-protection)):
+
 ```bash
-pip install btx_lib_mail
+# install uv first, if you do not have it (macOS / Linux)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# Windows (PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+uv tool install --exclude-newer "7 days" btx_lib_mail
 ```
 
-For alternative install paths (pipx, uv, source builds, etc.), see
+In a project, set `[tool.uv] exclude-newer = "7 days"` in its `pyproject.toml` and run
+`uv add btx_lib_mail`. `pip install btx_lib_mail` works as well, without the cooldown.
+
+For alternative install paths (pipx, source builds, etc.), see
 [INSTALL.md](../INSTALL.md). All supported methods register both the
 `btx_lib_mail` and `btx-lib-mail` commands on your PATH.
 

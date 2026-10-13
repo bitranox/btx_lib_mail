@@ -249,7 +249,9 @@ redacted at the credential fields (`smtp_password`, `smtphosts`).
   delivers one composed message or raises.
 * `DeliveryOptions` - `credentials` (not in `repr`), `use_starttls`, `starttls_verify`,
   `timeout`, `local_hostname`, `deadline`.
-* `SmtplibTransport` - opens an `smtplib.SMTP` session (EHLO name: the configured one,
+* `SMTPUTF8NotSupportedError` - a relay without SMTPUTF8 for a message that needs it; a message refusal
+  in the host order (the host is not demoted).
+* `SmtplibTransport` - sends `SMTPUTF8 BODY=8BITMIME` on `MAIL FROM` for a non-ASCII address; opens an `smtplib.SMTP` session (EHLO name: the configured one,
   else `_default_local_hostname()`, smtplib's rule computed once per process), STARTTLS
   with `_build_starttls_context(verify=...)`, a `WARNING` when credentials go out with
   STARTTLS off, AUTH through `_authenticate` (stdlib login for ASCII credentials, RFC 4616
@@ -264,7 +266,10 @@ redacted at the credential fields (`smtp_password`, `smtphosts`).
 
 ### `_validation` Module (Checks)
 
-* `validate_email_address(address)` - `InvalidInputError` unless `EMAIL_PATTERN` matches.
+* `validate_email_address(address)` - `InvalidInputError` unless `EMAIL_PATTERN` matches or the address is a
+  valid internationalised address (lengths in UTF-8 octets).
+* `to_nfc(address)`, `needs_smtputf8(sender, recipient)` - NFC normalisation and the one rule
+  `_compose` and `_transport` share for a message that needs SMTPUTF8.
 * `validate_smtp_host(host)` - accepts `host`, `host:port`, `[IPv6]`, `[IPv6]:port`.
   Refuses, without echoing the value, a host carrying `@` or `/` or an interior
   whitespace or control character; then refuses a bad bracket or a port that is not ASCII

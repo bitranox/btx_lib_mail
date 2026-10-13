@@ -20,6 +20,7 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3.15",
 
 ]
 
@@ -62,7 +63,7 @@ dev = [
   "pip-audit>=2.10.1",
   "textual>=8.2.8",
   "import-linter>=2.15",
-  "rtoml>=0.13.0",
+  "rtoml>=0.14.0",
   # Real in-process SMTP server for streamed-delivery e2e tests (DATA path stock,
   # BDAT/CHUNKING via a small subclass); test-only, never imported by the library.
   "aiosmtpd>=1.4.6",

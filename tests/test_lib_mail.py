@@ -323,17 +323,20 @@ def test_when_invalid_recipients_are_tolerated_a_warning_is_emitted(
 
 
 @pytest.mark.os_agnostic
-def test_a_recipient_whose_lower_case_form_would_be_ascii_is_refused_like_the_sender() -> None:
-    # KELVIN SIGN lower-cases to an ASCII "k", so lower-casing before validating turned a
-    # non-ASCII address into a different, valid one; the same text as sender was refused.
-    kelvin = chr(0x212A) + "elvin@example.com"
+def test_a_recipient_canonically_equal_to_an_ascii_address_is_delivered_as_that_address() -> None:
+    # KELVIN SIGN is canonically the letter "K": NFC turns the recipient into the plain ASCII
+    # address before it is lower-cased or validated, so the entry it names is the one delivered to.
     transport = RecordingTransport()
 
-    with pytest.raises(InvalidInputError, match="invalid recipient"):
-        lib_mail.send(mail_from="sender@example.com", mail_recipients=kelvin, mail_subject="Subject", smtphosts=["smtp.example.com"], transport=transport)
-    with pytest.raises(InvalidInputError, match="invalid sender address"):
-        lib_mail.send(mail_from=kelvin, mail_recipients="one@example.com", mail_subject="Subject", smtphosts=["smtp.example.com"], transport=transport)
-    assert transport.deliveries == []
+    lib_mail.send(
+        mail_from="sender@example.com",
+        mail_recipients=chr(0x212A) + "elvin@example.com",
+        mail_subject="Subject",
+        smtphosts=["smtp.example.com"],
+        transport=transport,
+    )
+
+    assert transport.recipients == ["kelvin@example.com"]
 
 
 @pytest.mark.os_agnostic
@@ -2506,12 +2509,12 @@ def test_each_recipient_gets_its_own_to_header() -> None:
 def test_split_header_lines_equal_folding_all_four_together() -> None:
     """Folding Subject and From once and To and Date per recipient changes no byte of the headers."""
     subject = "Quartalsbericht für Müller & Söhne " * 6 + "🙂" * 20
-    block = _compose.envelope_header_lines(sender="absender@example.com", subject=subject, recipients=["empfänger@example.com"])[0]
+    block = _compose.envelope_header_lines(sender="absender@example.com", subject=subject, recipients=["empfaenger@example.com"])[0]
     date = message_from_bytes(block)["Date"]
     whole = EmailMessage()
     whole["Subject"] = subject
     whole["From"] = "absender@example.com"
-    whole["To"] = "empfänger@example.com"
+    whole["To"] = "empfaenger@example.com"
     whole["Date"] = date
 
     assert block == _compose._header_lines(whole)
@@ -2611,6 +2614,21 @@ def test_a_host_that_cannot_be_reached_is_tried_last_for_the_remaining_recipient
         ("live.example.com", "one@example.com"),
         ("live.example.com", "two@example.com"),
         ("live.example.com", "three@example.com"),
+    ]
+
+
+@pytest.mark.os_agnostic
+def test_a_host_that_does_not_support_authentication_is_tried_last_for_the_remaining_recipients() -> None:
+    """A plain SMTPNotSupportedError (AUTH) is a fault of the relay, not of one message: the host is demoted."""
+    transport = PerHostTransport({("noauth.example.com", None): smtplib.SMTPNotSupportedError("SMTP AUTH extension not supported by server.")})
+    recipients = ["one@example.com", "two@example.com"]
+
+    lib_mail.send(**_with(mail_recipients=recipients, smtphosts=["noauth.example.com", "live.example.com"], transport=transport))
+
+    assert transport.attempts == [
+        ("noauth.example.com", "one@example.com"),
+        ("live.example.com", "one@example.com"),
+        ("live.example.com", "two@example.com"),
     ]
 
 

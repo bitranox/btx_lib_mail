@@ -1,6 +1,6 @@
 ---
 name: python-send-mail
-description: Use when sending email from Python or the shell, especially with large attachments that must not be loaded into memory, RFC 3030 BDAT/CHUNKING, STARTTLS with authentication, multi-host failover, or correct UTF-8 subject and body encoding; when testing code that sends mail without an SMTP server; when a script or agent needs machine-readable mail-sending output; when a pydantic settings model's ValidationError must not leak a password; or when an SMTP relay hangs mid-session or refuses the EHLO greeting. Prefer the `btx_lib_mail` library or its `btx-lib-mail` CLI (zero-install via `uvx btx-lib-mail send ...`) over hand-rolling `smtplib`/`email`, MIME assembly, dot-stuffing, or attachment security checks.
+description: Use when sending email from Python or the shell, especially with large attachments that must not be loaded into memory, RFC 3030 BDAT/CHUNKING, STARTTLS with authentication, multi-host failover, or correct UTF-8 subject and body encoding; when testing code that sends mail without an SMTP server; when a script or agent needs machine-readable mail-sending output; when a pydantic settings model's ValidationError must not leak a password; or when an SMTP relay hangs mid-session or refuses the EHLO greeting. Prefer the `btx_lib_mail` library or its `btx-lib-mail` CLI (zero-install via `uvx --exclude-newer "7 days" btx-lib-mail send ...`) over hand-rolling `smtplib`/`email`, MIME assembly, dot-stuffing, or attachment security checks.
 ---
 
 # btx_lib_mail - send email from Python or the shell, streamed
@@ -12,35 +12,57 @@ description: Use when sending email from Python or the shell, especially with la
 
 ## When to reach for this (and what to avoid)
 
-| Need                                                  | Use                                                 | Avoid                                             |
-|-------------------------------------------------------|-----------------------------------------------------|---------------------------------------------------|
-| Send mail from Python (multipart, UTF-8, attachments) | `btx_lib_mail.send(...)`                            | hand-rolling `smtplib` + `email` MIME assembly    |
-| Send a large attachment on a low-memory box           | `send(..., attachment_file_paths=[...])` (streamed) | reading the file into RAM, `sendmail(msg_str)`    |
-| Send from a shell / an agent with nothing installed   | `uvx btx-lib-mail send ...`                         | installing a mailer, writing a throwaway script   |
-| A script must read the result                         | `btx-lib-mail --json send ...`                      | scraping the human text or stderr                 |
-| Test code that sends mail, no server                  | `send(..., transport=your_recorder)`                | patching `smtplib` or your own `send` wrapper     |
-| STARTTLS + auth, multi-host failover                  | `send(..., use_starttls=True, credentials=...)`     | rewriting the connect/login/failover loop         |
-| Refuse dangerous or sensitive attachments             | built-in attachment security (on by default)        | ad-hoc path checks                                |
-| A relay that answers slowly forever                   | `delivery_deadline=` / `--delivery-deadline`        | relying on the socket timeout, killing the thread |
-| Slow first byte, or relay rejects the EHLO greeting   | `smtp_local_hostname` / `send(local_hostname=...)`  | patching `socket.getfqdn`, renaming the host      |
+| Need                                                  | Use                                                  | Avoid                                             |
+|-------------------------------------------------------|------------------------------------------------------|---------------------------------------------------|
+| Send mail from Python (multipart, UTF-8, attachments) | `btx_lib_mail.send(...)`                             | hand-rolling `smtplib` + `email` MIME assembly    |
+| Send a large attachment on a low-memory box           | `send(..., attachment_file_paths=[...])` (streamed)  | reading the file into RAM, `sendmail(msg_str)`    |
+| Send from a shell / an agent with nothing installed   | `uvx --exclude-newer "7 days" btx-lib-mail send ...` | installing a mailer, writing a throwaway script   |
+| A script must read the result                         | `btx-lib-mail --json send ...`                       | scraping the human text or stderr                 |
+| Test code that sends mail, no server                  | `send(..., transport=your_recorder)`                 | patching `smtplib` or your own `send` wrapper     |
+| STARTTLS + auth, multi-host failover                  | `send(..., use_starttls=True, credentials=...)`      | rewriting the connect/login/failover loop         |
+| Refuse dangerous or sensitive attachments             | built-in attachment security (on by default)         | ad-hoc path checks                                |
+| A relay that answers slowly forever                   | `delivery_deadline=` / `--delivery-deadline`         | relying on the socket timeout, killing the thread |
+| Slow first byte, or relay rejects the EHLO greeting   | `smtp_local_hostname` / `send(local_hostname=...)`   | patching `socket.getfqdn`, renaming the host      |
 
 ## Install / run
 
-Zero-install (best for agents and one-offs): run the CLI straight from PyPI. Nothing is installed
-persistently.
+Use uv with a cooldown. The package declares only `>=` floors for its dependencies, so `pip`,
+`pipx` and a plain `uv tool install` take the newest release of every transitive dependency at
+install time; a hijacked release reaches you in the hours before it is yanked. A cooldown makes uv
+skip any release younger than N days (7 here), so a hijacked release yanked within that window never
+arrives. Details: https://github.com/bitranox/btx_lib_mail/blob/master/INSTALL.md#why-we-recommend-uv-supply-chain-protection
+
+Install uv itself first, if it is missing:
 
 ```bash
-uvx btx-lib-mail --help
-uvx btx-lib-mail send --host smtp.example.com:587 \
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# Windows (PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+Zero-install (best for agents and one-offs): run the CLI straight from PyPI. Nothing is installed
+persistently. `--exclude-newer` goes before the package:
+
+```bash
+uvx --exclude-newer "7 days" btx-lib-mail --help
+uvx --exclude-newer "7 days" btx-lib-mail send --host smtp.example.com:587 \
   --sender a@example.com --recipient b@example.com --subject "Hi" --body "hello"
 ```
 
-Add to a project, or install the CLI on PATH:
+Install the CLI on PATH (the cutoff is stored in the tool's receipt and kept on upgrade), or add
+the library to a project (set the cooldown once in its `pyproject.toml`, then `uv add btx_lib_mail`):
 
 ```bash
-uv add btx_lib_mail            # or: pip install btx_lib_mail
-uv tool install btx_lib_mail   # or: pipx install btx_lib_mail  (CLI on PATH)
+uv tool install --exclude-newer "7 days" btx_lib_mail
 ```
+
+```toml
+[tool.uv]
+exclude-newer = "7 days"
+```
+
+Without uv, `pip install btx_lib_mail` or `pipx install btx_lib_mail` works but has no cooldown.
 
 Requires Python 3.10+. Both `btx_lib_mail` and `btx-lib-mail` are registered commands; `python -m
 btx_lib_mail` runs the same CLI with the same exit codes.
@@ -173,6 +195,21 @@ non-ASCII credential: that host's failure is logged as a WARNING (extra `error_t
 `SMTPNotSupportedError`) and delivery fails over to the next host. Credentials sent with STARTTLS
 off are allowed (an internal relay may offer no TLS) and logged as a WARNING naming the host.
 
+### Internationalised addresses (SMTPUTF8)
+
+`empfänger@müller.de` works as sender or recipient in `send()`, the CLI and
+`validate_email_address()` (lengths are UTF-8 octets). The relay MUST offer SMTPUTF8: the message
+then goes out as raw UTF-8 headers with `SMTPUTF8 BODY=8BITMIME` on `MAIL FROM`, and a domain is
+sent as UTF-8, never punycode. A host that does not offer it raises `SMTPUTF8NotSupportedError`
+(from `btx_lib_mail` or `btx_lib_mail.lib_mail`; a `BtxMailError` and a subclass of `smtplib.SMTPNotSupportedError`), logged as a WARNING
+with `error_type == "SMTPUTF8NotSupportedError"`; that message fails over to the next host, and
+`DeliveryError` follows only when no host offers it. The refusal is about the message, not the host,
+so the relay is NOT moved to the back of the host order. Each recipient is a separate message, so
+in one `send()` an ASCII recipient (with an ASCII sender) still goes through that relay first and
+normally: ASCII-only mail needs no SMTPUTF8. A decomposed
+(NFD) sender or recipient is normalised to NFC first, and the NFC form is what goes on the wire.
+ASCII-only mail is unchanged and sends no SMTPUTF8 option.
+
 ### Errors: one base to catch
 
 Every exception `send()` and `ConfMail` raise on purpose is a `BtxMailError`. Each also subclasses
@@ -284,7 +321,7 @@ Keep the password out of the process list: read it from a file or stdin with `--
 the command line, where `ps` and shell history show it.
 
 ```bash
-uvx btx-lib-mail send \
+uvx --exclude-newer "7 days" btx-lib-mail send \
   --host smtp.example.com:587 \
   --sender alerts@example.com \
   --recipient oncall@example.com \
@@ -342,7 +379,7 @@ differently from a complete one. Exit codes are the same with and without
 error or a missing attachment, `22` (Windows `87`) a refused value. Other commands: `info`,
 `hello`, `validate-email`, `validate-smtp-host` (the two `validate-*` take a positional
 argument), and `fail`, which raises on purpose to show the traceback and exit-code handling
-(`--traceback fail` prints the full traceback). Run `uvx btx-lib-mail send --help` for every option.
+(`--traceback fail` prints the full traceback). Run `uvx --exclude-newer "7 days" btx-lib-mail send --help` for every option.
 
 ## Streaming and BDAT (how delivery works)
 
@@ -511,7 +548,7 @@ def load_api_settings(raw: dict[str, object]) -> ApiSettings:
 ## Reference
 
 The API and CLI surface is discoverable from the INSTALL (always matches your version): run
-`uvx btx_lib_mail --help` and `uvx btx_lib_mail send --help` for every CLI option, and
+`uvx --exclude-newer "7 days" btx_lib_mail --help` and `uvx --exclude-newer "7 days" btx_lib_mail send --help` for every CLI option, and
 `python -c "import btx_lib_mail as m; help(m)"` for the public API - `send`, `conf`, `ConfMail`,
 `Transport`, `DeliveryOptions`, `validate_email_address`, `validate_smtp_host`, the exceptions
 (`BtxMailError`, `InvalidInputError`, `ConfigurationError`, `AttachmentNotFoundError`,

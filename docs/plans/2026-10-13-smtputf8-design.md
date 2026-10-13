@@ -26,9 +26,9 @@ RFC 6532 UTF-8 headers. Mail whose addresses are all ASCII is unchanged, byte fo
   case: Unicode lower-casing can change length and leave non-NFC text, and the local part is
   case-sensitive under RFC 5321.
 - `EMAIL_PATTERN` stays the ASCII fast path. A non-ASCII address is checked separately:
-  - local part: the ASCII characters allowed today plus any non-ASCII character except controls
-    (category `Cc`), bidirectional formatting characters (the set the attachment file-name rule
-    refuses, to be shared rather than copied), whitespace, and invalid Unicode (`is_valid_unicode`);
+  - local part: the ASCII characters allowed today plus any non-ASCII character that is
+    `str.isprintable()` (this refuses controls, every bidirectional mark, separators, whitespace,
+    surrogates and unassigned code points; it is not a shared copy of the attachment bidi set);
   - domain: dot-separated labels of letters, digits (any script) and hyphens, no leading or
     trailing hyphen; a top-level label of at least two letters in any script. ASCII `xn--` labels
     pass as today.
@@ -59,9 +59,11 @@ RFC 6532 UTF-8 headers. Mail whose addresses are all ASCII is unchanged, byte fo
   `smtp.mail(sender)` as today. smtplib switches the command encoding to UTF-8 (MAIL FROM and RCPT TO
   carry the raw address) and raises `SMTPNotSupportedError` when SMTPUTF8 is not advertised.
   RFC 6531 requires an SMTPUTF8 server to support 8BITMIME; stdlib `send_message` sends the same pair.
-- `SMTPNotSupportedError` is the existing per-host failure: WARNING log with
-  `error_type == "SMTPNotSupportedError"`, next host, `DeliveryError` only when every host fails. The
-  host is not marked unreachable, so ASCII recipients still try it first.
+- A relay without SMTPUTF8 raises `SMTPUTF8NotSupportedError`, a subclass of
+  `smtplib.SMTPNotSupportedError`: WARNING log with `error_type == "SMTPUTF8NotSupportedError"`,
+  next host, `DeliveryError` only when every host fails. `_HostOrder` treats it as a message refusal,
+  so the host is not moved to the back and ASCII recipients still try it first (the plain
+  `SMTPNotSupportedError` is an `OSError` that would have demoted the host).
 - One connection per recipient already, so the UTF-8 command encoding never reaches an ASCII
   recipient's session. STARTTLS, AUTH, EHLO name, deadline, streaming and dot-stuffing are unchanged.
 

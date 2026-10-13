@@ -8,6 +8,8 @@ from __future__ import annotations
 import ipaddress
 import math
 import re
+import string
+import unicodedata
 from collections.abc import Iterable, Sequence
 from typing import Any, Final, cast
 
@@ -27,6 +29,15 @@ _MAX_HOST_NAME: Final[int] = 253
 _MAX_EHLO_NAME: Final[int] = 255
 # How much of an overlong address a skipped-recipient log line shows.
 _SHOWN_PREFIX: Final[int] = 40
+# The characters EMAIL_PATTERN allows in an ASCII local part. An internationalised local part
+# (RFC 6531 section 3.3) allows these plus printable non-ASCII characters.
+_ASCII_LOCAL_PART_CHARACTERS: Final[frozenset[str]] = frozenset(string.ascii_letters + string.digits + "._%+-")
+# A top-level domain label holds at least two letters (EMAIL_PATTERN's [A-Za-z]{2,}).
+_MIN_TOP_LEVEL_LABEL: Final[int] = 2
+# A domain is at least a name and a top-level label.
+_MIN_DOMAIN_LABELS: Final[int] = 2
+# An ASCII-compatible encoding of an internationalised label (RFC 5890), which may end in digits.
+_ACE_PREFIX: Final[str] = "xn--"
 
 
 # EHLO takes one argument: printable ASCII, no space (RFC 5321 section 4.1.1.1).
@@ -380,13 +391,14 @@ def is_valid_recipient(entry: str) -> bool:
         entry: One entry from `distinct_recipients`.
 
     Returns:
-        True when it is within the RFC 5321 lengths and matches `EMAIL_PATTERN`.
+        True when it is within the RFC 5321 lengths and has the address syntax
+        (`matches_address_syntax`).
 
     Examples:
         >>> is_valid_recipient("b@example.com"), is_valid_recipient("nope")
         (True, False)
     """
-    return address_length_problem(entry) is None and EMAIL_PATTERN.fullmatch(entry) is not None
+    return address_length_problem(entry) is None and matches_address_syntax(entry)
 
 
 def _accept_recipient(entry: str, *, raise_on_invalid: bool) -> bool:
@@ -429,8 +441,10 @@ def address_length_problem(address: str) -> str | None:
 
     RFC 5321 section 4.5.3.1 allows 64 octets before the `@` and a 256-octet
     path, which leaves 254 for the address between the angle brackets. The
-    description names the length, so a caller can report it without quoting
-    the address.
+    lengths are UTF-8 octets, so a non-ASCII character counts as the two to
+    four it takes on the wire; the description says "characters" for an ASCII
+    address (where the two are the same) and "UTF-8 octets" otherwise. It names
+    the length, so a caller can report it without quoting the address.
 
     Args:
         address: Candidate email string.
@@ -443,31 +457,63 @@ def address_length_problem(address: str) -> str | None:
         True
         >>> address_length_problem("a" * 65 + "@example.com")
         'the local part has 65 characters, more than the 64 RFC 5321 allows'
+        >>> address_length_problem(chr(0xE4) * 33 + "@example.com")
+        'the local part has 66 UTF-8 octets, more than the 64 RFC 5321 allows'
     """
+    unit = "characters" if address.isascii() else "UTF-8 octets"
     local_part, at_sign, _domain = address.rpartition("@")
-    if at_sign and len(local_part) > _MAX_LOCAL_PART:
-        return f"the local part has {len(local_part)} characters, more than the {_MAX_LOCAL_PART} RFC 5321 allows"
-    if len(address) > _MAX_ADDRESS:
-        return f"{len(address)} characters, more than the {_MAX_ADDRESS} RFC 5321 allows"
+    local_size = _utf8_octets(local_part)
+    if at_sign and local_size > _MAX_LOCAL_PART:
+        return f"the local part has {local_size} {unit}, more than the {_MAX_LOCAL_PART} RFC 5321 allows"
+    size = _utf8_octets(address)
+    if size > _MAX_ADDRESS:
+        return f"{size} {unit}, more than the {_MAX_ADDRESS} RFC 5321 allows"
     return None
 
 
-def _normalise_email_address(candidate: str) -> str:
-    """Trim whitespace/quotes and lower-case the candidate email if it is ASCII.
+def _utf8_octets(text: str) -> int:
+    """Return how many octets text takes as UTF-8.
 
-    Email addresses should compare case-insensitively in our context, so this
-    returns a lower-case, trimmed representation that supports deduping. A
-    non-ASCII entry is left as it is: the address pattern is ASCII-only, and
-    lower-casing first would turn KELVIN SIGN into an ASCII "k", so a refused
-    address would become a different, valid one.
+    A lone surrogate counts as the three octets it would take; the syntax check
+    refuses it afterwards, and the length check must not raise on it first.
+
+    Args:
+        text: The text to measure.
+
+    Returns:
+        The UTF-8 length in octets.
+
+    Examples:
+        >>> _utf8_octets("abc"), _utf8_octets(chr(0xE4)), _utf8_octets(chr(0xDCFF))
+        (3, 2, 3)
+    """
+    return len(text.encode("utf-8", "surrogatepass"))
+
+
+def _normalise_email_address(candidate: str) -> str:
+    """Trim whitespace/quotes, normalise to NFC, and lower-case the result if it is ASCII.
+
+    Email addresses compare case-insensitively in our context, so an ASCII
+    address is lower-cased for de-duplication. NFC runs first (RFC 6532 asks
+    for it), so a decomposed `a` plus combining diaeresis becomes the `ä` a
+    caller typed elsewhere, and a character that is canonically an ASCII letter
+    (KELVIN SIGN is `K`) is then lower-cased like one. A non-ASCII address
+    keeps its case: Unicode lower-casing can change the length and leave
+    non-NFC text, and RFC 5321 treats the local part as case-sensitive.
 
     Args:
         candidate: Raw string supplied by the caller.
 
     Returns:
         Normalised email address (may be empty string).
+
+    Examples:
+        >>> _normalise_email_address(' "B@Example.com" ')
+        'b@example.com'
+        >>> _normalise_email_address("a" + chr(0x308) + "@Example.com") == chr(0xE4) + "@Example.com"
+        True
     """
-    trimmed = candidate.strip().strip('"').strip("'")
+    trimmed = to_nfc(candidate.strip().strip('"').strip("'"))
     return trimmed.lower() if trimmed.isascii() else trimmed
 
 
@@ -565,32 +611,261 @@ def _checked_hosts(raw_hosts: list[str]) -> list[str]:
 
 
 def validate_email_address(address: str) -> None:
-    """Raise when address does not match the email pattern.
+    """Raise when address is not a syntactically valid email address.
 
-    Prevents avoidable SMTP failures by checking syntax early, applying
-    `EMAIL_PATTERN` and raising on mismatch.
+    Prevents avoidable SMTP failures by checking syntax early. An ASCII address
+    must match `EMAIL_PATTERN`; an address holding non-ASCII characters is an
+    internationalised one (RFC 6531), checked by `matches_address_syntax`. The
+    lengths are UTF-8 octets (`address_length_problem`). The NFC form of the
+    address is checked, the form `send()` delivers to, so the two agree; the
+    caller's string is not changed and nothing is returned.
 
     Args:
         address: Candidate email string.
 
     Raises:
         InvalidInputError: If address is longer than RFC 5321 allows (the
-            message names the length, not the address) or does not match
-            `EMAIL_PATTERN`.
+            message names the length, not the address) or does not have the
+            address syntax.
 
     Examples:
         >>> validate_email_address("user@example.com")
+        >>> validate_email_address("empf" + chr(0xE4) + "nger@m" + chr(0xFC) + "ller.de")
         >>> validate_email_address("invalid@")
         Traceback (most recent call last):
             ...
         btx_lib_mail.errors.InvalidInputError: invalid email address: 'invalid@'
     """
     require_text(address, field_name="email address")
-    problem = address_length_problem(address)
+    normalised = to_nfc(address)
+    problem = address_length_problem(normalised)
     if problem is not None:
         raise InvalidInputError(f"invalid email address: {problem}")
-    if not EMAIL_PATTERN.fullmatch(address):
-        raise InvalidInputError(f"invalid email address: {address!r}")
+    if not matches_address_syntax(normalised):
+        raise InvalidInputError(f"invalid email address: {normalised!r}")
+
+
+def to_nfc(address: str) -> str:
+    """Return address in Unicode Normalization Form C, the form RFC 6532 asks for.
+
+    The same visible character can be one code point or a base letter plus a
+    combining mark; a relay comparing bytes treats the two as different
+    mailboxes. NFC picks the composed form. An ASCII address is returned as it is.
+
+    Args:
+        address: The address as the caller gave it.
+
+    Returns:
+        The NFC form of address.
+
+    Examples:
+        >>> to_nfc("a" + chr(0x308) + "@example.com") == chr(0xE4) + "@example.com"
+        True
+        >>> to_nfc("User@Example.com")
+        'User@Example.com'
+    """
+    return unicodedata.normalize("NFC", address)
+
+
+def matches_address_syntax(address: str) -> bool:
+    """Return whether address has the syntax of a deliverable email address.
+
+    An ASCII address must match `EMAIL_PATTERN`, exactly as before. An address
+    holding non-ASCII characters is internationalised (RFC 6531): its local part
+    allows the ASCII characters `EMAIL_PATTERN` allows plus any printable
+    non-ASCII character, and its domain is dot-separated labels of
+    letters, combining marks (part of words in Indic and Thai scripts) and
+    digits of any script plus hyphens. A label starts with a letter or digit
+    and does not end with a hyphen; the last label is at least two letters or
+    marks (no digit, no hyphen) or an `xn--` label. Lengths are not checked here (`address_length_problem`).
+
+    Args:
+        address: Candidate email string.
+
+    Returns:
+        True when address has the syntax, False otherwise.
+
+    Examples:
+        >>> matches_address_syntax("user@example.com")
+        True
+        >>> matches_address_syntax("empf" + chr(0xE4) + "nger@example.com")
+        True
+        >>> matches_address_syntax("user@m" + chr(0xFC) + "ller")
+        False
+    """
+    if address.isascii():
+        return EMAIL_PATTERN.fullmatch(address) is not None
+    local_part, at_sign, domain = address.rpartition("@")
+    return bool(at_sign) and _is_international_local_part(local_part) and _is_international_domain(domain)
+
+
+def needs_smtputf8(sender: str, recipient: str) -> bool:
+    """Return whether the message from sender to recipient must travel as SMTPUTF8 (RFC 6531).
+
+    It must when either address holds a non-ASCII character. Composition folds
+    such an address as raw UTF-8 and the transport announces SMTPUTF8 for it;
+    both ask this one function, so they cannot disagree.
+
+    Args:
+        sender: The envelope sender, as `send()` normalised it.
+        recipient: The envelope recipient, as `send()` normalised it.
+
+    Returns:
+        True when either address holds non-ASCII, False when both are ASCII.
+
+    Examples:
+        >>> needs_smtputf8("a@example.com", "b@example.com")
+        False
+        >>> needs_smtputf8("a@example.com", "b@m" + chr(0xFC) + "ller.de")
+        True
+    """
+    return not (sender.isascii() and recipient.isascii())
+
+
+def _is_international_local_part(local_part: str) -> bool:
+    """Return whether local_part is a non-empty internationalised local part.
+
+    Args:
+        local_part: The text before the last `@`.
+
+    Returns:
+        True when it is non-empty and every character is allowed there.
+
+    Examples:
+        >>> _is_international_local_part("empf" + chr(0xE4) + "nger"), _is_international_local_part("")
+        (True, False)
+    """
+    return bool(local_part) and all(_is_local_part_character(character) for character in local_part)
+
+
+def _is_local_part_character(character: str) -> bool:
+    """Return whether character may stand in an internationalised local part.
+
+    An ASCII character must be one `EMAIL_PATTERN` allows. A non-ASCII one must
+    be printable: `str.isprintable()` is False for controls (Cc), format
+    characters (Cf, which holds every bidirectional mark, override and isolate,
+    and the zero-width joiner), separators (Z*, the no-break space among them),
+    surrogates (Cs) and unassigned code points (Cn).
+
+    Args:
+        character: One character.
+
+    Returns:
+        True when it is allowed.
+
+    Examples:
+        >>> _is_local_part_character(chr(0xE4)), _is_local_part_character(chr(0x200E)), _is_local_part_character(" ")
+        (True, False, False)
+    """
+    if character.isascii():
+        return character in _ASCII_LOCAL_PART_CHARACTERS
+    return character.isprintable()
+
+
+def _is_international_domain(domain: str) -> bool:
+    """Return whether domain is a dotted name of valid labels with a valid top-level label.
+
+    Args:
+        domain: The text after the last `@`.
+
+    Returns:
+        True when there are two or more labels, each valid, and the last is at
+        least two characters of letters and combining marks (no digit, no
+        hyphen) or an `xn--` label.
+
+    Examples:
+        >>> _is_international_domain("m" + chr(0xFC) + "ller.de"), _is_international_domain("m" + chr(0xFC) + "ller")
+        (True, False)
+        >>> _is_international_domain("example." + chr(0x92D) + chr(0x93E) + chr(0x930) + chr(0x924))
+        True
+    """
+    labels = domain.split(".")
+    if len(labels) < _MIN_DOMAIN_LABELS or not all(_is_domain_label(label) for label in labels):
+        return False
+    top = labels[-1]
+    return (len(top) >= _MIN_TOP_LEVEL_LABEL and all(_is_letter_or_mark(character) for character in top)) or top.lower().startswith(_ACE_PREFIX)
+
+
+def _is_domain_label(label: str) -> bool:
+    """Return whether label is letters, marks, digits and inner hyphens.
+
+    Args:
+        label: One dot-separated part of a domain.
+
+    Returns:
+        True when it is non-empty, starts with a letter or digit (never a mark
+        or a hyphen), does not end with a hyphen, and holds nothing but
+        letters, combining marks, digits and hyphens.
+
+    Examples:
+        >>> _is_domain_label("m" + chr(0xFC) + "ller"), _is_domain_label("-x"), _is_domain_label("")
+        (True, False, False)
+        >>> _is_domain_label(chr(0xE2A) + chr(0xE27) + chr(0xE31)), _is_domain_label(chr(0x93E) + "x")
+        (True, False)
+    """
+    return (
+        bool(label)
+        and _is_letter_or_digit(label[0])
+        and not label.endswith("-")
+        and all(character == "-" or _is_letter_mark_or_digit(character) for character in label)
+    )
+
+
+def _is_letter_or_mark(character: str) -> bool:
+    """Return whether character is an ASCII letter, or a non-ASCII letter or combining mark.
+
+    Marks (Unicode Mn, Mc) are part of words in Indic and Thai scripts, so a
+    top-level label written in them must pass, which `str.isalpha()` refuses.
+
+    Args:
+        character: One character.
+
+    Returns:
+        True for a letter or a mark.
+
+    Examples:
+        >>> _is_letter_or_mark("a"), _is_letter_or_mark(chr(0x93E)), _is_letter_or_mark("3"), _is_letter_or_mark("-")
+        (True, True, False, False)
+    """
+    if character.isascii():
+        return character.isalpha()
+    return unicodedata.category(character)[0] in "LM"
+
+
+def _is_letter_or_digit(character: str) -> bool:
+    """Return whether character is an ASCII letter or digit, or a non-ASCII letter or digit.
+
+    Args:
+        character: One character.
+
+    Returns:
+        True for a letter or a digit; False for a mark and a hyphen.
+
+    Examples:
+        >>> _is_letter_or_digit("a"), _is_letter_or_digit("7"), _is_letter_or_digit(chr(0x93E)), _is_letter_or_digit("-")
+        (True, True, False, False)
+    """
+    if character.isascii():
+        return character.isalnum()
+    return unicodedata.category(character)[0] in "LN"
+
+
+def _is_letter_mark_or_digit(character: str) -> bool:
+    """Return whether character may stand inside a domain label (hyphen aside).
+
+    Args:
+        character: One character.
+
+    Returns:
+        True for an ASCII letter or digit, or a non-ASCII letter, mark or digit.
+
+    Examples:
+        >>> _is_letter_mark_or_digit("a"), _is_letter_mark_or_digit(chr(0x93E)), _is_letter_mark_or_digit("_")
+        (True, True, False)
+    """
+    if character.isascii():
+        return character.isalnum()
+    return unicodedata.category(character)[0] in "LMN"
 
 
 def _refuse_credentials_in_host(host: str) -> str:
