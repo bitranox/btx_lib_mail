@@ -406,8 +406,8 @@ a delivery waits for it, before connecting, at most half the time the deadline h
 announces its connection's own address as an address literal (`[192.0.2.7]`, `[IPv6:2001:db8::7]`),
 and the deliveries after the lookup finishes announce the name it found. Without a deadline the
 lookup is waited for. Set it when a send stalls before the first byte reaches the relay while the
-relay itself answers instantly (slow reverse DNS), or when the relay refuses the greeting (`501 ... HELO/EHLO
-argument invalid`), typically from a container whose hostname has no domain part:
+relay itself answers instantly (slow reverse DNS), or when the relay refuses the greeting
+(`501 ... HELO/EHLO argument invalid`), typically from a container whose hostname has no domain part:
 
 ```python
 from btx_lib_mail import ConfMail, send

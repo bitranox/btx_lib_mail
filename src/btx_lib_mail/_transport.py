@@ -17,6 +17,7 @@ import ssl
 import sys
 import threading
 import time
+import weakref
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import IO, TYPE_CHECKING, Final, Protocol, cast
@@ -60,6 +61,11 @@ class DeliveryOptions:
     deadline: float | None = None
 
 
+# Every lookup alive in this process, so a forked child can reset them all; weak,
+# so a transport that is dropped does not live on through the fork hook.
+_LOOKUPS: weakref.WeakSet[_LocalHostnameLookup] = weakref.WeakSet()
+
+
 def _default_local_hostname() -> str:
     """Return the EHLO name smtplib would compute for this host.
 
@@ -87,8 +93,6 @@ class _LookupAttempt:
     done: threading.Event = field(default_factory=threading.Event)
     name: str | None = None
     error: Exception | None = None
-    # The process that started the thread: a forked child inherits this object but not the thread.
-    pid: int = field(default_factory=os.getpid)
 
 
 class _LocalHostnameLookup:
@@ -112,6 +116,7 @@ class _LocalHostnameLookup:
         self._lookup = lookup
         self._lock = threading.Lock()
         self._attempt: _LookupAttempt | None = None
+        _LOOKUPS.add(self)
 
     def name_within(self, seconds: float | None) -> str | None:
         """Return the EHLO name, starting the lookup if none has run yet.
@@ -136,11 +141,7 @@ class _LocalHostnameLookup:
 
     def _current_attempt(self) -> _LookupAttempt:
         with self._lock:
-            attempt = self._attempt
-            # An attempt still running in the parent of a fork has no thread in this process.
-            if attempt is None or (attempt.pid != os.getpid() and not attempt.done.is_set()):
-                attempt = self._start()
-            return attempt
+            return self._start() if self._attempt is None else self._attempt
 
     def _start(self) -> _LookupAttempt:
         attempt = _LookupAttempt()
@@ -158,6 +159,22 @@ class _LocalHostnameLookup:
             attempt.error = error
         finally:
             attempt.done.set()
+
+    def after_fork_in_child(self) -> None:
+        """Keep only a name already found; drop what the parent's threads held.
+
+        A forked child has none of the parent's threads: a lookup still
+        running would never finish, and a lock or event a parent thread held at
+        the fork would stay held. A name already found is kept, so the child
+        does not look it up again.
+        """
+        self._lock = threading.Lock()
+        attempt = self._attempt
+        self._attempt = None
+        if attempt is not None and attempt.done.is_set() and attempt.name is not None:
+            found = _LookupAttempt(name=attempt.name)
+            found.done.set()
+            self._attempt = found
 
     def _forget(self, attempt: _LookupAttempt) -> None:
         with self._lock:
@@ -193,6 +210,15 @@ _EHLO_NAME_UNDECIDED: Final = ""
 # running, before it connects. The rest is for the session itself: waiting all of
 # it would let the deadline end a session the stand-in address literal could finish.
 _EHLO_NAME_SHARE_OF_DEADLINE: Final = 0.5
+
+
+def _reset_lookups_in_child() -> None:
+    for lookup in list(_LOOKUPS):
+        lookup.after_fork_in_child()
+
+
+if sys.platform != "win32":  # Windows has no fork
+    os.register_at_fork(after_in_child=_reset_lookups_in_child)
 
 # Shared by every SmtplibTransport built without a lookup of its own, so the
 # reverse DNS lookup runs once per process however many transports exist.
@@ -312,8 +338,9 @@ class SmtplibTransport:
 
         Args:
             local_hostname_lookup: Returns the name to announce in EHLO when a
-                delivery names none; run once per transport, and again only
-                after a run that raised. None uses this host's own name, looked
+                delivery names none; run once per transport, and again after
+                a run that raised or in a forked child whose parent had not
+                finished it. None uses this host's own name, looked
                 up once per process and shared by every transport built
                 without one.
         """

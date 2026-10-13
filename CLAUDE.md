@@ -77,8 +77,9 @@ tests/
   `Transport` (`SmtplibTransport` streams DATA/BDAT, one connection per recipient)
 - **EHLO name**: `ConfMail.smtp_local_hostname` / `send(local_hostname=)` / `--local-hostname` /
   `BTX_MAIL_SMTP_LOCAL_HOSTNAME`; unset, `_default_local_hostname()` computes smtplib's default once per process
-  on a daemon thread (`_LocalHostnameLookup`); a delivery with a deadline waits for it at most half the time left,
-  then announces its connection's own address literal (`_address_literal`); tests substitute the lookup through
+  on a daemon thread (`_LocalHostnameLookup`); a delivery with a deadline waits for it, before connecting, at most
+  half the time left, then announces its connection's own address literal (`_own_address_literal`); a forked child
+  keeps only a name already found (`os.register_at_fork`); tests substitute the lookup through
   `SmtplibTransport(local_hostname_lookup=)`
 - **Validation**: `validate_email_address()` and `validate_smtp_host()` are public; the address check
   accepts internationalised addresses (RFC 6531, lengths in UTF-8 octets) and checks their NFC form, which `send()` delivers to;
@@ -304,5 +305,5 @@ Deliberately accepted items - do not flag in future reviews unless the stated re
 - **A failed EHLO-name lookup raises one exception object in every delivery waiting on it**: the
   deliveries that wait on the same failed lookup at once each re-raise the lookup's own exception, so
   their logged tracebacks can mix frames from several threads. Nothing else differs, and it needs a
-  custom `local_hostname_lookup` that raises (the default never does) plus concurrent deliveries.
+  custom `local_hostname_lookup` that raises (the default practically never does) plus concurrent deliveries.
   Re-open if a caller reads those tracebacks.

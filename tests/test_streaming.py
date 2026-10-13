@@ -13,6 +13,7 @@ import signal
 import smtplib
 import socket
 import ssl
+import sys
 import threading
 import time
 import warnings
@@ -1293,6 +1294,8 @@ def test_a_lookup_thread_that_cannot_start_is_tried_again_by_the_next_delivery(
 @pytest.mark.os_posix
 def test_a_forked_child_starts_its_own_lookup(ehlo_server: tuple[Controller, _EhloRecordingHandler]) -> None:
     """The parent's lookup thread does not exist in a child, so an attempt still running at the fork is not the child's."""
+    if sys.platform == "win32":
+        pytest.skip("os.fork does not exist on Windows")
     controller, handler = ehlo_server
     parent = os.getpid()
     release = threading.Event()
@@ -1325,8 +1328,38 @@ def test_a_forked_child_starts_its_own_lookup(ehlo_server: tuple[Controller, _Eh
     assert handler.ehlo_names == ["[127.0.0.1]", "child.example.test"]
 
 
+@pytest.mark.os_posix
+def test_a_forked_child_reuses_a_name_its_parent_already_found(ehlo_server: tuple[Controller, _EhloRecordingHandler]) -> None:
+    """A finished lookup is as true in the child as in the parent; looking it up again costs every worker a reverse DNS query."""
+    if sys.platform == "win32":
+        pytest.skip("os.fork does not exist on Windows")
+    controller, handler = ehlo_server
+    parent = os.getpid()
+
+    def lookup() -> str:
+        return "parent.example.test" if os.getpid() == parent else "child.example.test"
+
+    transport = _transport.SmtplibTransport(local_hostname_lookup=lookup)
+    first, _took = _bounded(lambda: _deliver_once(controller.port, transport, deadline=None))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        child = os.fork()
+    if child == 0:
+        try:
+            _deliver_once(controller.port, transport, deadline=None)
+        except BaseException:
+            os._exit(1)
+        os._exit(0)
+    exit_code = _wait_for_child(child, seconds=5.0)
+
+    assert (first, exit_code) == (None, 0)
+    assert handler.ehlo_names == ["parent.example.test", "parent.example.test"]
+
+
 def _wait_for_child(pid: int, *, seconds: float) -> int | None:
     """Return the child's exit code, or None after killing a child still running when seconds pass."""
+    if sys.platform == "win32":
+        raise RuntimeError("there are no forked children on Windows")
     ends_at = time.monotonic() + seconds
     while time.monotonic() < ends_at:
         done, status = os.waitpid(pid, os.WNOHANG)

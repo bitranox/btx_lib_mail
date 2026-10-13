@@ -6,15 +6,15 @@
 - A delivery with `smtp_delivery_deadline` set no longer outlives it by the lookup of this host's own
   name for `EHLO` (the first delivery of a process, `smtp_local_hostname` unset; on a host with slow
   reverse DNS that took seconds). The lookup runs on a background thread. A delivery with a deadline
-  waits for it, before connecting, at most half the time the deadline has left, then announces its connection's own
-  address as an RFC 5321 address literal (`[192.0.2.7]`, `[IPv6:2001:db8::7]`); the deliveries after
-  the lookup finishes use the name. Without a deadline the lookup is waited for before connecting,
-  as before.
+  waits for it, before connecting, at most half the time the deadline has left, then announces its
+  connection's own address as an RFC 5321 address literal (`[192.0.2.7]`, `[IPv6:2001:db8::7]`);
+  the deliveries after the lookup finishes use the name. Without a deadline the lookup is waited for
+  before connecting, as before.
 
 ### Added
 - `SmtplibTransport(local_hostname_lookup=...)`: a callable returning the `EHLO` name a transport
-  uses when a delivery names none, run at most once per transport (again only after it raised).
-  Unset, every transport shares this host's own name, looked up once per process.
+  uses when a delivery names none, run once per transport (again after a run that raised, and in a
+  forked child whose parent had not finished it). Unset, every transport shares this host's own name, looked up once per process.
 
 ## [4.2.0] 2026-10-13 14:56:19
 
