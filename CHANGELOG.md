@@ -2,12 +2,18 @@
 
 ## [Unreleased]
 
+## [4.2.0] 2026-10-13 14:56:19
+
 ### Added
 - Internationalised email addresses (RFC 6531 SMTPUTF8): a non-ASCII local part or domain works as
   sender or recipient in `send()`, the CLI and `validate_email_address()`. The message carries raw
   UTF-8 headers and `SMTPUTF8 BODY=8BITMIME` on `MAIL FROM`. A relay without SMTPUTF8 raises
-  `SMTPUTF8NotSupportedError`, which fails over to the next host without demoting the relay.
+  `SMTPUTF8NotSupportedError` (a `BtxMailError`, importable from `btx_lib_mail` and
+  `btx_lib_mail.lib_mail`), which fails over to the next host without demoting the relay.
 - Python 3.15 is declared.
+- README, INSTALL.md, docs/installation.md and the skill install with uv / uvx and a 7-day
+  `--exclude-newer` cooldown by default, explain how to install uv, and link the supply-chain
+  explanation.
 
 ### Changed
 - Address lengths are counted in UTF-8 octets (the same figures for ASCII, whose messages still say
@@ -16,7 +22,6 @@
 - A refused non-ASCII address is quoted in its NFC form, and a non-ASCII local part over 64 UTF-8 octets
   is refused by length (the message names the octets) rather than by the address pattern.
 - `validate_email_address()` checks the NFC form, so it agrees with `send()`.
-- `SMTPUTF8NotSupportedError` is a `BtxMailError` and is importable from `btx_lib_mail` and `btx_lib_mail.lib_mail`.
 
 ## [4.1.0] 2026-10-12 23:07:06
 
