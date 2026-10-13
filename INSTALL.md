@@ -5,7 +5,41 @@
 This guide collects every supported method to install `btx_lib_mail`, including
 isolated environments and system package managers. Pick the option that matches your workflow.
 
-## 1. Standard Virtual Environment (pip)
+## 1. uv with a cooldown (recommended)
+
+[uv](https://docs.astral.sh/uv/) is the recommended way to install `btx_lib_mail`, with a cooldown so
+that a release younger than 7 days is never picked up. Why that matters is explained in
+[Why we recommend uv: supply-chain protection](#why-we-recommend-uv-supply-chain-protection).
+
+Install uv (if not already installed):
+
+```bash
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows (PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+Run the CLI without installing anything, or install it on your PATH. `--exclude-newer` goes before
+the package:
+
+```bash
+uvx --exclude-newer "7 days" btx-lib-mail --help
+uv tool install --exclude-newer "7 days" btx_lib_mail
+```
+
+`uv tool install` stores the cutoff in the tool's receipt, so `uv tool upgrade btx_lib_mail` keeps
+the cooldown. For a project that depends on the library, put the cooldown in its `pyproject.toml`:
+
+```toml
+[tool.uv]
+exclude-newer = "7 days"
+```
+
+then `uv add btx_lib_mail`.
+
+## 2. Standard Virtual Environment (pip)
 
 ```bash
 python -m venv .venv
@@ -15,7 +49,7 @@ pip install -e .[dev]       # development install
 pip install .
 ```
 
-## 2. Per-User Installation (No Virtualenv)
+## 3. Per-User Installation (No Virtualenv)
 
 ```bash
 pip install --user .
@@ -24,7 +58,7 @@ pip install --user .
 > Note: This respects PEP 668. Avoid using it on system Python builds marked as
 > "externally managed". Ensure `~/.local/bin` (POSIX) is on your PATH so the CLI is available.
 
-## 3. pipx (Isolated CLI-Friendly Environment)
+## 4. pipx (Isolated CLI-Friendly Environment)
 
 ```bash
 pipx install .
@@ -33,7 +67,7 @@ pipx upgrade btx_lib_mail
 pipx install "git+https://github.com/bitranox/btx_lib_mail"
 ```
 
-## 4. uv (Fast Installer/Runner)
+## 5. uv (Fast Installer/Runner)
 
 ```bash
 uv pip install -e .[dev]
@@ -41,7 +75,7 @@ uv tool install .
 uvx btx_lib_mail --help
 ```
 
-## 5. From Build Artifacts
+## 6. From Build Artifacts
 
 ```bash
 python -m build
@@ -49,7 +83,7 @@ pip install dist/btx_lib_mail-*.whl
 pip install dist/btx_lib_mail-*.tar.gz   # sdist
 ```
 
-## 6. Poetry or PDM Managed Environments
+## 7. Poetry or PDM Managed Environments
 
 ```bash
 # Poetry
@@ -61,13 +95,13 @@ pdm add btx_lib_mail
 pdm install
 ```
 
-## 7. Install Directly from Git
+## 8. Install Directly from Git
 
 ```bash
 pip install "git+https://github.com/bitranox/btx_lib_mail#egg=btx_lib_mail"
 ```
 
-## 8. System Package Managers (Optional Distribution Channels)
+## 9. System Package Managers (Optional Distribution Channels)
 
 - Deb/RPM: Package with `fpm` for OS-native delivery
 

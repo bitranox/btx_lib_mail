@@ -57,11 +57,20 @@ and attach something absurd.
 
 ## Quickstart
 
-Install:
+Install with [uv](https://docs.astral.sh/uv/), with a cooldown that skips releases younger than 7
+days ([why](INSTALL.md#why-we-recommend-uv-supply-chain-protection)):
 
 ```bash
-pip install btx_lib_mail
+# install uv first, if you do not have it (macOS / Linux)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# Windows (PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+uv tool install --exclude-newer "7 days" btx_lib_mail    # the CLI on your PATH
 ```
+
+To use the library in a project, add `[tool.uv] exclude-newer = "7 days"` to its `pyproject.toml`,
+then `uv add btx_lib_mail`. Plain `pip install btx_lib_mail` works too, without the cooldown.
 
 Send an email from Python:
 
@@ -148,10 +157,10 @@ the field is `smtp_use_starttls`.
 ## Use it from an AI agent (zero install)
 
 btx_lib_mail is built to be driven by LLMs and agents, not only by people. An agent can send mail
-with nothing installed, straight from PyPI via `uvx`:
+with nothing installed, straight from PyPI via `uvx` (the cooldown skips releases younger than 7 days):
 
 ```bash
-uvx btx-lib-mail send \
+uvx --exclude-newer "7 days" btx-lib-mail send \
   --host smtp.example.com:587 \
   --sender alerts@example.com --recipient oncall@example.com \
   --subject "Ping" --body "Smoke test"

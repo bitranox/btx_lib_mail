@@ -26,21 +26,43 @@ description: Use when sending email from Python or the shell, especially with la
 
 ## Install / run
 
-Zero-install (best for agents and one-offs): run the CLI straight from PyPI. Nothing is installed
-persistently.
+Use uv with a cooldown. The package declares only `>=` floors for its dependencies, so `pip`,
+`pipx` and a plain `uv tool install` take the newest release of every transitive dependency at
+install time; a hijacked release that is pulled again within hours reaches you. A cooldown makes uv
+skip any release younger than N days (7 here), so a hijacked release pulled within that window never
+arrives. Details: https://github.com/bitranox/btx_lib_mail/blob/master/INSTALL.md#why-we-recommend-uv-supply-chain-protection
+
+Install uv itself first, if it is missing:
 
 ```bash
-uvx btx-lib-mail --help
-uvx btx-lib-mail send --host smtp.example.com:587 \
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# Windows (PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+Zero-install (best for agents and one-offs): run the CLI straight from PyPI. Nothing is installed
+persistently. `--exclude-newer` goes before the package:
+
+```bash
+uvx --exclude-newer "7 days" btx-lib-mail --help
+uvx --exclude-newer "7 days" btx-lib-mail send --host smtp.example.com:587 \
   --sender a@example.com --recipient b@example.com --subject "Hi" --body "hello"
 ```
 
-Add to a project, or install the CLI on PATH:
+Install the CLI on PATH (the cutoff is stored in the tool's receipt and kept on upgrade), or add
+the library to a project (set the cooldown once in its `pyproject.toml`, then `uv add btx_lib_mail`):
 
 ```bash
-uv add btx_lib_mail            # or: pip install btx_lib_mail
-uv tool install btx_lib_mail   # or: pipx install btx_lib_mail  (CLI on PATH)
+uv tool install --exclude-newer "7 days" btx_lib_mail
 ```
+
+```toml
+[tool.uv]
+exclude-newer = "7 days"
+```
+
+Without uv, `pip install btx_lib_mail` or `pipx install btx_lib_mail` works but has no cooldown.
 
 Requires Python 3.10+. Both `btx_lib_mail` and `btx-lib-mail` are registered commands; `python -m
 btx_lib_mail` runs the same CLI with the same exit codes.
