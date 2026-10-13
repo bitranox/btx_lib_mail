@@ -321,9 +321,11 @@ next host is tried. An `OSError` it raises is logged with its text, anything els
 only; never put a credential into the text of an `OSError`. `DeliveryOptions` is a frozen
 dataclass with `credentials` (`tuple[str, str] | None`, left out of `repr`), `use_starttls`,
 `starttls_verify`, `timeout`, `local_hostname` and `deadline`. The default transport,
-`SmtplibTransport` (importable from `btx_lib_mail.lib_mail`), speaks SMTP; a test passes its
-own transport through `send(transport=...)` and asserts on what it received, with no server
-and no patching:
+`SmtplibTransport` (importable from `btx_lib_mail.lib_mail`), speaks SMTP. Its keyword-only
+`local_hostname_lookup` takes a callable returning the `EHLO` name to use when a delivery names
+none; unset, every transport shares this host's own name, looked up once per process. A test
+passes its own transport through `send(transport=...)` and asserts on what it received, with no
+server and no patching:
 
 ```python
 from typing import IO

@@ -1,4 +1,4 @@
-# Handover - 2026-10-13 17:30, bounded EHLO-name lookup merged locally, release not started
+# STALE - read 2026-10-13, work continued
 
 Read `OPEN-WORK.md` first. Rank 10 is now "ship the bounded EHLO-name lookup".
 

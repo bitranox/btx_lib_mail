@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [4.3.0] 2026-10-13 17:40:35
+
 ### Fixed
 - A delivery with `smtp_delivery_deadline` set no longer outlives it by the lookup of this host's own
   name for `EHLO` (the first delivery of a process, `smtp_local_hostname` unset; on a host with slow
@@ -14,7 +16,8 @@
 ### Added
 - `SmtplibTransport(local_hostname_lookup=...)`: a callable returning the `EHLO` name a transport
   uses when a delivery names none, run once per transport (again after a run that raised, and in a
-  forked child whose parent had not finished it). Unset, every transport shares this host's own name, looked up once per process.
+  forked child whose parent had not finished it). Unset, every transport shares this host's own
+  name, looked up once per process.
 
 ## [4.2.0] 2026-10-13 14:56:19
 
