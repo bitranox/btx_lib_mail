@@ -15,10 +15,28 @@ from btx_lib_mail._validation import address_length_problem, distinct_recipients
 UMLAUT_LOCAL = "empfänger@example.com"
 UMLAUT_DOMAIN = "user@müller.de"
 DECOMPOSED_LOCAL = "empfa" + chr(0x308) + "nger@example.com"
+# Indic and Thai words hold combining marks (Mc, Mn) that str.isalnum() rejects.
+DEVANAGARI_BHARAT = chr(0x92D) + chr(0x93E) + chr(0x930) + chr(0x924)
+THAI_SAWASDEE = chr(0xE2A) + chr(0xE27) + chr(0xE31) + chr(0xE2A) + chr(0xE14) + chr(0xE35)
+BENGALI_BHARAT = chr(0x9AD) + chr(0x9BE) + chr(0x9B0) + chr(0x9A4)
 
 
 @pytest.mark.os_agnostic
-@pytest.mark.parametrize("address", [UMLAUT_LOCAL, UMLAUT_DOMAIN, "ñandú@españa.es", "用户@例子.中国", "user@xn--mller-kva.de"])
+@pytest.mark.parametrize(
+    "address",
+    [
+        UMLAUT_LOCAL,
+        UMLAUT_DOMAIN,
+        "ñandú@españa.es",
+        "用户@例子.中国",
+        "user@xn--mller-kva.de",
+        "user@" + DEVANAGARI_BHARAT + ".in",
+        "user@example." + DEVANAGARI_BHARAT,
+        "user@" + THAI_SAWASDEE + ".th",
+        "user@example." + BENGALI_BHARAT,
+    ],
+    ids=["umlaut-local", "umlaut-domain", "spanish", "chinese", "ace-label", "devanagari-label", "devanagari-tld", "thai-label-ending-in-mark", "bengali-tld"],
+)
 def test_an_internationalised_address_is_valid(address: str) -> None:
     validate_email_address(address)
 
@@ -42,6 +60,9 @@ def test_an_internationalised_address_is_valid(address: str) -> None:
         "user@müller.d",
         "user@müller.d3",
         "a@b@müller.de",
+        "user@" + chr(0x93E) + "abc.de",
+        "user@example." + chr(0x93E) + "bc",
+        "user@example." + DEVANAGARI_BHARAT + "3",
     ],
     ids=[
         "bell",
@@ -59,6 +80,9 @@ def test_an_internationalised_address_is_valid(address: str) -> None:
         "short-tld",
         "digit-tld",
         "two-at",
+        "label-starting-with-mark",
+        "tld-starting-with-mark",
+        "tld-with-digit-after-mark",
     ],
 )
 def test_a_malformed_internationalised_address_is_refused(address: str) -> None:

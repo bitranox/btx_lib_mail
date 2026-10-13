@@ -671,9 +671,11 @@ def matches_address_syntax(address: str) -> bool:
     An ASCII address must match `EMAIL_PATTERN`, exactly as before. An address
     holding non-ASCII characters is internationalised (RFC 6531): its local part
     allows the ASCII characters `EMAIL_PATTERN` allows plus any printable
-    non-ASCII character, and its domain is dot-separated labels of letters,
-    digits (any script) and hyphens, ending in a label of at least two letters
-    or an `xn--` label. Lengths are not checked here (`address_length_problem`).
+    non-ASCII character, and its domain is dot-separated labels of
+    letters, combining marks (part of words in Indic and Thai scripts) and
+    digits of any script plus hyphens. A label starts with a letter or digit
+    and does not end with a hyphen; the last label is at least two letters or
+    marks (no digit, no hyphen) or an `xn--` label. Lengths are not checked here (`address_length_problem`).
 
     Args:
         address: Candidate email string.
@@ -766,34 +768,102 @@ def _is_international_domain(domain: str) -> bool:
 
     Returns:
         True when there are two or more labels, each valid, and the last is at
-        least two letters long or an `xn--` label.
+        least two characters of letters and combining marks (no digit, no
+        hyphen) or an `xn--` label.
 
     Examples:
         >>> _is_international_domain("m" + chr(0xFC) + "ller.de"), _is_international_domain("m" + chr(0xFC) + "ller")
         (True, False)
+        >>> _is_international_domain("example." + chr(0x92D) + chr(0x93E) + chr(0x930) + chr(0x924))
+        True
     """
     labels = domain.split(".")
     if len(labels) < _MIN_DOMAIN_LABELS or not all(_is_domain_label(label) for label in labels):
         return False
     top = labels[-1]
-    return (len(top) >= _MIN_TOP_LEVEL_LABEL and top.isalpha()) or top.lower().startswith(_ACE_PREFIX)
+    return (len(top) >= _MIN_TOP_LEVEL_LABEL and all(_is_letter_or_mark(character) for character in top)) or top.lower().startswith(_ACE_PREFIX)
 
 
 def _is_domain_label(label: str) -> bool:
-    """Return whether label is letters, digits (any script) and inner hyphens.
+    """Return whether label is letters, marks, digits and inner hyphens.
 
     Args:
         label: One dot-separated part of a domain.
 
     Returns:
-        True when it is non-empty, starts and ends with a letter or digit, and
-        holds nothing but letters, digits and hyphens.
+        True when it is non-empty, starts with a letter or digit (never a mark
+        or a hyphen), does not end with a hyphen, and holds nothing but
+        letters, combining marks, digits and hyphens.
 
     Examples:
         >>> _is_domain_label("m" + chr(0xFC) + "ller"), _is_domain_label("-x"), _is_domain_label("")
         (True, False, False)
+        >>> _is_domain_label(chr(0xE2A) + chr(0xE27) + chr(0xE31)), _is_domain_label(chr(0x93E) + "x")
+        (True, False)
     """
-    return bool(label) and not label.startswith("-") and not label.endswith("-") and all(character.isalnum() or character == "-" for character in label)
+    return (
+        bool(label)
+        and _is_letter_or_digit(label[0])
+        and not label.endswith("-")
+        and all(character == "-" or _is_letter_mark_or_digit(character) for character in label)
+    )
+
+
+def _is_letter_or_mark(character: str) -> bool:
+    """Return whether character is an ASCII letter, or a non-ASCII letter or combining mark.
+
+    Marks (Unicode Mn, Mc) are part of words in Indic and Thai scripts, so a
+    top-level label written in them must pass, which `str.isalpha()` refuses.
+
+    Args:
+        character: One character.
+
+    Returns:
+        True for a letter or a mark.
+
+    Examples:
+        >>> _is_letter_or_mark("a"), _is_letter_or_mark(chr(0x93E)), _is_letter_or_mark("3"), _is_letter_or_mark("-")
+        (True, True, False, False)
+    """
+    if character.isascii():
+        return character.isalpha()
+    return unicodedata.category(character)[0] in "LM"
+
+
+def _is_letter_or_digit(character: str) -> bool:
+    """Return whether character is an ASCII letter or digit, or a non-ASCII letter or digit.
+
+    Args:
+        character: One character.
+
+    Returns:
+        True for a letter or a digit; False for a mark and a hyphen.
+
+    Examples:
+        >>> _is_letter_or_digit("a"), _is_letter_or_digit("7"), _is_letter_or_digit(chr(0x93E)), _is_letter_or_digit("-")
+        (True, True, False, False)
+    """
+    if character.isascii():
+        return character.isalnum()
+    return unicodedata.category(character)[0] in "LN"
+
+
+def _is_letter_mark_or_digit(character: str) -> bool:
+    """Return whether character may stand inside a domain label (hyphen aside).
+
+    Args:
+        character: One character.
+
+    Returns:
+        True for an ASCII letter or digit, or a non-ASCII letter, mark or digit.
+
+    Examples:
+        >>> _is_letter_mark_or_digit("a"), _is_letter_mark_or_digit(chr(0x93E)), _is_letter_mark_or_digit("_")
+        (True, True, False)
+    """
+    if character.isascii():
+        return character.isalnum()
+    return unicodedata.category(character)[0] in "LMN"
 
 
 def _refuse_credentials_in_host(host: str) -> str:
