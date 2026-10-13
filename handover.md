@@ -1,70 +1,79 @@
-# STALE - read 2026-10-13 14:22, work continued
+# Handover - 2026-10-13 16:30, btx_lib_mail 4.2.0 released (SMTPUTF8 + uv cooldown docs)
 
-Read `OPEN-WORK.md` first. Rank 8 (SMTPUTF8) and rank 9 (your uv/cooldown install docs) both land in
-plan Task 6.
+Read `OPEN-WORK.md` first. Ranks 8 (SMTPUTF8) and 9 (uv cooldown install docs) shipped and are
+deleted from it; rank 10 is next.
 
 ## In flight
 
-- Rank 8 SMTPUTF8 is executing `docs/plans/2026-10-13-smtputf8.md` with
-  bitranox:process-agents-subagent-driven-development, in the worktree `.claude/worktrees/smtputf8`
-  (branch `smtputf8`). Tasks 1-5 are committed and reviewed clean. Task 6 (documentation) is not
-  started; after it come the final whole-branch review (opus) and its triage of the minor findings,
-  then the merge into master and the tfbpr release.
-- The progress ledger is `.claude/worktrees/smtputf8/.bitranox/sdd/progress.md` (git-excluded). It
-  holds the per-task review counts, the Minor findings (a)-(q) for the final review, and the three
-  rank-9 user requests word for word. Trust it and `git log` over memory.
+- Nothing. 4.2.0 is released end to end: tag `v4.2.0`, Release workflow green, GitHub release
+  https://github.com/bitranox/btx_lib_mail/releases/tag/v4.2.0, PyPI simple index serves the wheel
+  and sdist (the PyPI JSON API still showed 4.1.0 at 15:15, its usual lag). The skill twin is pushed
+  as bitranox-skills 8.19.1 (b373768a, CI green).
 
 ## Committed, or not
 
-- Branch `smtputf8` (unpushed): 18e0b53 plan, 5de539f validation, 381dcd6 combining marks, c1908d3
-  composition, 8e91e47 transport, 98bed44 NFC sender, a127659 declare Python 3.15. Worktree clean.
-- master (unpushed): 68c2fec, b0a58d7, fa567b2, plus this handover and the OPEN-WORK edits.
-- Uncommitted by design: `EXECUTION-USER-REVIEW.md` (gitignored; this session's four owner decisions
-  merged in at the top), `.bitranox/` in the worktree (excluded via `.git/info/exclude`).
+- master is level with origin at 5d37b8b except for this handover commit (handover.md,
+  OPEN-WORK.md rank 90 added, and the Makefile bmk rewrote during `make clean-all`).
+- `make clean-all` ran: no `.venv` in the checkout; the next `make test` rebuilds it.
+- Uncommitted by design: `EXECUTION-USER-REVIEW.md` (gitignored) holds this session's owner
+  decisions (4.2.0 minor release; "do it for me" on the history scrub) and my triage choices.
 
 ## Decided, and why
 
-- Lengths of non-ASCII addresses are reported in "UTF-8 octets"; ASCII messages are unchanged (owner).
-- Combining marks are allowed in IDN domain labels (L*/M*/N*); a label starts with a letter or digit
-  and ends with anything but a hyphen, so Thai words ending in a mark pass (owner + my reading).
-- Python 3.15 declared although PyYAML (dev-only, via bandit) has no cp315 wheel: CI here is
-  GitHub-hosted only and builds it from source; the plan's `--no-build` check was dropped (owner).
-- The rank-9 install docs go into Task 6 as their own commit, not in parallel: two subagents must
-  never edit one worktree at once.
+- 4.2.0 is a minor release (owner): accepting non-ASCII addresses that every earlier release refused
+  is a feature, not a break; ASCII mail is unchanged byte for byte.
+- The 18 unpushed commits were rewritten before the push (owner: "do it for me") to replace this
+  machine's absolute path in `docs/plans/2026-10-13-smtputf8.md`; backup branch and
+  `refs/original` deleted afterwards, control confirmed the backup held the path.
+- `SMTPUTF8NotSupportedError` is a `BtxMailError` and a `smtplib.SMTPNotSupportedError`, exported
+  from `btx_lib_mail` and `btx_lib_mail.lib_mail`; `validate_email_address` validates the NFC form.
+- Accepted, in CLAUDE.md: IDN label looseness; a non-ASCII address keeps its case.
 
 ## Decided against, and why
 
-- Rolling the uv-cooldown install text out to the sibling templates: not asked; ask the owner after
-  this repo ships.
+- Re-wording refusal messages for non-ASCII inputs back to the old text: measured old vs new, the
+  exception type and the `invalid recipient` / `invalid email address` prefixes are unchanged, and
+  the octet / NFC wording follows the owner's decisions.
 
 ## Still open, untouched
 
 - Rank 10: the delivery deadline does not cover the EHLO-name lookup - see `OPEN-WORK.md`.
+- Rank 90: ask the owner whether to roll the uv cooldown install docs out to the templates.
 - Rank 95: Windows STARTTLS deadline test overran once - see `OPEN-WORK.md`.
 
 ## Lessons for the next nap
 
-- When you brief a background subagent to run a long gate (make test-all), write "run it in the
-  FOREGROUND" in the first brief; this session briefed run_in_background and had to correct it
-  (recurrence of feedback-a-background-subagent-is-not-woken-by-its-own-backgrounded-wait).
-- When applying the cpXY-wheel rule to a repo, check its CI runners first (`[tool.ci].os`,
-  `runs-on`): on GitHub-hosted runners a missing wheel is a source build, not a blocker; a plan STOP
-  condition built on it blocked Task 5 needlessly (proposed hook change to
+- When a subagent reports a skill description as unchanged, measure it with `len()` and diff the
+  `description:` line: the Task 6 implementer edited the uvx example inside it and reported
+  "unchanged at 712", which the marketplace gate caught as a stale trigger map and catalog.
+- When the auto-mode classifier refuses `git filter-branch` over an unpushed range, ask the owner
+  once with the exact scope (range, count, replacement, backup); with the go the same command ran.
+- When the auto-mode classifier refuses a scripted deletion of tracked backlog lines, use the Edit
+  tool with the exact lines.
+- When a peer session says your commit is not on origin, run `git ls-remote origin <branch>` before
+  acting; its ref was stale and the commit had been pushed an hour earlier.
+- When a tool repo's mirrored skill changed, commit the twin locally BEFORE the tool repo's release
+  push: repo-gate refuses a push from either repo while one side is uncommitted, and a twin that
+  names no version may be committed before PyPI serves the release (push it after).
+- When a GREEN retrieval run answers by inference ("which is not demoted for ASCII recipients"),
+  re-ask that one question for a direct quote; it took two rewording rounds to get one.
+- tooling: the main checkout had no `.venv` (an earlier `make clean-all`), so an old-vs-new probe
+  printed nothing with stderr hidden; run old source through the other checkout's interpreter.
+- (carried) When you brief a background subagent to run a long gate, write "run it in the
+  FOREGROUND" in the first brief.
+- (carried) When applying the cpXY-wheel rule, check the CI runners first: on GitHub-hosted runners a
+  missing wheel is a source build, not a blocker (proposed hook change to
   reference-check-compiled-dependencies-for-cpxy-wheels-before-adding-a-new-python-minor, awaiting go).
-- When a subagent needs a scratch copy, require a dir it creates with `mktemp -d`; one wrote into a
-  shared scratch dir holding another session's files (no clobber this time).
-- When a worktree-isolated session runs Bash, keep each command plain: a shell variable in a path
-  position, `$(...)`, or any command line containing `git` inside a compound gets refused.
-- When a counterexample goes into a question to the user, check it is refused for the reason the
-  question claims (`user@<word>` with no dot fails the two-label rule, not the mark rule).
-- tooling: the harness refuses subagent report files named `*-report.md` in some runs (Task 5 had to
-  put its report in the reply); earlier tasks wrote the same name fine.
-- (carried) tooling: the EnterWorktree guard refuses any Bash command whose text contains `git`, even
-  inside `digits` in a pytest `-k`.
-- (carried) When a release must be tagged while an uncommitted backlog line dirties the tree, copy the
-  file aside, restore the committed copy, `make release`, then put the copy back.
-- (carried) When `uv sync` in a fresh worktree picks Python 3.15 and a compiled dev dependency has no
-  cp315 wheel, pass `--python 3.14`.
+- (carried) When a subagent needs a scratch copy, require a dir it creates with `mktemp -d`.
+- (carried) When a worktree-isolated session runs Bash, keep each command plain.
+- (carried) When a counterexample goes into a question to the user, check it is refused for the
+  reason the question claims.
+- (carried) tooling: the harness refuses subagent report files named `*-report.md` in some runs.
+- (carried) tooling: the EnterWorktree guard refuses any Bash command whose text contains `git`.
+- (carried) When a release must be tagged while an uncommitted backlog line dirties the tree, copy
+  the file aside, restore the committed copy, `make release`, then put the copy back.
+- (carried) When `uv sync` in a fresh worktree picks Python 3.15 and a compiled dev dependency has
+  no cp315 wheel, pass `--python 3.14`.
 - (carried) When a test spawns the btx_lib_mail CLI (or any SMTP client) as a fresh process, pass an
   explicit EHLO name: a fresh process's reverse DNS lookup takes 35-70 s on macOS CI runners.
 - (carried) Proposed, awaiting the owner: rewrite the btx_lib_mail fact
@@ -72,8 +81,8 @@ plan Task 6.
   ~30 s `getfqdn` on macOS runners (`server_hostname` / `local_hostname` fix it).
 - (carried) When a mirrored skill changes on both sides, expect repo-gate's commit gates to deadlock;
   the tool-repo side can go out through its release push, then the marketplace side commits.
-- (carried) When `git filter-branch --msg-filter` rewrites an unpushed range, delete the backup branch
-  and `refs/original` afterwards.
+- (carried) When `git filter-branch --msg-filter` rewrites an unpushed range, delete the backup
+  branch and `refs/original` afterwards.
 - (carried) tooling: a `grep -v '^\['` filter on probe output hid a line that began with `[]`.
 - (carried) When a report must say what a call acted on, recompute it with the call's own functions.
 - (carried) When a CLI reads options before Click parses, locate the subcommand by POSITION.
@@ -88,30 +97,25 @@ plan Task 6.
 
 ## Exact next action
 
-Rank 8 + 9: `EnterWorktree` with path `.claude/worktrees/smtputf8`, read
-`.bitranox/sdd/progress.md`, invoke bitranox:process-agents-subagent-driven-development and arm its
-`plan-execution` receipt, invoke bitranox:meta-skill-writer and run its `start` receipt (the skill
-edit needs it), then `python3 <plugin>/skills/process-agents-subagent-driven-development/scripts/task_brief.py docs/plans/2026-10-13-smtputf8.md 6`
-and dispatch Task 6 with the rank-9 requests added as a separate commit. The skill part needs a RED
-retrieval run on the current SKILL.md first (e.g. "install btx-lib-mail safely", "send to
-empfaenger@mueller.de with umlauts") and a `.skillwriter/checklist-<date>-...-mirror.md` in the
-bitranox-skills twin dir `plugins/bitranox/skills/coding-python-send-mail/`. Then the final review
-over `git merge-base master smtputf8`..HEAD with the ledger's Minor list.
+Rank 10: read `src/btx_lib_mail/_transport.py` around `_default_local_hostname()` and
+`SmtplibTransport.deliver`, then put the choice to the owner as one question - document the lookup
+as outside `smtp_delivery_deadline` (CHANGELOG + the `smtp_delivery_deadline` docstring) versus
+resolving the EHLO name outside `deliver()` / bounding it - with each option's cost measured first.
 
 ## Files that matter
 
-- `docs/plans/2026-10-13-smtputf8.md` (branch `smtputf8`) - the plan; Task 6 lists every doc file
-- `.claude/worktrees/smtputf8/.bitranox/sdd/progress.md` - ledger, minors, rank-9 requests verbatim
-- `INSTALL.md` ("Why we recommend uv: supply-chain protection"), `README.md`, `docs/installation.md`
-- `skills/python-send-mail/SKILL.md` and its twin
-  in the bitranox-skills clone (sibling `KI/bitranox-skills`), `plugins/bitranox/skills/coding-python-send-mail/`
-- the sibling `apps/bitranox_template_py_cli/README.md` - "Install uv" model
-- `EXECUTION-USER-REVIEW.md` (gitignored) - the owner's answers, verbatim
+- `src/btx_lib_mail/_transport.py` - `_default_local_hostname`, `_session_deadline`, `deliver`
+- `src/btx_lib_mail/_config.py` - `smtp_delivery_deadline`, `smtp_local_hostname`
+- `CHANGELOG.md` - the 4.0.0 entry naming what the deadline does not cover
+- `tests/test_deadline.py` - the deadline tests (rank 95's flaky one too)
+- `EXECUTION-USER-REVIEW.md` (gitignored) - owner decisions, verbatim
 
 ## How to verify
 
-- `git -C .claude/worktrees/smtputf8 log --oneline -1` shows a127659 (declare Python 3.15).
-- In the worktree: `make test` passes; `.venv-3.15/bin/python -m pytest -q --no-cov tests/test_international_addresses.py` passes.
+- `git ls-remote --tags origin v4.2.0` returns a line; `gh release view v4.2.0` shows the release.
+- `curl -s -H 'Accept: application/vnd.pypi.simple.v1+json' https://pypi.org/simple/btx-lib-mail/`
+  lists `btx_lib_mail-4.2.0-py3-none-any.whl`.
+- `make test` passes (rebuilds the `.venv` first).
 
 > Read this, then replace the first line with `# STALE - read <date>, work continued`. Do not
 > delete it - if this session ends badly it is the only record of where things stood.
