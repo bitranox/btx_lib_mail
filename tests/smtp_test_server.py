@@ -104,6 +104,20 @@ class BdatController(Controller):
         return BdatSMTP(self.handler, **self.SMTP_kwargs)
 
 
+class HeloOnlySMTP(aiosmtpd_smtp.SMTP):
+    """aiosmtpd SMTP subclass that refuses EHLO, so a client falls back to HELO (no extensions)."""
+
+    async def smtp_EHLO(self, hostname: str) -> None:
+        await self.push("502 5.5.1 Command not implemented")
+
+
+class HeloOnlyController(Controller):
+    """Controller that serves the EHLO-refusing SMTP subclass."""
+
+    def factory(self) -> Any:
+        return HeloOnlySMTP(self.handler, **self.SMTP_kwargs)
+
+
 # A working server reports ready in well under a second.
 SERVER_READY_TIMEOUT = 8.0
 SERVER_BIND_ATTEMPTS = 3

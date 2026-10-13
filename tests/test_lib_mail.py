@@ -2618,6 +2618,21 @@ def test_a_host_that_cannot_be_reached_is_tried_last_for_the_remaining_recipient
 
 
 @pytest.mark.os_agnostic
+def test_a_host_that_does_not_support_authentication_is_tried_last_for_the_remaining_recipients() -> None:
+    """A plain SMTPNotSupportedError (AUTH) is a fault of the relay, not of one message: the host is demoted."""
+    transport = PerHostTransport({("noauth.example.com", None): smtplib.SMTPNotSupportedError("SMTP AUTH extension not supported by server.")})
+    recipients = ["one@example.com", "two@example.com"]
+
+    lib_mail.send(**_with(mail_recipients=recipients, smtphosts=["noauth.example.com", "live.example.com"], transport=transport))
+
+    assert transport.attempts == [
+        ("noauth.example.com", "one@example.com"),
+        ("live.example.com", "one@example.com"),
+        ("live.example.com", "two@example.com"),
+    ]
+
+
+@pytest.mark.os_agnostic
 def test_a_host_that_failed_for_one_recipient_is_still_tried_for_the_next() -> None:
     """Moved to the end, not dropped: when every host failed once, the next recipient still has them all."""
     transport = PerHostTransport(

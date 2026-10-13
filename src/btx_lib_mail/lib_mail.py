@@ -725,6 +725,7 @@ __all__ = [
     "AttachmentViolation",
     "ConfMail",
     "DeliveryOptions",
+    "SMTPUTF8NotSupportedError",
     "SmtplibTransport",
     "Transport",
     "conf",

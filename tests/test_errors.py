@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import pickle
+import smtplib
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,8 @@ from btx_lib_mail import (
     ConfMail,
     DeliveryError,
     InvalidInputError,
+    SMTPUTF8NotSupportedError,
+    lib_mail,
     send,
     validate_email_address,
     validate_smtp_host,
@@ -41,8 +44,25 @@ def _send(**overrides: Any) -> bool:
 
 @pytest.mark.os_agnostic
 def test_the_error_types_are_exported_from_the_package() -> None:
-    for name in ("BtxMailError", "InvalidInputError", "ConfigurationError", "AttachmentNotFoundError", "DeliveryError"):
+    for name in ("BtxMailError", "InvalidInputError", "ConfigurationError", "AttachmentNotFoundError", "DeliveryError", "SMTPUTF8NotSupportedError"):
         assert name in btx_lib_mail.__all__
+    assert "SMTPUTF8NotSupportedError" in lib_mail.__all__
+    assert lib_mail.SMTPUTF8NotSupportedError is btx_lib_mail.SMTPUTF8NotSupportedError
+
+
+@pytest.mark.os_agnostic
+def test_a_relay_without_smtputf8_is_a_btx_mail_error_and_an_smtp_not_supported_error() -> None:
+    class _RelayWithoutSmtputf8(RecordingTransport):
+        def deliver(self, **_: Any) -> None:
+            raise SMTPUTF8NotSupportedError("the relay does not offer SMTPUTF8, which a non-ASCII address needs")
+
+    with pytest.raises(DeliveryError) as caught:
+        _send(mail_recipients="empf" + chr(0xE4) + "nger@example.com", transport=_RelayWithoutSmtputf8())
+
+    assert isinstance(caught.value, BtxMailError)
+    assert issubclass(SMTPUTF8NotSupportedError, BtxMailError)
+    assert issubclass(SMTPUTF8NotSupportedError, smtplib.SMTPNotSupportedError)
+    assert "does not offer SMTPUTF8" in str(SMTPUTF8NotSupportedError("the relay does not offer SMTPUTF8"))
 
 
 @pytest.mark.os_agnostic

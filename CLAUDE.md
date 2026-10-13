@@ -78,7 +78,7 @@ tests/
 - **EHLO name**: `ConfMail.smtp_local_hostname` / `send(local_hostname=)` / `--local-hostname` /
   `BTX_MAIL_SMTP_LOCAL_HOSTNAME`; unset, `_default_local_hostname()` computes smtplib's default once per process
 - **Validation**: `validate_email_address()` and `validate_smtp_host()` are public; the address check
-  accepts internationalised addresses (RFC 6531, lengths in UTF-8 octets) and `send()` NFC-normalises them;
+  accepts internationalised addresses (RFC 6531, lengths in UTF-8 octets) and checks their NFC form, which `send()` delivers to;
   `validate_smtp_host()` refuses a host carrying `@` or `/`, or an interior whitespace or
   control character, without echoing the value, and a malformed port, bracket, host name
   (empty or over-long label, label hyphen, over 253 characters, non-IP bracket content)
@@ -139,7 +139,7 @@ from btx_lib_mail import (
     DeliveryOptions, Transport,
     # Errors (every one is a BtxMailError)
     BtxMailError, InvalidInputError, ConfigurationError,
-    AttachmentNotFoundError, DeliveryError,
+    AttachmentNotFoundError, DeliveryError, SMTPUTF8NotSupportedError,
     # Security
     AttachmentSecurityError,
     AttachmentViolation,
@@ -155,7 +155,7 @@ from btx_lib_mail import (
 )
 ```
 
-`SmtplibTransport` is importable from `btx_lib_mail.lib_mail`.
+`SmtplibTransport` is importable from `btx_lib_mail.lib_mail`; so is `SMTPUTF8NotSupportedError`.
 
 ## CLI Commands
 
@@ -288,3 +288,13 @@ Deliberately accepted items - do not flag in future reviews unless the stated re
 - **A KeyboardInterrupt inside the watchdog's join** leaves the session's duplicate socket to the
   garbage collector: the window is microseconds (up to 50 ms when the deadline passed before the
   socket existed), and nothing leaks past collection.
+- **IDN label looseness**: the internationalised address pattern accepts a combining mark after a
+  hyphen, a digit-only non-ASCII label and a label starting with a digit of category No or
+  Nl). The relay refuses what it cannot route, and the ASCII pattern is at least as loose (it accepts
+  `a@-x.com`), so a stricter rule would only tighten the new path. Re-open if a caller meets a
+  relay that accepts such an address and mis-delivers it.
+- **A non-ASCII address keeps its case**: recipients that differ only in the case of a non-ASCII
+  address's domain (`Empf` + a-umlaut + `nger@Example.com` and the same with `example.com`) are
+  delivered twice, because ASCII addresses are lower-cased and deduplicated but a non-ASCII one is
+  not. Lower-casing a non-ASCII local part is not safe (case folding is locale and relay specific),
+  and the input needs a hand-built list to hit it. Re-open if a caller reports a duplicate delivery.

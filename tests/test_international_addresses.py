@@ -9,17 +9,17 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import smtplib
 from typing import IO, TYPE_CHECKING
 
 import pytest
 from aiosmtpd.controller import Controller
-from smtp_test_server import BdatController, ChunkingHandler, CollectingHandler, run_server
+from smtp_test_server import BdatController, ChunkingHandler, CollectingHandler, HeloOnlyController, run_server
 from transport_doubles import RecordingTransport
 
-from btx_lib_mail import DeliveryError, InvalidInputError, _compose, lib_mail, validate_email_address
+from btx_lib_mail import DeliveryError, InvalidInputError, SMTPUTF8NotSupportedError, _compose, lib_mail, validate_email_address
 from btx_lib_mail import cli as cli_mod
-from btx_lib_mail._transport import SMTPUTF8NotSupportedError
 from btx_lib_mail._validation import address_length_problem, distinct_recipients, needs_smtputf8, to_nfc
 from btx_lib_mail.cli import CliContext
 
@@ -263,6 +263,26 @@ def test_with_no_relay_offering_smtputf8_the_umlaut_recipient_fails_and_an_ascii
 
 
 @pytest.mark.os_agnostic
+def test_a_relay_that_falls_back_to_helo_refuses_a_non_ascii_recipient_as_smtputf8_not_supported(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level(logging.WARNING)
+    helo_handler = CollectingHandler()
+    helo_relay = run_server(helo_handler, controller_cls=HeloOnlyController)
+    try:
+        with _relay(smtputf8=True) as (new_host, new_handler):
+            assert _send_via([f"127.0.0.1:{helo_relay.port}", new_host], recipients=[UMLAUT_LOCAL, "b@example.com"]) is True
+    finally:
+        helo_relay.stop()
+
+    refusals = [record for record in caplog.records if getattr(record, "error_type", None) == "SMTPUTF8NotSupportedError"]
+    assert len(refusals) == 1
+    assert refusals[0].levelno == logging.WARNING
+    assert getattr(refusals[0], "recipient", None) == UMLAUT_LOCAL
+    assert not any(getattr(record, "error_type", None) == "UnicodeEncodeError" for record in caplog.records)
+    assert helo_handler.rcpts == ["b@example.com"]
+    assert new_handler.rcpts == [UMLAUT_LOCAL]
+
+
+@pytest.mark.os_agnostic
 def test_a_relay_without_smtputf8_stays_first_for_the_ascii_recipients_after_it() -> None:
     transport_hosts: list[str] = []
 
@@ -310,6 +330,39 @@ def test_send_normalises_a_kelvin_sign_sender_to_ascii_without_lower_casing() ->
 
     assert transport.only.sender == "Kelvin@example.com"
     assert b"\r\nFrom: Kelvin@example.com\r\n" in transport.only.raw
+
+
+@pytest.mark.os_agnostic
+def test_validation_refuses_what_send_refuses_after_nfc_normalisation() -> None:
+    """U+037E (Greek question mark) normalises to ';', which is not an address character."""
+    address = "a" + chr(0x37E) + "@example.com"
+
+    with pytest.raises(InvalidInputError):
+        validate_email_address(address)
+    with pytest.raises(InvalidInputError):
+        lib_mail.send("absender@example.com", address, "s", smtphosts=["smtp.example.com"], transport=RecordingTransport())
+
+
+@pytest.mark.os_agnostic
+def test_validation_accepts_what_send_delivers_after_nfc_normalisation() -> None:
+    """22 x (a + combining diaeresis) is 66 octets decomposed and 44 composed: under the 64-octet local-part limit only as NFC."""
+    address = "a" + chr(0x308)
+    address = address * 22 + "@example.com"
+    transport = RecordingTransport()
+
+    validate_email_address(address)
+    lib_mail.send("absender@example.com", address, "s", smtphosts=["smtp.example.com"], transport=transport)
+
+    assert transport.only.recipient == (chr(0xE4) * 22) + "@example.com"
+
+
+@pytest.mark.os_agnostic
+def test_the_cli_validate_email_follows_the_nfc_form(cli_runner: CliRunner) -> None:
+    refused = cli_runner.invoke(cli_mod.cli, ["--json", "validate-email", "a" + chr(0x37E) + "@example.com"])
+    accepted = cli_runner.invoke(cli_mod.cli, ["--json", "validate-email", ("a" + chr(0x308)) * 22 + "@example.com"])
+
+    assert refused.exit_code != 0
+    assert accepted.exit_code == 0, accepted.output
 
 
 @pytest.mark.os_agnostic

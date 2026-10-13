@@ -261,14 +261,15 @@ Every exception the library raises on purpose derives from `BtxMailError`, so
 subclasses the builtin in the "Also a" column, so `except ValueError:` (and so on) catches
 it too, and the CLI exit code follows that builtin.
 
-| Class                     | Also a                     | Raised when                                                                              |
-|---------------------------|----------------------------|------------------------------------------------------------------------------------------|
-| `BtxMailError`            | `Exception`                | Base class; never raised itself.                                                         |
-| `InvalidInputError`       | `ValueError`               | An argument value is refused (`send()`, `validate_email_address`, `validate_smtp_host`). |
-| `ConfigurationError`      | pydantic `ValidationError` | A `ConfMail` setting is refused (construction, `model_validate*`, assignment).           |
-| `AttachmentNotFoundError` | `FileNotFoundError`        | A required attachment is missing, not a regular file, or cannot be opened.               |
-| `AttachmentSecurityError` | -                          | An attachment breaks a security rule; see `violation_type`.                              |
-| `DeliveryError`           | `RuntimeError`             | Every host failed for at least one recipient; see `failed_recipients`, `hosts`.          |
+| Class                       | Also a                          | Raised when                                                                                            |
+|-----------------------------|---------------------------------|--------------------------------------------------------------------------------------------------------|
+| `BtxMailError`              | `Exception`                     | Base class; never raised itself.                                                                       |
+| `InvalidInputError`         | `ValueError`                    | An argument value is refused (`send()`, `validate_email_address`, `validate_smtp_host`).               |
+| `ConfigurationError`        | pydantic `ValidationError`      | A `ConfMail` setting is refused (construction, `model_validate*`, assignment).                         |
+| `AttachmentNotFoundError`   | `FileNotFoundError`             | A required attachment is missing, not a regular file, or cannot be opened.                             |
+| `AttachmentSecurityError`   | -                               | An attachment breaks a security rule; see `violation_type`.                                            |
+| `DeliveryError`             | `RuntimeError`                  | Every host failed for at least one recipient; see `failed_recipients`, `hosts`.                        |
+| `SMTPUTF8NotSupportedError` | `smtplib.SMTPNotSupportedError` | A relay without SMTPUTF8 for a message with a non-ASCII address; `send()` wraps it in `DeliveryError`. |
 
 `AttachmentSecurityError` carries `path` (the offending path), `reason` (a one-line
 description, control characters replaced) and `violation_type`, an `AttachmentViolation`
@@ -283,18 +284,9 @@ member, never on the message text.
   64 characters before the `@` and 254 in all. A refusal for length names the length, not the
   address. It also accepts an internationalised address (RFC 6531: a non-ASCII local part, domain,
   or both, such as `empfänger@müller.de`); there the lengths are UTF-8 octets, and the message says
-  "UTF-8 octets" instead of "characters". It only checks: it does not return the NFC form `send()` uses.
+  "UTF-8 octets" instead of "characters". It checks the NFC form of the address, the one `send()` delivers to, and does not return it or change
+  the string it was given.
 
-### Internationalised addresses
-
-`send()` strips, NFC-normalises and validates the sender and every recipient, and sends the NFC form
-(an ASCII address is lower-cased as before; a non-ASCII one keeps its case). A message with a
-non-ASCII sender or recipient goes out as UTF-8 (RFC 6532 headers) and announces `SMTPUTF8` on
-`MAIL FROM`; a domain is sent as UTF-8, never converted to punycode. A relay that does not advertise
-SMTPUTF8 raises `SMTPUTF8NotSupportedError` (importable from `btx_lib_mail.lib_mail`; a subclass of
-`smtplib.SMTPNotSupportedError`) for that recipient. It counts as a failed host for that recipient
-only: the next host is tried and `DeliveryError` follows when none offers SMTPUTF8. ASCII mail
-sends no option and is unchanged.
 - `validate_smtp_host(host: str) -> None` raises `InvalidInputError` unless `host` is one of
   `hostname`, `hostname:port`, `[IP]`, `[IP]:port` (an IPv6 or IPv4 address in brackets),
   with a port of ASCII digits in 1-65535. A host carrying `@` or `/` or an interior whitespace or control character is
@@ -302,6 +294,18 @@ sends no option and is unchanged.
   an unbracketed IPv6 address, bracket content that is not an IP address (`[zz]`), and a
   name DNS can never resolve (an empty label as in `a..b`, a label starting or ending with
   `-`, a label over 63 or a name over 253 characters) are refused too.
+
+### Internationalised addresses
+
+`send()` NFC-normalises and validates the sender and every recipient, and sends the NFC form. A
+recipient is also stripped of surrounding whitespace and quotes and, when ASCII, lower-cased; the
+sender is only NFC-normalised, and a non-ASCII address keeps its case. A message with a
+non-ASCII sender or recipient goes out as UTF-8 (RFC 6532 headers) and announces `SMTPUTF8` on
+`MAIL FROM`; a domain is sent as UTF-8, never converted to punycode. A relay that does not advertise
+SMTPUTF8 raises `SMTPUTF8NotSupportedError` (importable from `btx_lib_mail` or `btx_lib_mail.lib_mail`; a
+`BtxMailError` and a subclass of `smtplib.SMTPNotSupportedError`) for that recipient. It counts as a failed host for that recipient
+only: the next host is tried and `DeliveryError` follows when none offers SMTPUTF8. ASCII mail
+sends no option and is unchanged.
 
 ## Transport
 

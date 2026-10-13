@@ -23,6 +23,7 @@ from typing import IO, TYPE_CHECKING, Final, Protocol, cast
 
 from ._common import logger, printable
 from ._validation import needs_smtputf8, parse_smtp_host
+from .errors import BtxMailError
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -626,16 +627,18 @@ def _require_socket(smtp_connection: smtplib.SMTP) -> socket.socket:
     return sock
 
 
-class SMTPUTF8NotSupportedError(smtplib.SMTPNotSupportedError):
+class SMTPUTF8NotSupportedError(BtxMailError, smtplib.SMTPNotSupportedError):
     """The relay does not offer SMTPUTF8, which a message with a non-ASCII address needs.
 
-    A subclass of `smtplib.SMTPNotSupportedError`, so code catching that still
-    catches it. Its own class lets `send()` count it as a refusal of this
+    A `BtxMailError` and an `smtplib.SMTPNotSupportedError`, so code catching
+    either still catches it. Its own class lets `send()` count it as a refusal of this
     message rather than of the relay: ASCII recipients later in the same call
     still try the relay first. The message never quotes the address.
 
     Examples:
         >>> issubclass(SMTPUTF8NotSupportedError, smtplib.SMTPNotSupportedError)
+        True
+        >>> issubclass(SMTPUTF8NotSupportedError, BtxMailError)
         True
     """
 

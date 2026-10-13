@@ -72,7 +72,7 @@ pipx install "git+https://github.com/bitranox/btx_lib_mail"
 ```bash
 uv pip install -e .[dev]
 uv tool install .
-uvx btx_lib_mail --help
+uvx --exclude-newer "7 days" btx-lib-mail --help   # from PyPI, with the cooldown
 ```
 
 ## 6. From Build Artifacts
@@ -114,7 +114,7 @@ This repository commits a `uv.lock`. It pins every package the project needs, tr
 dependencies included, to an exact version and to the hashes of that version's files. The
 `exclude-newer` setting under `[tool.uv]` in `pyproject.toml` adds a cooldown: uv leaves any
 release younger than that out of the lock. CI installs from the lock, so a hijacked release that
-gets pulled again within the cooldown never reaches our builds, and a file whose hash does not
+is yanked within the cooldown never reaches our builds, and a file whose hash does not
 match is refused.
 
 That protection stays in this repository. The installable package declares only lower bounds

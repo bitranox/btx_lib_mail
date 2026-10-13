@@ -616,8 +616,9 @@ def validate_email_address(address: str) -> None:
     Prevents avoidable SMTP failures by checking syntax early. An ASCII address
     must match `EMAIL_PATTERN`; an address holding non-ASCII characters is an
     internationalised one (RFC 6531), checked by `matches_address_syntax`. The
-    lengths are UTF-8 octets (`address_length_problem`). The address is checked
-    as given: `send()` normalises it to NFC first, this function does not.
+    lengths are UTF-8 octets (`address_length_problem`). The NFC form of the
+    address is checked, the form `send()` delivers to, so the two agree; the
+    caller's string is not changed and nothing is returned.
 
     Args:
         address: Candidate email string.
@@ -636,11 +637,12 @@ def validate_email_address(address: str) -> None:
         btx_lib_mail.errors.InvalidInputError: invalid email address: 'invalid@'
     """
     require_text(address, field_name="email address")
-    problem = address_length_problem(address)
+    normalised = to_nfc(address)
+    problem = address_length_problem(normalised)
     if problem is not None:
         raise InvalidInputError(f"invalid email address: {problem}")
-    if not matches_address_syntax(address):
-        raise InvalidInputError(f"invalid email address: {address!r}")
+    if not matches_address_syntax(normalised):
+        raise InvalidInputError(f"invalid email address: {normalised!r}")
 
 
 def to_nfc(address: str) -> str:

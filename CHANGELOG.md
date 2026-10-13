@@ -13,6 +13,10 @@
 - Address lengths are counted in UTF-8 octets (the same figures for ASCII, whose messages still say
   "characters").
 - A decomposed (NFD) sender or recipient is sent in NFC.
+- A refused non-ASCII address is quoted in its NFC form, and a non-ASCII local part over 64 UTF-8 octets
+  is refused by length (the message names the octets) rather than by the address pattern.
+- `validate_email_address()` checks the NFC form, so it agrees with `send()`.
+- `SMTPUTF8NotSupportedError` is a `BtxMailError` and is importable from `btx_lib_mail` and `btx_lib_mail.lib_mail`.
 
 ## [4.1.0] 2026-10-12 23:07:06
 
