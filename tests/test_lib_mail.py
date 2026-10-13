@@ -323,17 +323,20 @@ def test_when_invalid_recipients_are_tolerated_a_warning_is_emitted(
 
 
 @pytest.mark.os_agnostic
-def test_a_recipient_whose_lower_case_form_would_be_ascii_is_refused_like_the_sender() -> None:
-    # KELVIN SIGN lower-cases to an ASCII "k", so lower-casing before validating turned a
-    # non-ASCII address into a different, valid one; the same text as sender was refused.
-    kelvin = chr(0x212A) + "elvin@example.com"
+def test_a_recipient_canonically_equal_to_an_ascii_address_is_delivered_as_that_address() -> None:
+    # KELVIN SIGN is canonically the letter "K": NFC turns the recipient into the plain ASCII
+    # address before it is lower-cased or validated, so the entry it names is the one delivered to.
     transport = RecordingTransport()
 
-    with pytest.raises(InvalidInputError, match="invalid recipient"):
-        lib_mail.send(mail_from="sender@example.com", mail_recipients=kelvin, mail_subject="Subject", smtphosts=["smtp.example.com"], transport=transport)
-    with pytest.raises(InvalidInputError, match="invalid sender address"):
-        lib_mail.send(mail_from=kelvin, mail_recipients="one@example.com", mail_subject="Subject", smtphosts=["smtp.example.com"], transport=transport)
-    assert transport.deliveries == []
+    lib_mail.send(
+        mail_from="sender@example.com",
+        mail_recipients=chr(0x212A) + "elvin@example.com",
+        mail_subject="Subject",
+        smtphosts=["smtp.example.com"],
+        transport=transport,
+    )
+
+    assert transport.recipients == ["kelvin@example.com"]
 
 
 @pytest.mark.os_agnostic
