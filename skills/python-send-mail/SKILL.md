@@ -173,6 +173,18 @@ non-ASCII credential: that host's failure is logged as a WARNING (extra `error_t
 `SMTPNotSupportedError`) and delivery fails over to the next host. Credentials sent with STARTTLS
 off are allowed (an internal relay may offer no TLS) and logged as a WARNING naming the host.
 
+### Internationalised addresses (SMTPUTF8)
+
+`empfänger@müller.de` works as sender or recipient in `send()`, the CLI and
+`validate_email_address()` (lengths are UTF-8 octets). The relay MUST offer SMTPUTF8: the message
+then goes out as raw UTF-8 headers with `SMTPUTF8 BODY=8BITMIME` on `MAIL FROM`, and a domain is
+sent as UTF-8, never punycode. A host that does not offer it raises `SMTPUTF8NotSupportedError`
+(from `btx_lib_mail.lib_mail`; a subclass of `smtplib.SMTPNotSupportedError`), logged as a WARNING
+with `error_type == "SMTPUTF8NotSupportedError"`; delivery fails over to the next host, which is not
+demoted for ASCII recipients, and `DeliveryError` follows only when no host offers it. A decomposed
+(NFD) sender or recipient is normalised to NFC first, and the NFC form is what goes on the wire.
+ASCII-only mail is unchanged and sends no SMTPUTF8 option.
+
 ### Errors: one base to catch
 
 Every exception `send()` and `ConfMail` raise on purpose is a `BtxMailError`. Each also subclasses

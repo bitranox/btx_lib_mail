@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+- Internationalised email addresses (RFC 6531 SMTPUTF8): a non-ASCII local part or domain works as
+  sender or recipient in `send()`, the CLI and `validate_email_address()`. The message carries raw
+  UTF-8 headers and `SMTPUTF8 BODY=8BITMIME` on `MAIL FROM`. A relay without SMTPUTF8 raises
+  `SMTPUTF8NotSupportedError`, which fails over to the next host without demoting the relay.
+- Python 3.15 is declared.
+
+### Changed
+- Address lengths are counted in UTF-8 octets (the same figures for ASCII, whose messages still say
+  "characters").
+- A decomposed (NFD) sender or recipient is sent in NFC.
+
 ## [4.1.0] 2026-10-12 23:07:06
 
 ### Changed

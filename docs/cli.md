@@ -39,14 +39,14 @@ btpc.print_info()
 
 The CLI wraps the same behaviour through rich-click. Highlights:
 
-| Command                           | Purpose                                                      |
-|-----------------------------------|--------------------------------------------------------------|
-| `btx_lib_mail info`               | Print project metadata via `print_info()`.                   |
-| `btx_lib_mail hello`              | Emit the canonical greeting.                                 |
-| `btx_lib_mail fail`               | Trigger `raise_intentional_failure()` to inspect tracebacks. |
-| `btx_lib_mail send`               | Deliver an email using `send()`.                             |
-| `btx_lib_mail validate-email`     | Validate email address syntax.                               |
-| `btx_lib_mail validate-smtp-host` | Validate SMTP host format (IPv6-aware).                      |
+| Command                           | Purpose                                                                   |
+|-----------------------------------|---------------------------------------------------------------------------|
+| `btx_lib_mail info`               | Print project metadata via `print_info()`.                                |
+| `btx_lib_mail hello`              | Emit the canonical greeting.                                              |
+| `btx_lib_mail fail`               | Trigger `raise_intentional_failure()` to inspect tracebacks.              |
+| `btx_lib_mail send`               | Deliver an email using `send()`.                                          |
+| `btx_lib_mail validate-email`     | Validate email address syntax (internationalised addresses are accepted). |
+| `btx_lib_mail validate-smtp-host` | Validate SMTP host format (IPv6-aware).                                   |
 
 ### Global options
 
@@ -71,8 +71,8 @@ its help and exits `0`; `--version`, `--help` and that help are plain text even 
 | Option                                   | Description                                                                                                                                                                           |
 |------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `--host HOST`                            | SMTP host (repeat or comma-separated). Env: `BTX_MAIL_SMTP_HOSTS`.                                                                                                                    |
-| `--recipient EMAIL`                      | Recipient address (repeat or comma-separated). Env: `BTX_MAIL_RECIPIENTS`.                                                                                                            |
-| `--sender EMAIL`                         | Envelope sender. Env: `BTX_MAIL_SENDER`; without either, the first recipient.                                                                                                         |
+| `--recipient EMAIL`                      | Recipient address, internationalised ones included (repeat or comma-separated). Env: `BTX_MAIL_RECIPIENTS`.                                                                           |
+| `--sender EMAIL`                         | Envelope sender, internationalised ones included. Env: `BTX_MAIL_SENDER`; without either, the first recipient.                                                                        |
 | `--recipient-max-count N`                | Most recipients one run accepts (default `1000`). Env: `BTX_MAIL_RECIPIENT_MAX_COUNT`.                                                                                                |
 | `--subject TEXT`                         | Mail subject line (required).                                                                                                                                                         |
 | `--body TEXT`                            | Plain-text email body (required).                                                                                                                                                     |

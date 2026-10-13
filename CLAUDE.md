@@ -34,9 +34,9 @@ src/btx_lib_mail/
   lib_mail.py          # send() and the public re-exports of the private modules below
   _config.py           # ConfMail and the global conf
   _attachments.py      # attachment security: blocklists, path checks, open-once
-  _validation.py       # email and host syntax, EHLO name, durations, recipient and host lists
+  _validation.py       # email and host syntax, NFC and internationalised address syntax, needs_smtputf8, EHLO name, durations, recipient and host lists
   _compose.py          # message assembly: shared body encoded once, per-recipient header lines
-  _transport.py        # Transport protocol, DeliveryOptions, SmtplibTransport (BDAT/DATA), deadline
+  _transport.py        # Transport protocol, DeliveryOptions, SmtplibTransport (BDAT/DATA), SMTPUTF8 MAIL FROM parameters, SMTPUTF8NotSupportedError, deadline
   _common.py           # logger, SkipKind (what a warn-mode warning left out), printable(), is_valid_unicode()
   _descriptor_path.py  # descriptor_path(): the path the kernel holds for an open file (per OS)
   errors.py            # BtxMailError and its subclasses
@@ -52,6 +52,7 @@ tests/
   test_cli_send.py             # send command: settings sources, --env-file, --password-file, --json, real server
   test_deadline.py             # delivery deadline against a dripping server
   test_errors.py               # BtxMailError hierarchy at every raise site
+  test_international_addresses.py # NFC, internationalised syntax, SMTPUTF8 on the wire, failover, CLI
   test_lib_mail.py             # configuration, validators, attachment rules, orchestration
   test_limits.py               # per-call ceilings: address length, recipient and attachment counts
   log_capture.py               # everything_logged(), assert_never_logged(): a secret in text, bytes or AUTH PLAIN form
@@ -76,7 +77,8 @@ tests/
   `Transport` (`SmtplibTransport` streams DATA/BDAT, one connection per recipient)
 - **EHLO name**: `ConfMail.smtp_local_hostname` / `send(local_hostname=)` / `--local-hostname` /
   `BTX_MAIL_SMTP_LOCAL_HOSTNAME`; unset, `_default_local_hostname()` computes smtplib's default once per process
-- **Validation**: `validate_email_address()` and `validate_smtp_host()` are public;
+- **Validation**: `validate_email_address()` and `validate_smtp_host()` are public; the address check
+  accepts internationalised addresses (RFC 6531, lengths in UTF-8 octets) and `send()` NFC-normalises them;
   `validate_smtp_host()` refuses a host carrying `@` or `/`, or an interior whitespace or
   control character, without echoing the value, and a malformed port, bracket, host name
   (empty or over-long label, label hyphen, over 253 characters, non-IP bracket content)

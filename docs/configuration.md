@@ -104,6 +104,10 @@ Key behaviours:
   `raise_on_invalid_recipient=True`). Set either to `False` on the config, or pass it to
   `send()`, to log a warning and skip the file or address instead. Neither has a CLI flag
   or environment variable.
+- A relay without SMTPUTF8 cannot take a message with a non-ASCII address: that host counts as
+  failed for that recipient (WARNING with `error_type == "SMTPUTF8NotSupportedError"`), the next
+  host is tried, and `DeliveryError` follows only when none offers it. ASCII recipients keep using
+  the relay.
 - The socket timeout defaults to `conf.smtp_timeout` (30 seconds). Override the
   value via the `timeout=` argument, the `--timeout` CLI flag, or the
   `BTX_MAIL_SMTP_TIMEOUT` environment variable / `--env-file` entry. It bounds each socket

@@ -34,6 +34,9 @@ What you get:
 - **Subjects and bodies that encode correctly.** Umlauts, emoji, CJK, a subject that is
   only a full stop: all handled by the standard library's modern email machinery, not by
   a regex someone wrote at 2am. No more `Grüße` arriving as `GrÃ¼ÃŸe` in a customer's name.
+- **Internationalised addresses (RFC 6531 SMTPUTF8).** `empfänger@müller.de` works as sender or
+  recipient, NFC-normalised, and is sent as UTF-8 to relays that offer SMTPUTF8; ASCII mail is
+  unchanged.
 - **No more hand-rolling smtplib.** No MIME assembly, no dot-stuffing, no failover loop.
   One function call, or one command.
 - **A command-line mailer.** `btx-lib-mail send ...` turns any shell into a mail client,
@@ -73,6 +76,12 @@ send(
     smtphosts=["smtp.example.com:587"],
     credentials=("mailer", "DUMMY-PLANTED-password"),
 )
+```
+
+Send to an internationalised address (the relay must offer SMTPUTF8):
+
+```python
+send(mail_from="alerts@example.com", mail_recipients=["empfänger@müller.de"], mail_subject="Grüße", mail_body="Hallo.", smtphosts=["smtp.example.com:587"])
 ```
 
 Attach a huge file without running out of memory (streamed, never buffered whole):

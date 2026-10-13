@@ -106,8 +106,8 @@ passed positionally; every other one is keyword-only.
 
 | Parameter                      | Type                                        | Default | Notes                                                                                                                                                                                                                                                                                                                                                                                                        |
 |--------------------------------|---------------------------------------------|---------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `mail_from`                    | `str`                                       | -       | Envelope sender address (`local@domain`).                                                                                                                                                                                                                                                                                                                                                                    |
-| `mail_recipients`              | `str \| Sequence[str]`                      | -       | One address or a sequence. Each is stripped of surrounding whitespace and quotes, lower-cased, deduplicated and validated.                                                                                                                                                                                                                                                                                   |
+| `mail_from`                    | `str`                                       | -       | Envelope sender address (`local@domain`); NFC-normalised, and may be internationalised.                                                                                                                                                                                                                                                                                                                      |
+| `mail_recipients`              | `str \| Sequence[str]`                      | -       | One address or a sequence. Each is stripped of surrounding whitespace and quotes, NFC-normalised, lower-cased when ASCII, deduplicated and validated; an internationalised address is accepted.                                                                                                                                                                                                              |
 | `mail_subject`                 | `str`                                       | -       | UTF-8 subject line of at most 4096 characters. A longer one, a line break, a control character other than TAB, or invalid Unicode is refused with `InvalidInputError` before any delivery.                                                                                                                                                                                                                   |
 | `mail_body`                    | `str`                                       | `""`    | Optional plain-text body.                                                                                                                                                                                                                                                                                                                                                                                    |
 | `mail_body_html`               | `str`                                       | `""`    | Optional HTML body (UTF-8).                                                                                                                                                                                                                                                                                                                                                                                  |
@@ -281,7 +281,20 @@ member, never on the message text.
 - `validate_email_address(address: str) -> None` raises `InvalidInputError` unless the
   address matches `EMAIL_PATTERN` (`local@domain.tld`) and keeps to RFC 5321's lengths: at most
   64 characters before the `@` and 254 in all. A refusal for length names the length, not the
-  address.
+  address. It also accepts an internationalised address (RFC 6531: a non-ASCII local part, domain,
+  or both, such as `empfänger@müller.de`); there the lengths are UTF-8 octets, and the message says
+  "UTF-8 octets" instead of "characters". It only checks: it does not return the NFC form `send()` uses.
+
+### Internationalised addresses
+
+`send()` strips, NFC-normalises and validates the sender and every recipient, and sends the NFC form
+(an ASCII address is lower-cased as before; a non-ASCII one keeps its case). A message with a
+non-ASCII sender or recipient goes out as UTF-8 (RFC 6532 headers) and announces `SMTPUTF8` on
+`MAIL FROM`; a domain is sent as UTF-8, never converted to punycode. A relay that does not advertise
+SMTPUTF8 raises `SMTPUTF8NotSupportedError` (importable from `btx_lib_mail.lib_mail`; a subclass of
+`smtplib.SMTPNotSupportedError`) for that recipient. It counts as a failed host for that recipient
+only: the next host is tried and `DeliveryError` follows when none offers SMTPUTF8. ASCII mail
+sends no option and is unchanged.
 - `validate_smtp_host(host: str) -> None` raises `InvalidInputError` unless `host` is one of
   `hostname`, `hostname:port`, `[IP]`, `[IP]:port` (an IPv6 or IPv4 address in brackets),
   with a port of ASCII digits in 1-65535. A host carrying `@` or `/` or an interior whitespace or control character is
