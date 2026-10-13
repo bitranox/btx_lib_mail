@@ -217,7 +217,8 @@ def _reset_lookups_in_child() -> None:
         lookup.after_fork_in_child()
 
 
-if sys.platform != "win32":  # Windows has no fork
+# Windows has no fork, and neither do some POSIX builds (Emscripten, WASI).
+if sys.platform != "win32" and hasattr(os, "register_at_fork"):
     os.register_at_fork(after_in_child=_reset_lookups_in_child)
 
 # Shared by every SmtplibTransport built without a lookup of its own, so the

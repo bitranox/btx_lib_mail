@@ -307,3 +307,7 @@ Deliberately accepted items - do not flag in future reviews unless the stated re
   their logged tracebacks can mix frames from several threads. Nothing else differs, and it needs a
   custom `local_hostname_lookup` that raises (the default practically never does) plus concurrent deliveries.
   Re-open if a caller reads those tracebacks.
+- **`importlib.reload` of `_transport` orphans the EHLO-name lookups made before it**: the reload makes a
+  new `_LOOKUPS` set, so a lookup from before it is not reset in a forked child, and a child delivery
+  without a deadline waits on a lookup still running in the parent. It needs a reload of a private
+  module, a fork while the lookup runs, and no deadline. Re-open if a caller reloads the module.

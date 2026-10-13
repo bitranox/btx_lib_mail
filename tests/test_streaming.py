@@ -1356,6 +1356,45 @@ def test_a_forked_child_reuses_a_name_its_parent_already_found(ehlo_server: tupl
     assert handler.ehlo_names == ["parent.example.test", "parent.example.test"]
 
 
+@pytest.mark.os_posix
+def test_a_forked_child_runs_a_lookup_that_raised_in_its_parent_again(ehlo_server: tuple[Controller, _EhloRecordingHandler]) -> None:
+    if sys.platform == "win32":
+        pytest.skip("os.fork does not exist on Windows")
+    controller, handler = ehlo_server
+    parent = os.getpid()
+    release = threading.Event()
+    raised = threading.Event()
+
+    def lookup() -> str:
+        if os.getpid() == parent:
+            # Raises only after the delivery stopped waiting, so no waiter collects the error before the fork.
+            release.wait(timeout=_HELD_LOOKUP_SECONDS)
+            raised.set()
+            raise OSError("resolver unreachable")
+        return "child.example.test"
+
+    transport = _transport.SmtplibTransport(local_hostname_lookup=lookup)
+    try:
+        first, _took = _bounded(lambda: _deliver_once(controller.port, transport, deadline=_EHLO_DEADLINE))
+    finally:
+        release.set()
+    assert raised.wait(timeout=5.0)
+    time.sleep(0.1)  # the run marks itself finished right after raising
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        child = os.fork()
+    if child == 0:
+        try:
+            _deliver_once(controller.port, transport, deadline=None)
+        except BaseException:
+            os._exit(1)
+        os._exit(0)
+    exit_code = _wait_for_child(child, seconds=5.0)
+
+    assert (first, exit_code) == (None, 0)
+    assert handler.ehlo_names == ["[127.0.0.1]", "child.example.test"]
+
+
 def _wait_for_child(pid: int, *, seconds: float) -> int | None:
     """Return the child's exit code, or None after killing a child still running when seconds pass."""
     if sys.platform == "win32":
