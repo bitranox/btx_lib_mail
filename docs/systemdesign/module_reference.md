@@ -254,7 +254,9 @@ redacted at the credential fields (`smtp_password`, `smtphosts`).
 * `SmtplibTransport` - sends `SMTPUTF8 BODY=8BITMIME` on `MAIL FROM` for a non-ASCII address; opens an `smtplib.SMTP` session (EHLO name: the configured one,
   else `_default_local_hostname()`, smtplib's rule, run once per process on a daemon thread by
   `_LocalHostnameLookup`; with a deadline, waited for at most `_EHLO_NAME_SHARE_OF_DEADLINE` of
-  the time left after connecting, else `_address_literal()` of the connection's own address;
+  the time left, before connecting, else `_local_address_literal()` of the connection's own address;
+  an attempt is registered only once its thread started, and one left running by the parent of a
+  fork counts as not started;
   `SmtplibTransport(local_hostname_lookup=)` substitutes the lookup), STARTTLS
   with `_build_starttls_context(verify=...)`, a `WARNING` when credentials go out with
   STARTTLS off, AUTH through `_authenticate` (stdlib login for ASCII credentials, RFC 4616

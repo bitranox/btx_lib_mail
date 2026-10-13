@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import _socket
 import base64
+import os
 import smtplib
 import socket
 import ssl
@@ -86,6 +87,8 @@ class _LookupAttempt:
     done: threading.Event = field(default_factory=threading.Event)
     name: str | None = None
     error: Exception | None = None
+    # The process that started the thread: a forked child inherits this object but not the thread.
+    pid: int = field(default_factory=os.getpid)
 
 
 class _LocalHostnameLookup:
@@ -133,11 +136,20 @@ class _LocalHostnameLookup:
 
     def _current_attempt(self) -> _LookupAttempt:
         with self._lock:
-            if self._attempt is None:
-                self._attempt = _LookupAttempt()
-                # A daemon thread: a lookup that never returns must not keep the process alive.
-                threading.Thread(target=self._run, args=(self._attempt,), name="btx-lib-mail-ehlo-name", daemon=True).start()
-            return self._attempt
+            attempt = self._attempt
+            # An attempt still running in the parent of a fork has no thread in this process.
+            if attempt is None or (attempt.pid != os.getpid() and not attempt.done.is_set()):
+                attempt = self._start()
+            return attempt
+
+    def _start(self) -> _LookupAttempt:
+        attempt = _LookupAttempt()
+        # A daemon thread: a lookup that never returns must not keep the process alive.
+        threading.Thread(target=self._run, args=(attempt,), name="btx-lib-mail-ehlo-name", daemon=True).start()
+        # Registered only once its thread runs: a start refused at a thread limit leaves
+        # nothing behind that a later delivery would wait for forever.
+        self._attempt = attempt
+        return attempt
 
     def _run(self, attempt: _LookupAttempt) -> None:
         try:
@@ -167,13 +179,19 @@ def _address_literal(address: str) -> str:
     return f"[IPv6:{host}]" if ":" in host else f"[{host}]"
 
 
-# The name a session is created with while its EHLO name is still being looked
-# up; it is replaced before EHLO is sent, so no server ever sees it.
-_EHLO_NAME_UNDECIDED: Final = "[127.0.0.1]"
+def _local_address_literal(connection_socket: socket.socket) -> str:
+    """Return the address literal of the local end of a connected socket."""
+    return _address_literal(str(connection_socket.getsockname()[0]))
+
+
+# The name a session is created with until its EHLO name is decided after
+# connecting. Empty, so a session that ever reached EHLO without it being set
+# would send a bare EHLO a server refuses rather than a plausible wrong name.
+_EHLO_NAME_UNDECIDED: Final = ""
 
 # How much of the time a deadline has left a delivery waits for a lookup still
-# running. The rest is for the session itself: waiting all of it would let the
-# deadline end a session that the stand-in address literal could have finished.
+# running, before it connects. The rest is for the session itself: waiting all of
+# it would let the deadline end a session the stand-in address literal could finish.
 _EHLO_NAME_SHARE_OF_DEADLINE: Final = 0.5
 
 # Shared by every SmtplibTransport built without a lookup of its own, so the
@@ -294,9 +312,10 @@ class SmtplibTransport:
 
         Args:
             local_hostname_lookup: Returns the name to announce in EHLO when a
-                delivery names none; called at most once per transport. None
-                uses this host's own name, looked up once per process and
-                shared by every transport built without one.
+                delivery names none; run once per transport, and again only
+                after a run that raised. None uses this host's own name, looked
+                up once per process and shared by every transport built
+                without one.
         """
         self._local_hostname = _PROCESS_LOCAL_HOSTNAME if local_hostname_lookup is None else _LocalHostnameLookup(local_hostname_lookup)
 
@@ -321,42 +340,42 @@ class SmtplibTransport:
                 timeouts, deadline).
         """
         hostname, port = parse_smtp_host(host)
-        ehlo_name = self._ehlo_name_before_connecting(delivery)
         # Not connected yet: the greeting is read while connecting, and that read
         # belongs inside the deadline. No `with`: its exit turns a QUIT reply other
         # than 221 into a failure, after the server has already taken the message.
-        smtp_connection = _SessionSMTP(local_hostname=ehlo_name or _EHLO_NAME_UNDECIDED, timeout=delivery.timeout)
+        smtp_connection = _SessionSMTP(local_hostname=_EHLO_NAME_UNDECIDED, timeout=delivery.timeout)
         try:
             with _session_deadline(smtp_connection, delivery.deadline):
+                # Waited for before connecting: a relay may drop a connection left idle after its greeting.
+                ehlo_name = self._ehlo_name_in_time(delivery, smtp_connection)
                 smtp_connection.connect(hostname, port or 0)
-                if ehlo_name is None:
-                    # smtplib reads the name only when it sends EHLO, after the greeting.
-                    smtp_connection.local_hostname = self._ehlo_name_in_time(smtp_connection)
+                # smtplib reads the name only when it sends EHLO, after the greeting.
+                smtp_connection.local_hostname = ehlo_name or _own_address_literal(smtp_connection)
                 _prepare_session(smtp_connection, host=host, delivery=delivery)
                 _send_message(smtp_connection, sender=sender, recipient=recipient, message=message)
                 _quit_quietly(smtp_connection)
         finally:
             smtp_connection.close()
 
-    def _ehlo_name_before_connecting(self, delivery: DeliveryOptions) -> str | None:
-        """Return the EHLO name if it is known before connecting, else None.
+    def _ehlo_name_in_time(self, delivery: DeliveryOptions, smtp_connection: _SessionSMTP) -> str | None:
+        """Return the EHLO name, or None when the lookup does not finish in time.
 
-        Without a deadline the lookup is waited for, as smtplib would. With one
-        it is only started here, so it runs while the connection opens.
+        Without a deadline the lookup is waited for, as smtplib would; with one,
+        for at most `_EHLO_NAME_SHARE_OF_DEADLINE` of the time left.
         """
         if delivery.local_hostname:
             return delivery.local_hostname
-        return self._local_hostname.name_within(None if delivery.deadline is None else 0.0)
+        if smtp_connection.ends_at is None:
+            return self._local_hostname.name_within(None)
+        left = max(0.0, smtp_connection.ends_at - time.monotonic())
+        return self._local_hostname.name_within(left * _EHLO_NAME_SHARE_OF_DEADLINE)
 
-    def _ehlo_name_in_time(self, smtp_connection: _SessionSMTP) -> str:
-        """Return the looked-up EHLO name, or the connection's own address if it is not found in time."""
-        left = None if smtp_connection.ends_at is None else max(0.0, smtp_connection.ends_at - time.monotonic())
-        name = self._local_hostname.name_within(None if left is None else left * _EHLO_NAME_SHARE_OF_DEADLINE)
-        if name is not None:
-            return name
-        if smtp_connection.sock is None:
-            raise smtplib.SMTPServerDisconnected("the connection closed before EHLO")
-        return _address_literal(str(smtp_connection.sock.getsockname()[0]))
+
+def _own_address_literal(smtp_connection: smtplib.SMTP) -> str:
+    """Return the address literal a connected session announces when its name was not found in time."""
+    if smtp_connection.sock is None:
+        raise smtplib.SMTPServerDisconnected("the connection closed before EHLO")
+    return _local_address_literal(smtp_connection.sock)
 
 
 def _prepare_session(smtp_connection: smtplib.SMTP, *, host: str, delivery: DeliveryOptions) -> None:

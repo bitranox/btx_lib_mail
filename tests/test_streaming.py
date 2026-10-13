@@ -8,11 +8,14 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import io
+import os
+import signal
 import smtplib
 import socket
 import ssl
 import threading
 import time
+import warnings
 from email import message_from_bytes
 from typing import IO, TYPE_CHECKING, Any, cast
 
@@ -1117,7 +1120,8 @@ class _HeldLookup:
 
 
 _HELD_LOOKUP_SECONDS = 10.0
-_EHLO_DEADLINE = 0.5
+# Wide enough that the session left after the wait finishes on a slow CI runner.
+_EHLO_DEADLINE = 2.0
 
 
 def _deliver_once(port: int, transport: _transport.SmtplibTransport, *, deadline: float | None) -> None:
@@ -1230,10 +1234,130 @@ def test_without_a_deadline_nothing_connects_until_the_ehlo_name_is_known() -> N
         worker.join(timeout=5.0)
 
 
-def _deliver_quietly(port: int, transport: _transport.SmtplibTransport) -> None:
+def _deliver_quietly(port: int, transport: _transport.SmtplibTransport, deadline: float | None = None) -> None:
     """Deliver to a listener that hangs up straight away; the failure is not what the test is about."""
     with contextlib.suppress(OSError):
-        _deliver_once(port, transport, deadline=None)
+        _deliver_once(port, transport, deadline=deadline)
+
+
+@pytest.mark.os_agnostic
+def test_with_a_deadline_nothing_connects_while_the_ehlo_name_is_awaited() -> None:
+    """The wait for a slow lookup comes before the connection opens, so no relay sees an idle session."""
+    lookup = _HeldLookup("slow.example.test")
+    transport = _transport.SmtplibTransport(local_hostname_lookup=lookup)
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        port = listener.getsockname()[1]
+        started = time.monotonic()
+        worker = threading.Thread(target=_deliver_quietly, args=(port, transport, _EHLO_DEADLINE), daemon=True)
+        worker.start()
+        try:
+            listener.settimeout(5.0)
+            connection, _address = listener.accept()
+            connected_after = time.monotonic() - started
+            connection.close()
+        finally:
+            lookup.release.set()
+        worker.join(timeout=5.0)
+
+    waited = _EHLO_DEADLINE * _transport._EHLO_NAME_SHARE_OF_DEADLINE
+    assert connected_after >= waited * 0.9, f"connected after {connected_after:.2f} s, before the {waited} s wait for the name ended"
+
+
+@pytest.mark.os_agnostic
+def test_a_lookup_thread_that_cannot_start_is_tried_again_by_the_next_delivery(
+    ehlo_server: tuple[Controller, _EhloRecordingHandler], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A thread limit reached once must not leave a lookup registered that nothing will ever finish."""
+    controller, handler = ehlo_server
+    real_start = threading.Thread.start
+    refused: list[str] = []
+
+    def refuse_the_first_lookup_thread(thread: threading.Thread) -> None:
+        if thread.name == "btx-lib-mail-ehlo-name" and not refused:
+            refused.append(thread.name)
+            raise RuntimeError("can't start new thread")
+        real_start(thread)
+
+    # The thread limit is the operating system's; Thread.start is where it surfaces.
+    monkeypatch.setattr(threading.Thread, "start", refuse_the_first_lookup_thread)
+    transport = _transport.SmtplibTransport(local_hostname_lookup=lambda: "retried.example.test")
+
+    first, _took = _bounded(lambda: _deliver_once(controller.port, transport, deadline=None))
+    second, _took = _bounded(lambda: _deliver_once(controller.port, transport, deadline=None))
+
+    assert isinstance(first, RuntimeError)
+    assert second is None
+    assert handler.ehlo_names == ["retried.example.test"]
+
+
+@pytest.mark.os_posix
+def test_a_forked_child_starts_its_own_lookup(ehlo_server: tuple[Controller, _EhloRecordingHandler]) -> None:
+    """The parent's lookup thread does not exist in a child, so an attempt still running at the fork is not the child's."""
+    controller, handler = ehlo_server
+    parent = os.getpid()
+    release = threading.Event()
+
+    def lookup() -> str:
+        if os.getpid() == parent:
+            release.wait(timeout=_HELD_LOOKUP_SECONDS)
+            return "parent.example.test"
+        return "child.example.test"
+
+    transport = _transport.SmtplibTransport(local_hostname_lookup=lookup)
+    try:
+        first, _took = _bounded(lambda: _deliver_once(controller.port, transport, deadline=_EHLO_DEADLINE))
+        with warnings.catch_warnings():
+            # Python 3.12+ warns that forking a process with threads may deadlock; this child only sends mail.
+            warnings.simplefilter("ignore", DeprecationWarning)
+            child = os.fork()
+        if child == 0:
+            try:
+                _deliver_once(controller.port, transport, deadline=None)
+            except BaseException:
+                os._exit(1)
+            os._exit(0)
+        exit_code = _wait_for_child(child, seconds=5.0)
+    finally:
+        release.set()
+
+    assert first is None
+    assert exit_code == 0
+    assert handler.ehlo_names == ["[127.0.0.1]", "child.example.test"]
+
+
+def _wait_for_child(pid: int, *, seconds: float) -> int | None:
+    """Return the child's exit code, or None after killing a child still running when seconds pass."""
+    ends_at = time.monotonic() + seconds
+    while time.monotonic() < ends_at:
+        done, status = os.waitpid(pid, os.WNOHANG)
+        if done:
+            return os.waitstatus_to_exitcode(status)
+        time.sleep(0.05)
+    os.kill(pid, signal.SIGKILL)
+    os.waitpid(pid, 0)
+    return None
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("deadline", [None, _EHLO_DEADLINE], ids=["no-deadline", "deadline"])
+def test_an_empty_ehlo_name_is_replaced_by_the_address_literal(ehlo_server: tuple[Controller, _EhloRecordingHandler], deadline: float | None) -> None:
+    controller, handler = ehlo_server
+    transport = _transport.SmtplibTransport(local_hostname_lookup=lambda: "")
+
+    error, _took = _bounded(lambda: _deliver_once(controller.port, transport, deadline=deadline))
+
+    assert error is None, f"{type(error).__name__}: {error}"
+    assert handler.ehlo_names == ["[127.0.0.1]"]
+
+
+@pytest.mark.os_agnostic
+def test_the_stand_in_literal_is_read_from_the_connections_own_ipv6_address() -> None:
+    try:
+        listener = socket.create_server(("::1", 0), family=socket.AF_INET6)
+    except OSError:
+        pytest.skip("no IPv6 loopback on this machine")
+    with listener, socket.create_connection(("::1", listener.getsockname()[1]), timeout=5.0) as client:
+        assert _transport._local_address_literal(client) == "[IPv6:::1]"
 
 
 @pytest.mark.os_agnostic

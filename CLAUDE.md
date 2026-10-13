@@ -301,3 +301,8 @@ Deliberately accepted items - do not flag in future reviews unless the stated re
   delivered twice, because ASCII addresses are lower-cased and deduplicated but a non-ASCII one is
   not. Lower-casing a non-ASCII local part is not safe (case folding is locale and relay specific),
   and the input needs a hand-built list to hit it. Re-open if a caller reports a duplicate delivery.
+- **A failed EHLO-name lookup raises one exception object in every delivery waiting on it**: the
+  deliveries that wait on the same failed lookup at once each re-raise the lookup's own exception, so
+  their logged tracebacks can mix frames from several threads. Nothing else differs, and it needs a
+  custom `local_hostname_lookup` that raises (the default never does) plus concurrent deliveries.
+  Re-open if a caller reads those tracebacks.
