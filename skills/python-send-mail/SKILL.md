@@ -202,8 +202,11 @@ off are allowed (an internal relay may offer no TLS) and logged as a WARNING nam
 then goes out as raw UTF-8 headers with `SMTPUTF8 BODY=8BITMIME` on `MAIL FROM`, and a domain is
 sent as UTF-8, never punycode. A host that does not offer it raises `SMTPUTF8NotSupportedError`
 (from `btx_lib_mail.lib_mail`; a subclass of `smtplib.SMTPNotSupportedError`), logged as a WARNING
-with `error_type == "SMTPUTF8NotSupportedError"`; delivery fails over to the next host, which is not
-demoted for ASCII recipients, and `DeliveryError` follows only when no host offers it. A decomposed
+with `error_type == "SMTPUTF8NotSupportedError"`; that message fails over to the next host, and
+`DeliveryError` follows only when no host offers it. The refusal is about the message, not the host,
+so the relay is NOT moved to the back of the host order. Each recipient is a separate message, so
+in one `send()` an ASCII recipient (with an ASCII sender) still goes through that relay first and
+normally: ASCII-only mail needs no SMTPUTF8. A decomposed
 (NFD) sender or recipient is normalised to NFC first, and the NFC form is what goes on the wire.
 ASCII-only mail is unchanged and sends no SMTPUTF8 option.
 
