@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from btx_lib_mail import InvalidInputError, validate_email_address
+from btx_lib_mail import InvalidInputError, _compose, validate_email_address
 from btx_lib_mail._validation import address_length_problem, distinct_recipients, needs_smtputf8, to_nfc
 
 UMLAUT_LOCAL = "empfänger@example.com"
@@ -141,3 +141,34 @@ def test_to_nfc_leaves_an_ascii_address_alone() -> None:
 )
 def test_smtputf8_is_needed_exactly_when_an_address_holds_non_ascii(sender: str, recipient: str, expected: bool) -> None:
     assert needs_smtputf8(sender, recipient) is expected
+
+
+@pytest.mark.os_agnostic
+def test_an_ascii_envelope_folds_exactly_as_before() -> None:
+    [block] = _compose.envelope_header_lines(sender="absender@example.com", subject="Hallo", recipients=["empfaenger@example.com"])
+
+    assert block.startswith(b"Subject: Hallo\r\nFrom: absender@example.com\r\nTo: empfaenger@example.com\r\nDate: ")
+    assert block.isascii()
+
+
+@pytest.mark.os_agnostic
+def test_a_non_ascii_recipient_gets_a_raw_utf8_to_header() -> None:
+    [block] = _compose.envelope_header_lines(sender="absender@example.com", subject="Hallo", recipients=[UMLAUT_LOCAL])
+
+    assert b"\r\nTo: " + UMLAUT_LOCAL.encode() + b"\r\n" in block
+    assert b"\r\nFrom: absender@example.com\r\n" in block
+
+
+@pytest.mark.os_agnostic
+def test_a_non_ascii_sender_gets_a_raw_utf8_from_header_in_every_block() -> None:
+    blocks = _compose.envelope_header_lines(sender=UMLAUT_DOMAIN, subject="Hallo", recipients=["a@example.com", "b@example.com"])
+
+    assert all(b"\r\nFrom: " + UMLAUT_DOMAIN.encode() + b"\r\n" in block for block in blocks)
+
+
+@pytest.mark.os_agnostic
+def test_the_subject_and_from_lines_are_the_same_for_ascii_and_utf8_recipients() -> None:
+    subject = "Quartalsbericht für Müller & Söhne " * 6
+    ascii_block, utf8_block = _compose.envelope_header_lines(sender="absender@example.com", subject=subject, recipients=["a@example.com", UMLAUT_LOCAL])
+
+    assert ascii_block.split(b"To: ")[0] == utf8_block.split(b"To: ")[0]

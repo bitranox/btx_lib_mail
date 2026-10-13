@@ -2509,12 +2509,12 @@ def test_each_recipient_gets_its_own_to_header() -> None:
 def test_split_header_lines_equal_folding_all_four_together() -> None:
     """Folding Subject and From once and To and Date per recipient changes no byte of the headers."""
     subject = "Quartalsbericht für Müller & Söhne " * 6 + "🙂" * 20
-    block = _compose.envelope_header_lines(sender="absender@example.com", subject=subject, recipients=["empfänger@example.com"])[0]
+    block = _compose.envelope_header_lines(sender="absender@example.com", subject=subject, recipients=["empfaenger@example.com"])[0]
     date = message_from_bytes(block)["Date"]
     whole = EmailMessage()
     whole["Subject"] = subject
     whole["From"] = "absender@example.com"
-    whole["To"] = "empfänger@example.com"
+    whole["To"] = "empfaenger@example.com"
     whole["Date"] = date
 
     assert block == _compose._header_lines(whole)

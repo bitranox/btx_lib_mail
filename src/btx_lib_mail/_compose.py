@@ -166,6 +166,13 @@ def envelope_header_lines(*, sender: str, subject: str, recipients: Sequence[str
     joining the shared lines to a recipient's own gives the same bytes as
     folding all four together.
 
+    A From or To header whose address holds non-ASCII is folded with
+    `email.policy.SMTPUTF8`, which writes the address as raw UTF-8 (RFC 6532);
+    that message travels as SMTPUTF8 (`needs_smtputf8`). Every other header is
+    folded with `email.policy.SMTP`, so a message whose addresses are ASCII is
+    unchanged byte for byte. The subject keeps its RFC 2047 encoded-words, which
+    are valid in both kinds of message.
+
     Args:
         sender: The From address.
         subject: The message subject.
@@ -174,21 +181,70 @@ def envelope_header_lines(*, sender: str, subject: str, recipients: Sequence[str
     Returns:
         One block of CRLF-terminated header lines per recipient, in order,
         with no trailing blank line.
+
+    Examples:
+        >>> [block] = envelope_header_lines(sender="a@example.com", subject="Hi", recipients=["b@m" + chr(0xFC) + "ller.de"])
+        >>> b"To: b@m" + chr(0xFC).encode() + b"ller.de" in block
+        True
     """
-    shared = EmailMessage()
-    shared["Subject"] = subject
-    shared["From"] = sender
-    shared_lines = _header_lines(shared)
+    shared_lines = _header_lines(_single_header("Subject", subject)) + _address_header_lines("From", sender)
     date = formatdate(localtime=True)
     return tuple(shared_lines + _recipient_header_lines(recipient, date) for recipient in recipients)
 
 
 def _recipient_header_lines(recipient: str, date: str) -> bytes:
-    """Return one recipient's own header lines (To, Date)."""
-    envelope = EmailMessage()
-    envelope["To"] = recipient
-    envelope["Date"] = date
-    return _header_lines(envelope)
+    r"""Return one recipient's own header lines (To, Date).
+
+    Args:
+        recipient: The To address.
+        date: The Date header value shared by the whole call.
+
+    Returns:
+        The CRLF-terminated To and Date lines.
+
+    Examples:
+        >>> _recipient_header_lines("b@example.com", "Tue, 13 Oct 2026 10:00:00 +0200")
+        b'To: b@example.com\r\nDate: Tue, 13 Oct 2026 10:00:00 +0200\r\n'
+    """
+    return _address_header_lines("To", recipient) + _header_lines(_single_header("Date", date))
+
+
+def _address_header_lines(name: str, address: str) -> bytes:
+    r"""Return one address header, folded as raw UTF-8 when the address holds non-ASCII.
+
+    Args:
+        name: The header name (`From` or `To`).
+        address: The bare address.
+
+    Returns:
+        The CRLF-terminated header line(s).
+
+    Examples:
+        >>> _address_header_lines("To", "b@example.com")
+        b'To: b@example.com\r\n'
+        >>> _address_header_lines("To", "b@m" + chr(0xFC) + "ller.de") == ("To: b@m" + chr(0xFC) + "ller.de\r\n").encode()
+        True
+    """
+    return _header_lines(_single_header(name, address), utf8=not address.isascii())
+
+
+def _single_header(name: str, value: str) -> EmailMessage:
+    """Return a message holding one header, so it can be folded on its own.
+
+    Args:
+        name: The header name.
+        value: The header value.
+
+    Returns:
+        A headers-only `EmailMessage`.
+
+    Examples:
+        >>> _single_header("Subject", "Hi")["Subject"]
+        'Hi'
+    """
+    message = EmailMessage()
+    message[name] = value
+    return message
 
 
 def message_for(header_lines: bytes, body: IO[bytes]) -> IO[bytes]:
@@ -347,18 +403,25 @@ def _build_body_message(plain_body: str, html_body: str) -> EmailMessage:
     return message
 
 
-def _header_lines(message: EmailMessage) -> bytes:
-    """Serialise a message's headers to CRLF bytes, without the terminating blank line.
+def _header_lines(message: EmailMessage, *, utf8: bool = False) -> bytes:
+    r"""Serialise a message's headers to CRLF bytes, without the terminating blank line.
 
     Args:
         message: The message whose headers are serialised.
+        utf8: Fold with `email.policy.SMTPUTF8` (raw UTF-8, RFC 6532) instead
+            of `email.policy.SMTP` (RFC 2047 encoded-words).
 
     Returns:
         The CRLF-terminated header lines, with no trailing blank line.
+
+    Examples:
+        >>> _header_lines(_single_header("To", "b@example.com"))
+        b'To: b@example.com\r\n'
     """
+    policy = email_policy.SMTPUTF8 if utf8 else email_policy.SMTP
     out = bytearray()
     for name, value in message.items():
-        out += email_policy.SMTP.fold_binary(name, value)
+        out += policy.fold_binary(name, value)
     return bytes(out)
 
 
