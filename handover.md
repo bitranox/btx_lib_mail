@@ -1,79 +1,76 @@
-# STALE - read 2026-10-13, work continued
+# Handover - 2026-10-13 18:10, btx_lib_mail 4.3.0 released; only the twin's CI was still running
 
-Read `OPEN-WORK.md` first. Rank 10 is now "ship the bounded EHLO-name lookup".
+Read `OPEN-WORK.md` first. Its top item is now rank 90 (one question to the owner).
 
 ## In flight
 
-- Nothing running. The fix for the old rank 10 (the delivery deadline did not cover the EHLO-name
-  lookup) is done, reviewed three times and merged into local `master` at `b2fe7aa`.
-- NOT released, NOT pushed: `master` is 4 commits ahead of `origin/master` (v4.2.0 +
-  b700973, f081348, 6a0ddaa, b2fe7aa). CHANGELOG has it under `[Unreleased]`.
-- The skill twin is committed in bitranox-skills as `62335be3` (SKILL.md, a `.skillwriter`
-  checklist, plugin 8.19.4, CHANGELOG), also NOT pushed. Push it only after PyPI serves the
-  btx_lib_mail release.
+- bitranox-skills `62335be3` (the coding-python-send-mail twin, plugin 8.19.4) is pushed. Its CI
+  was still `in_progress` when this was written (a `ci_wait.py --sha 62335be3f005...` waiter).
+  Check it first:
+  `gh run list --repo bitranox/bitranox-skills --commit 62335be3f005dbae873bcd857a99ceec0e092023 --json workflowName,status,conclusion`
+- Nothing else is part-done.
 
 ## Committed, or not
 
-- Both repos: everything committed, nothing pushed. This handover commit adds `handover.md` and
-  `OPEN-WORK.md` on btx_lib_mail `master`.
-- Gitignored, by design: `EXECUTION-USER-REVIEW.md` holds today's owner decisions verbatim and my
-  autonomous choices (the 0.5 share, wait before connect, the accepted items, version 4.3.0 proposed).
+- btx_lib_mail: release commit `7a32163`, tag `v4.3.0`, backlog commit `2080033`; all pushed, CI
+  and CodeQL green on both commits, the Release workflow green, PyPI serving 4.3.0 (wheel and sdist).
+  This handover commit is local and NOT pushed (it would only trigger another CI run).
+- `make clean-all` has run: the main checkout has no `.venv`. Run `make test` once before anything
+  that needs it.
+- Memory fact `reference-btx-lib-mail-s-delivery-deadline-does-not-cover-the-ehlo-name-lookup`
+  was rewritten through `factedit.py apply` (new title: "...covers the EHLO-name lookup only from
+  4.3.0"). The store's own git commit is the dreamer's job, so it was not committed here.
 
 ## Decided, and why
 
-- Owner: "Bound it, fallback". With a deadline the lookup runs on a daemon thread; the delivery waits
-  for it at most half the deadline's time left, BEFORE connecting, then announces its own socket
-  address as an RFC 5321 literal; later deliveries use the name. Without a deadline: waited for
-  before connecting, as before.
-- Wait before connect (review M3): a relay with a short command timeout drops a connection left
-  idle after its greeting.
-- Fork: `os.register_at_fork` resets every `_LocalHostnameLookup` in a child (fresh lock, keeps only
-  a name already found), registered only where fork exists.
-- Placeholder EHLO name is `""`, so broken wiring sends a bare EHLO servers refuse.
-- Accepted in CLAUDE.md: one exception object re-raised by concurrent waiters; `importlib.reload`
-  of `_transport` orphans earlier lookups.
+- Owner, this session: "Release 4.3.0 now" (minor, because of the new keyword-only
+  `SmtplibTransport(local_hostname_lookup=)`), fix mode "ask-big".
+- `make testintegration` exits 5 with 0 tests: no test carries the `integration` marker, so the
+  lane is empty by construction. That did not block the release.
+- `docs/api.md` gained one sentence documenting `local_hostname_lookup` (it was only in the
+  CHANGELOG and module_reference). That was a small fix under ask-big, shipped in `7a32163`.
 
 ## Decided against, and why
 
-- Document-only: the owner chose to bound the lookup.
-- Failing the delivery when the lookup overruns: the owner's option said nothing that works today
-  may fail.
-- A pid check for fork safety: it cannot see a lock or an event a parent thread held at the fork.
+- Re-running the fork-hook re-review: the owner's 17:46 message asked for it, but it was already
+  done. `6a0ddaa`'s review led to `b2fe7aa`, the next review found nothing, and both are on origin.
 
 ## Still open, untouched
 
-- Rank 10: ship it (owner's go needed for the public push and the PyPI publish) - see `OPEN-WORK.md`.
-- Rank 90: ask whether to roll the uv cooldown install docs out to the templates.
+- Rank 90: ask whether to roll the uv-cooldown install docs out to the templates.
 - Rank 95: the Windows STARTTLS deadline test overran once.
 
 ## Lessons for the next nap
 
-- When a review says the wait for a slow dependency moved after a connection opened, put the
-  bounded wait BEFORE the connect: an idle connection after a greeting is a relay timeout waiting
-  to happen, and a deadline does not prevent it.
-- When a test's expected stand-in value equals the code's placeholder (loopback literal vs
-  `[127.0.0.1]` placeholder), the test cannot see broken wiring: make the placeholder a value no
-  correct outcome can have.
-- When a test must fork while a FAILED background attempt is still registered, make the attempt
-  fail only after its waiter stopped waiting: a waiter that collects the error forgets the attempt,
-  so the mutation under test survives (measured on the first try).
-- When a blocked Bash command combined `git add` with `git commit`, the add never ran and the gate
-  judged the old index: stage in its own command (recurrence of feedback-repo-gate-pre-evaluates).
-- When a pytest marker like `os_posix` is used in this repo, it selects nothing: guard the test body
-  with `sys.platform` (a reviewer caught a fork test that would fail every Windows cell).
-- tooling: the memory fact reference-btx-lib-mail-s-delivery-deadline-does-not-cover-the-ehlo-name-lookup
-  becomes wrong once the release ships; rewrite it then (it is part of rank 10's work).
+- When a user message asks for steps that the handover or git already shows as done (a re-review,
+  a merge, a release question), check `git merge-base --is-ancestor <sha> origin/master` and say
+  it is done, rather than redoing it.
+- When pushing bitranox-skills, expect its pre-push hook (`repo-gate.py --pre-push`, the full
+  pytest suite, about 5 minutes) to outlast the 120 s Bash timeout: run the push backgrounded or
+  with a long timeout.
+- When gate.py runs `make testintegration` on a repo with no `integration` marker, it reports
+  `[FAIL] (rc=2)`: grep the log for `(exit code: 5)` and the marker count before treating it as red.
+- (carried) When a review says the wait for a slow dependency moved after a connection opened,
+  put the bounded wait BEFORE the connect.
+- (carried) When a test's expected stand-in value equals the code's placeholder, the test cannot
+  see broken wiring: make the placeholder a value no correct outcome can have.
+- (carried) When a test must fork while a FAILED background attempt is still registered, make the
+  attempt fail only after its waiter stopped waiting.
+- (carried) When a blocked Bash command combined `git add` with `git commit`, the add never ran:
+  stage in its own command.
+- (carried) When a pytest marker like `os_posix` is used in this repo, it selects nothing: guard
+  the test body with `sys.platform`.
 - (carried) When a subagent reports a skill description as unchanged, measure it with `len()`.
-- (carried) When the auto-mode classifier refuses `git filter-branch` over an unpushed range, ask the
-  owner once with the exact scope.
-- (carried) When the auto-mode classifier refuses a scripted deletion of tracked backlog lines, use
-  the Edit tool with the exact lines.
+- (carried) When the auto-mode classifier refuses `git filter-branch` over an unpushed range, ask
+  the owner once with the exact scope.
+- (carried) When the auto-mode classifier refuses a scripted deletion of tracked backlog lines,
+  use the Edit tool with the exact lines.
 - (carried) When a peer session says your commit is not on origin, run `git ls-remote` first.
-- (carried) When a tool repo's mirrored skill changed, commit the twin locally BEFORE the tool repo's
-  release push; push the twin after PyPI serves the release.
+- (carried) When a tool repo's mirrored skill changed, commit the twin locally BEFORE the tool
+  repo's release push; push the twin after PyPI serves the release.
 - (carried) When a GREEN retrieval run answers by inference, re-ask for a direct quote.
-- (carried) tooling: after `make clean-all` the main checkout has no `.venv`, so an old-vs-new probe
-  printed nothing with stderr hidden; run old source through another checkout's interpreter.
+- (carried) tooling: after `make clean-all` the main checkout has no `.venv`, so an old-vs-new
+  probe printed nothing with stderr hidden; run old source through another checkout's interpreter.
 - (carried) When you brief a background subagent to run a long gate, write "run it in the
   FOREGROUND" in the first brief.
 - (carried) When applying the cpXY-wheel rule, check the CI runners first.
@@ -86,8 +83,8 @@ Read `OPEN-WORK.md` first. Rank 10 is now "ship the bounded EHLO-name lookup".
 - (carried) Proposed, awaiting the owner: rewrite the fact
   reference-aiosmtpd-controller-start-flakes-on-macos-ci-retry-fresh-port-then-skip (cause is the
   ~30 s `getfqdn` on macOS runners).
-- (carried) When a mirrored skill changes on both sides, expect repo-gate's commit gates to deadlock;
-  a commit matching the other side's uncommitted text passes.
+- (carried) When a mirrored skill changes on both sides, expect repo-gate's commit gates to
+  deadlock; a commit matching the other side's uncommitted text passes.
 - (carried) When a worktree-isolated session runs Bash, keep each command plain.
 - (carried) When a counterexample goes into a question to the user, check it is refused for the
   reason the question claims.
@@ -109,25 +106,23 @@ Read `OPEN-WORK.md` first. Rank 10 is now "ship the bounded EHLO-name lookup".
 
 ## Exact next action
 
-Rank 10: ask the owner ONE question - release btx_lib_mail 4.3.0 now (push `master`, `make release`
-after bumping, watch CI per the ci_wait rule, then push bitranox-skills `62335be3` once PyPI serves
-4.3.0, then rewrite the stale memory fact) versus hold. Check `git log origin/master..master` and
-the bitranox-skills `git log origin/master..master` first; other sessions push there too.
+1. Confirm the bitranox-skills `62335be3` CI is green (command under "In flight"). If it is red,
+   that comes first.
+2. Rank 90: ask the owner ONE question, whether to roll the uv / uvx 7-day-cooldown install docs
+   out to bitranox_template_py_lib and bitranox_template_py_cli. If yes, move the line to those
+   repos' `OPEN-WORK.md` and do the work there.
 
 ## Files that matter
 
-- `src/btx_lib_mail/_transport.py` - `_LocalHostnameLookup`, `_LOOKUPS`, `_reset_lookups_in_child`,
-  `_EHLO_NAME_SHARE_OF_DEADLINE`, `SmtplibTransport.deliver` / `_ehlo_name_in_time`
-- `tests/test_streaming.py` - the EHLO section (`_HeldLookup` and after, fork tests)
-- `CHANGELOG.md` `[Unreleased]`; `CLAUDE.md` Key Architecture "EHLO name" and the accepted list
-- `skills/python-send-mail/SKILL.md` "The EHLO name" (twin: bitranox-skills
-  `plugins/bitranox/skills/coding-python-send-mail/`)
+- `OPEN-WORK.md` - ranks 90 and 95
+- `tests/test_deadline.py` - the rank-95 STARTTLS deadline test
+- `CHANGELOG.md` `[4.3.0]`; `docs/api.md` Transport section
 
 ## How to verify
 
-- `make test` passes (1190 passed at b2fe7aa).
-- `.venv/bin/pyright --pythonplatform Windows src tests` reports 0 errors.
-- `git log --oneline origin/master..master` lists the 4 unpushed commits plus this handover commit.
+- `git ls-remote --tags origin v4.3.0` lists the tag.
+- `curl -s https://pypi.org/pypi/btx_lib_mail/json` reports `info.version` 4.3.0.
+- `git log --oneline origin/master..master` lists only this handover commit.
 
 > Read this, then replace the first line with `# STALE - read <date>, work continued`. Do not
 > delete it - if this session ends badly it is the only record of where things stood.
