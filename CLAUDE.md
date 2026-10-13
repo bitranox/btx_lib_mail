@@ -77,6 +77,9 @@ tests/
   `Transport` (`SmtplibTransport` streams DATA/BDAT, one connection per recipient)
 - **EHLO name**: `ConfMail.smtp_local_hostname` / `send(local_hostname=)` / `--local-hostname` /
   `BTX_MAIL_SMTP_LOCAL_HOSTNAME`; unset, `_default_local_hostname()` computes smtplib's default once per process
+  on a daemon thread (`_LocalHostnameLookup`); a delivery with a deadline waits for it at most half the time left,
+  then announces its connection's own address literal (`_address_literal`); tests substitute the lookup through
+  `SmtplibTransport(local_hostname_lookup=)`
 - **Validation**: `validate_email_address()` and `validate_smtp_host()` are public; the address check
   accepts internationalised addresses (RFC 6531, lengths in UTF-8 octets) and checks their NFC form, which `send()` delivers to;
   `validate_smtp_host()` refuses a host carrying `@` or `/`, or an interior whitespace or

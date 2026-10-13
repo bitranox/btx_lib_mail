@@ -1051,14 +1051,6 @@ def ehlo_server() -> Iterator[tuple[Controller, _EhloRecordingHandler]]:
         controller.stop()
 
 
-@pytest.fixture
-def fresh_local_name_cache() -> Iterator[None]:
-    """Start and end with no cached default EHLO name, so a planted one never leaks."""
-    _transport._default_local_hostname.cache_clear()
-    yield
-    _transport._default_local_hostname.cache_clear()
-
-
 def _send_two(controller: Controller, **kwargs: Any) -> None:
     lib_mail.send(
         mail_from="sender@example.com",
@@ -1072,46 +1064,214 @@ def _send_two(controller: Controller, **kwargs: Any) -> None:
 
 
 @pytest.mark.os_agnostic
-def test_a_configured_ehlo_name_is_announced_without_a_lookup(
-    ehlo_server: tuple[Controller, _EhloRecordingHandler], monkeypatch: pytest.MonkeyPatch, fresh_local_name_cache: None
-) -> None:
+def test_a_configured_ehlo_name_is_announced_without_a_lookup(ehlo_server: tuple[Controller, _EhloRecordingHandler]) -> None:
     controller, handler = ehlo_server
 
-    def refuse(name: str = "") -> str:
-        raise AssertionError(f"the client called socket.getfqdn({name!r}) although a name was configured")
+    def refuse() -> str:
+        raise AssertionError("the client looked up its own name although one was configured")
 
-    monkeypatch.setattr(socket, "getfqdn", refuse)
+    transport = _transport.SmtplibTransport(local_hostname_lookup=refuse)
 
-    _send_two(controller, config=lib_mail.ConfMail(smtp_local_hostname="relay.example.test"))
+    _send_two(controller, config=lib_mail.ConfMail(smtp_local_hostname="relay.example.test"), transport=transport)
 
     assert handler.ehlo_names == ["relay.example.test", "relay.example.test"]
 
 
 @pytest.mark.os_agnostic
-def test_the_default_ehlo_name_is_resolved_once_per_process(
-    ehlo_server: tuple[Controller, _EhloRecordingHandler], monkeypatch: pytest.MonkeyPatch, fresh_local_name_cache: None
-) -> None:
+def test_the_default_ehlo_name_is_looked_up_once_per_transport(ehlo_server: tuple[Controller, _EhloRecordingHandler]) -> None:
     controller, handler = ehlo_server
-    lookups: list[str] = []
+    lookups: list[None] = []
 
-    def counting_getfqdn(name: str = "") -> str:
-        lookups.append(name)
+    def counting_lookup() -> str:
+        lookups.append(None)
         return "client.example.test"
 
-    monkeypatch.setattr(socket, "getfqdn", counting_getfqdn)
+    transport = _transport.SmtplibTransport(local_hostname_lookup=counting_lookup)
 
-    _send_two(controller)
-    _send_two(controller)
+    _send_two(controller, transport=transport)
+    _send_two(controller, transport=transport)
 
     assert handler.ehlo_names == ["client.example.test"] * 4
-    assert len(lookups) == 1, f"one lookup per process, got {len(lookups)} for four connections"
+    assert len(lookups) == 1, f"one lookup per transport, got {len(lookups)} for four connections"
+
+
+@pytest.mark.os_agnostic
+def test_every_default_transport_shares_the_process_wide_lookup() -> None:
+    """The default lookup is a reverse DNS query; two transports must not each pay for it."""
+    assert _transport.SmtplibTransport()._local_hostname is _transport.SmtplibTransport()._local_hostname
+
+
+class _HeldLookup:
+    """An EHLO-name lookup that does not answer until the test releases it (slow reverse DNS)."""
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+        self.release = threading.Event()
+        self.calls = 0
+
+    def __call__(self) -> str:
+        self.calls += 1
+        # Bounded, so a regression cannot leave the thread waiting after the test.
+        self.release.wait(timeout=_HELD_LOOKUP_SECONDS)
+        return self._name
+
+
+_HELD_LOOKUP_SECONDS = 10.0
+_EHLO_DEADLINE = 0.5
+
+
+def _deliver_once(port: int, transport: _transport.SmtplibTransport, *, deadline: float | None) -> None:
+    transport.deliver(
+        host=f"127.0.0.1:{port}",
+        sender="sender@example.com",
+        recipient="rcpt@example.com",
+        message=io.BytesIO(b"Subject: s\r\n\r\nbody\r\n"),
+        delivery=DeliveryOptions(credentials=None, use_starttls=False, starttls_verify=False, timeout=5.0, deadline=deadline),
+    )
+
+
+def _bounded(call: Callable[[], object]) -> tuple[BaseException | None, float]:
+    """Run call bounded by the test rather than by the deadline under test; return what it raised and how long it took."""
+    outcome: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            call()
+        except BaseException as error:
+            outcome.append(error)
+
+    started = time.monotonic()
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(timeout=5.0)
+    assert not worker.is_alive(), "the delivery was still running after 5 s"
+    return (outcome[0] if outcome else None), time.monotonic() - started
+
+
+@pytest.mark.os_agnostic
+def test_a_slow_ehlo_name_lookup_does_not_hold_a_delivery_past_its_deadline(ehlo_server: tuple[Controller, _EhloRecordingHandler]) -> None:
+    controller, handler = ehlo_server
+    lookup = _HeldLookup("late.example.test")
+    try:
+        error, took = _bounded(lambda: _deliver_once(controller.port, _transport.SmtplibTransport(local_hostname_lookup=lookup), deadline=_EHLO_DEADLINE))
+    finally:
+        lookup.release.set()
+
+    assert error is None, f"{type(error).__name__}: {error}"
+    assert took < _EHLO_DEADLINE, f"took {took:.2f} s against a {_EHLO_DEADLINE} s deadline"
+    assert handler.ehlo_names == ["[127.0.0.1]"], "the connection's own address stands in for the name not found yet"
+
+
+@pytest.mark.os_agnostic
+def test_an_ehlo_name_found_late_is_announced_by_the_next_delivery(ehlo_server: tuple[Controller, _EhloRecordingHandler]) -> None:
+    controller, handler = ehlo_server
+    lookup = _HeldLookup("late.example.test")
+    transport = _transport.SmtplibTransport(local_hostname_lookup=lookup)
+    try:
+        first, _took = _bounded(lambda: _deliver_once(controller.port, transport, deadline=_EHLO_DEADLINE))
+    finally:
+        lookup.release.set()
+    second, _took = _bounded(lambda: _deliver_once(controller.port, transport, deadline=None))
+
+    assert (first, second) == (None, None)
+    assert handler.ehlo_names == ["[127.0.0.1]", "late.example.test"]
+    assert lookup.calls == 1, "the lookup still running is reused, not started again"
+
+
+@pytest.mark.os_agnostic
+def test_an_ehlo_name_found_within_the_deadline_is_announced(ehlo_server: tuple[Controller, _EhloRecordingHandler]) -> None:
+    controller, handler = ehlo_server
+
+    def quick_enough() -> str:
+        time.sleep(_EHLO_DEADLINE / 10)
+        return "prompt.example.test"
+
+    error, _took = _bounded(lambda: _deliver_once(controller.port, _transport.SmtplibTransport(local_hostname_lookup=quick_enough), deadline=_EHLO_DEADLINE))
+
+    assert error is None
+    assert handler.ehlo_names == ["prompt.example.test"]
+
+
+@pytest.mark.os_agnostic
+def test_without_a_deadline_a_slow_ehlo_name_lookup_is_waited_for(ehlo_server: tuple[Controller, _EhloRecordingHandler]) -> None:
+    controller, handler = ehlo_server
+    lookup = _HeldLookup("slow.example.test")
+    timer = threading.Timer(_EHLO_DEADLINE, lookup.release.set)
+    timer.start()
+    try:
+        error, took = _bounded(lambda: _deliver_once(controller.port, _transport.SmtplibTransport(local_hostname_lookup=lookup), deadline=None))
+    finally:
+        timer.cancel()
+        lookup.release.set()
+
+    assert error is None
+    assert took >= _EHLO_DEADLINE
+    assert handler.ehlo_names == ["slow.example.test"]
+
+
+@pytest.mark.os_agnostic
+def test_without_a_deadline_nothing_connects_until_the_ehlo_name_is_known() -> None:
+    """A slow lookup must not leave a connection idle long enough for the relay to drop it."""
+    lookup = _HeldLookup("slow.example.test")
+    transport = _transport.SmtplibTransport(local_hostname_lookup=lookup)
+    with socket.create_server(("127.0.0.1", 0)) as listener:
+        port = listener.getsockname()[1]
+        worker = threading.Thread(target=_deliver_quietly, args=(port, transport), daemon=True)
+        worker.start()
+        try:
+            listener.settimeout(_EHLO_DEADLINE)
+            with pytest.raises(TimeoutError):
+                listener.accept()
+        finally:
+            lookup.release.set()
+        listener.settimeout(5.0)
+        connection, _address = listener.accept()
+        connection.close()
+        worker.join(timeout=5.0)
+
+
+def _deliver_quietly(port: int, transport: _transport.SmtplibTransport) -> None:
+    """Deliver to a listener that hangs up straight away; the failure is not what the test is about."""
+    with contextlib.suppress(OSError):
+        _deliver_once(port, transport, deadline=None)
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("deadline", [None, 5.0], ids=["no-deadline", "deadline"])
+def test_a_failed_ehlo_name_lookup_fails_the_delivery_and_is_tried_again(ehlo_server: tuple[Controller, _EhloRecordingHandler], deadline: float | None) -> None:
+    controller, handler = ehlo_server
+    answers: list[str | OSError] = [OSError("resolver unreachable"), "retried.example.test"]
+
+    def flaky() -> str:
+        answer = answers.pop(0)
+        if isinstance(answer, OSError):
+            raise answer
+        return answer
+
+    transport = _transport.SmtplibTransport(local_hostname_lookup=flaky)
+    first, _took = _bounded(lambda: _deliver_once(controller.port, transport, deadline=deadline))
+    second, _took = _bounded(lambda: _deliver_once(controller.port, transport, deadline=deadline))
+
+    assert isinstance(first, OSError)
+    assert "resolver unreachable" in str(first)
+    assert second is None
+    assert handler.ehlo_names == ["retried.example.test"]
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    ("address", "literal"),
+    [("192.0.2.7", "[192.0.2.7]"), ("2001:db8::7", "[IPv6:2001:db8::7]"), ("fe80::1%eth0", "[IPv6:fe80::1]")],
+    ids=["ipv4", "ipv6", "ipv6-zone"],
+)
+def test_the_stand_in_ehlo_name_is_an_rfc_5321_address_literal(address: str, literal: str) -> None:
+    assert _transport._address_literal(address) == literal
 
 
 @pytest.mark.os_agnostic
 @pytest.mark.parametrize("from_env", [False, True], ids=["option", "env"])
 def test_the_cli_announces_the_local_hostname(
     ehlo_server: tuple[Controller, _EhloRecordingHandler],
-    fresh_local_name_cache: None,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     from_env: bool,

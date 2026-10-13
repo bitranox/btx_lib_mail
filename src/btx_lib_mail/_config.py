@@ -85,8 +85,11 @@ class ConfMail(SecretSafeModel):
             server's final reply. `smtp_timeout` bounds each socket
             operation, so a server answering one byte at a time never trips
             it; this bounds the whole session, after which the host counts
-            as failed and the next one is tried. `None` sets no bound. Must
-            be positive and finite when set.
+            as failed and the next one is tried. A lookup of this host's own
+            name for `EHLO` still running is waited for at most half the
+            time left; then the connection's own address stands in as an
+            address literal. `None` sets no bound. Must be positive and
+            finite when set.
         attachment_allowed_extensions: When set, only these extensions are
             allowed (whitelist mode). When `None`, the blocked extensions
             list applies instead.

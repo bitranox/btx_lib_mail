@@ -121,7 +121,11 @@ Key behaviours:
   (or `local_hostname=`, `--local-hostname`, `BTX_MAIL_SMTP_LOCAL_HOSTNAME`).
   Unset, it uses this host's fully qualified name, looked up by reverse DNS
   once per process and reused for every connection; set a name where that
-  lookup is slow or returns something a relay rejects.
+  lookup is slow or returns something a relay rejects. With a delivery
+  deadline set, a delivery waits for that lookup at most half the time the
+  deadline has left; if it has not finished, the connection's own address
+  stands in as an address literal (`[192.0.2.7]`, `[IPv6:2001:db8::7]`), and
+  the name is used by the deliveries after it has been found.
 
 ## Credentials
 

@@ -73,7 +73,9 @@ logged and the next is tried without re-rendering the message.
 Each recipient gets its own SMTP connection, so any fixed per-connection cost is paid once
 per recipient. The client's `EHLO` name is one such cost when it is not configured: it is
 then this host's fully qualified name, found by reverse DNS. The library looks it up once
-per process and reuses it; set `smtp_local_hostname` (or `send(local_hostname=...)`,
+per process, on a background thread, and reuses it. A delivery with a deadline waits for it at
+most half the time the deadline has left, then announces its connection's own address as an
+address literal instead. Set `smtp_local_hostname` (or `send(local_hostname=...)`,
 `--local-hostname`, `BTX_MAIL_SMTP_LOCAL_HOSTNAME`) to skip the lookup entirely or to
 announce a name the relay accepts.
 

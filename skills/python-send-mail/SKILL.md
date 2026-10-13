@@ -401,7 +401,10 @@ The client announces itself in `EHLO` with the name from `send(local_hostname=..
 `ConfMail.smtp_local_hostname` (on `conf` or on your `config=`); on the CLI, `--local-hostname`, else
 `BTX_MAIL_SMTP_LOCAL_HOSTNAME`. Unset, it is this host's fully qualified name found by reverse DNS
 (an address literal such as `[192.0.2.7]` when the name has no dot), looked up once per process and
-reused. Set it when a send stalls before the first byte reaches the relay while the relay itself
+reused. The lookup runs in the background and the deadline still holds: with `delivery_deadline` set,
+a delivery waits for it at most half the time the deadline has left, then announces its connection's
+own address as an address literal (`[192.0.2.7]`, `[IPv6:2001:db8::7]`), and the deliveries after the
+lookup finishes announce the name it found. Without a deadline the lookup is waited for. Set it when a send stalls before the first byte reaches the relay while the relay itself
 answers instantly (slow reverse DNS), or when the relay refuses the greeting (`501 ... HELO/EHLO
 argument invalid`), typically from a container whose hostname has no domain part:
 

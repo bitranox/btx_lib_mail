@@ -2215,11 +2215,7 @@ def test_without_a_dotted_fqdn_the_default_is_the_host_address_literal(monkeypat
     """Mirrors smtplib: RFC 5321 wants a domain in EHLO, else an address literal."""
     monkeypatch.setattr(socket, "getfqdn", _bare_host_fqdn)
     monkeypatch.setattr(socket, "gethostbyname", _documentation_address)
-    _transport._default_local_hostname.cache_clear()
-    try:
-        assert _transport._default_local_hostname() == "[192.0.2.9]"
-    finally:
-        _transport._default_local_hostname.cache_clear()
+    assert _transport._default_local_hostname() == "[192.0.2.9]"
 
 
 @pytest.mark.os_agnostic
@@ -2229,11 +2225,7 @@ def test_an_unresolvable_host_name_falls_back_to_loopback(monkeypatch: pytest.Mo
 
     monkeypatch.setattr(socket, "getfqdn", _bare_host_fqdn)
     monkeypatch.setattr(socket, "gethostbyname", unresolvable)
-    _transport._default_local_hostname.cache_clear()
-    try:
-        assert _transport._default_local_hostname() == "[127.0.0.1]"
-    finally:
-        _transport._default_local_hostname.cache_clear()
+    assert _transport._default_local_hostname() == "[127.0.0.1]"
 
 
 # ---------------------------------------------------------------------------

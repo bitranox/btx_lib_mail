@@ -252,7 +252,10 @@ redacted at the credential fields (`smtp_password`, `smtphosts`).
 * `SMTPUTF8NotSupportedError` - a relay without SMTPUTF8 for a message that needs it; a message refusal
   in the host order (the host is not demoted).
 * `SmtplibTransport` - sends `SMTPUTF8 BODY=8BITMIME` on `MAIL FROM` for a non-ASCII address; opens an `smtplib.SMTP` session (EHLO name: the configured one,
-  else `_default_local_hostname()`, smtplib's rule computed once per process), STARTTLS
+  else `_default_local_hostname()`, smtplib's rule, run once per process on a daemon thread by
+  `_LocalHostnameLookup`; with a deadline, waited for at most `_EHLO_NAME_SHARE_OF_DEADLINE` of
+  the time left after connecting, else `_address_literal()` of the connection's own address;
+  `SmtplibTransport(local_hostname_lookup=)` substitutes the lookup), STARTTLS
   with `_build_starttls_context(verify=...)`, a `WARNING` when credentials go out with
   STARTTLS off, AUTH through `_authenticate` (stdlib login for ASCII credentials, RFC 4616
   AUTH PLAIN in UTF-8 otherwise), then streams the message in `STREAM_CHUNK_SIZE`
