@@ -1,46 +1,41 @@
-# Handover - 2026-10-13, SMTPUTF8 ready to implement
+# Handover - 2026-10-13 14:20, SMTPUTF8 Tasks 1-5 done, Task 6 (docs) next
 
-Read `OPEN-WORK.md` first. The top open item is rank 8 (SMTPUTF8, the owner's choice); its design and
-implementation plan are written and committed on a branch, nothing of the code is started.
+Read `OPEN-WORK.md` first. Rank 8 (SMTPUTF8) and rank 9 (your uv/cooldown install docs) both land in
+plan Task 6.
 
 ## In flight
 
-- Rank 8 SMTPUTF8: design `docs/plans/2026-10-13-smtputf8-design.md` (on master, b0a58d7) and plan
-  `docs/plans/2026-10-13-smtputf8.md` (only on branch `smtputf8`, 18e0b53). The branch has a worktree
-  at `.claude/worktrees/smtputf8` with a Python 3.14 `.venv` already synced. No plan task started.
-- 4.1.0 (ConfMail `coerce_numbers_to_str`) is released and done: PyPI, tag v4.1.0, CI/Release green,
-  checked against the template's EmailConfig.
+- Rank 8 SMTPUTF8 is executing `docs/plans/2026-10-13-smtputf8.md` with
+  bitranox:process-agents-subagent-driven-development, in the worktree `.claude/worktrees/smtputf8`
+  (branch `smtputf8`). Tasks 1-5 are committed and reviewed clean. Task 6 (documentation) is not
+  started; after it come the final whole-branch review (opus) and its triage of the minor findings,
+  then the merge into master and the tfbpr release.
+- The progress ledger is `.claude/worktrees/smtputf8/.bitranox/sdd/progress.md` (git-excluded). It
+  holds the per-task review counts, the Minor findings (a)-(q) for the final review, and the three
+  rank-9 user requests word for word. Trust it and `git log` over memory.
 
 ## Committed, or not
 
-- master: 68c2fec (backlog: Windows deadline flake) and b0a58d7 (design) are committed locally, NOT
-  pushed. This handover and the rank-8 backlog line are committed with them (see the last commit).
-- Branch `smtputf8`: 18e0b53 (plan), unpushed, based on b0a58d7.
-- Uncommitted by design: `EXECUTION-USER-REVIEW.md` (gitignored) holds every owner answer of the
-  SMTPUTF8 design (Q1 A, Q2 A, Q3 A, sections 1-3, the two documentation requirements) and the 4.1.0
-  release decisions.
-- `make clean-all` ran after 4.1.0: the main checkout has no `.venv`.
+- Branch `smtputf8` (unpushed): 18e0b53 plan, 5de539f validation, 381dcd6 combining marks, c1908d3
+  composition, 8e91e47 transport, 98bed44 NFC sender, a127659 declare Python 3.15. Worktree clean.
+- master (unpushed): 68c2fec, b0a58d7, fa567b2, plus this handover and the OPEN-WORK edits.
+- Uncommitted by design: `EXECUTION-USER-REVIEW.md` (gitignored; this session's four owner decisions
+  merged in at the top), `.bitranox/` in the worktree (excluded via `.git/info/exclude`).
 
 ## Decided, and why
 
-- SMTPUTF8 (owner, 2026-10-12/13): non-ASCII local parts AND domains over SMTPUTF8, no punycode; a
-  relay without SMTPUTF8 is a failed host for that recipient (next host, `DeliveryError` last); NFC
-  before validating and sending; every new function fully documented (doctests); README and docs in
-  the same change.
-- Found while planning, not in the design: `smtplib.SMTPNotSupportedError` is an `OSError`, so
-  `_HostOrder.note_failure` would demote a relay without SMTPUTF8. The plan raises a subclass
-  `SMTPUTF8NotSupportedError` and adds it to `_REPLIES_ABOUT_THE_MESSAGE`; plan Task 6 corrects the
-  design doc to match.
-- The non-ASCII character rule is `str.isprintable()` (measured: refuses controls, every bidi mark,
-  ZWJ, NBSP, lone surrogates, unassigned), not a shared copy of the attachment bidi set.
-- Python 3.15 needs `rtoml>=0.14.0` (first release with cp315 wheels, past the 1-day cooldown); plan
-  Task 5.
-- Windows 3.12 CI flake on 4.1.0 (rank 95): the job was re-run green, the 2.0 s bound NOT widened.
+- Lengths of non-ASCII addresses are reported in "UTF-8 octets"; ASCII messages are unchanged (owner).
+- Combining marks are allowed in IDN domain labels (L*/M*/N*); a label starts with a letter or digit
+  and ends with anything but a hyphen, so Thai words ending in a mark pass (owner + my reading).
+- Python 3.15 declared although PyYAML (dev-only, via bandit) has no cp315 wheel: CI here is
+  GitHub-hosted only and builds it from source; the plan's `--no-build` check was dropped (owner).
+- The rank-9 install docs go into Task 6 as their own commit, not in parallel: two subagents must
+  never edit one worktree at once.
 
 ## Decided against, and why
 
-- No push of the backlog/design commits on their own: a full CI matrix for text files.
-- Running the plan in the old session: it was past 400k tokens of context.
+- Rolling the uv-cooldown install text out to the sibling templates: not asked; ask the owner after
+  this repo ships.
 
 ## Still open, untouched
 
@@ -49,15 +44,29 @@ implementation plan are written and committed on a branch, nothing of the code i
 
 ## Lessons for the next nap
 
-- tooling: the EnterWorktree guard refuses any Bash command whose text contains `git`, even inside
-  `digits` in a pytest `-k` (already added to the lsdsk worktree-guard fact this session).
-- When a release must be tagged while an uncommitted backlog line dirties the tree, copy the file
-  aside, restore the committed copy, `make release`, then put the copy back: a commit would move HEAD
-  off the CI-verified sha.
-- When `uv sync` in a fresh worktree picks Python 3.15 and a compiled dev dependency has no cp315
-  wheel, pass `--python 3.14`.
-- (carried) When a test spawns the btx_lib_mail CLI (or any SMTP client) as a fresh process, pass
-  an explicit EHLO name: a fresh process's reverse DNS lookup takes 35-70 s on macOS CI runners.
+- When you brief a background subagent to run a long gate (make test-all), write "run it in the
+  FOREGROUND" in the first brief; this session briefed run_in_background and had to correct it
+  (recurrence of feedback-a-background-subagent-is-not-woken-by-its-own-backgrounded-wait).
+- When applying the cpXY-wheel rule to a repo, check its CI runners first (`[tool.ci].os`,
+  `runs-on`): on GitHub-hosted runners a missing wheel is a source build, not a blocker; a plan STOP
+  condition built on it blocked Task 5 needlessly (proposed hook change to
+  reference-check-compiled-dependencies-for-cpxy-wheels-before-adding-a-new-python-minor, awaiting go).
+- When a subagent needs a scratch copy, require a dir it creates with `mktemp -d`; one wrote into a
+  shared scratch dir holding another session's files (no clobber this time).
+- When a worktree-isolated session runs Bash, keep each command plain: a shell variable in a path
+  position, `$(...)`, or any command line containing `git` inside a compound gets refused.
+- When a counterexample goes into a question to the user, check it is refused for the reason the
+  question claims (`user@<word>` with no dot fails the two-label rule, not the mark rule).
+- tooling: the harness refuses subagent report files named `*-report.md` in some runs (Task 5 had to
+  put its report in the reply); earlier tasks wrote the same name fine.
+- (carried) tooling: the EnterWorktree guard refuses any Bash command whose text contains `git`, even
+  inside `digits` in a pytest `-k`.
+- (carried) When a release must be tagged while an uncommitted backlog line dirties the tree, copy the
+  file aside, restore the committed copy, `make release`, then put the copy back.
+- (carried) When `uv sync` in a fresh worktree picks Python 3.15 and a compiled dev dependency has no
+  cp315 wheel, pass `--python 3.14`.
+- (carried) When a test spawns the btx_lib_mail CLI (or any SMTP client) as a fresh process, pass an
+  explicit EHLO name: a fresh process's reverse DNS lookup takes 35-70 s on macOS CI runners.
 - (carried) Proposed, awaiting the owner: rewrite the btx_lib_mail fact
   reference-aiosmtpd-controller-start-flakes-on-macos-ci-retry-fresh-port-then-skip; the cause is the
   ~30 s `getfqdn` on macOS runners (`server_hostname` / `local_hostname` fix it).
@@ -79,26 +88,30 @@ implementation plan are written and committed on a branch, nothing of the code i
 
 ## Exact next action
 
-Rank 8: `EnterWorktree` with path `.claude/worktrees/smtputf8`, read
-`docs/plans/2026-10-13-smtputf8.md`, and execute Task 1 with
-bitranox:process-agents-subagent-driven-development (the owner said "yes, handover" to a proposal
-that named subagent-driven execution of Task 1 in the next session - my reading). Tasks run in order 1-6; Task 5 declares Python 3.15. After Task 6: merge into master, then
-the release follows the tfbpr pipeline (minor bump; the skill twin goes to bitranox-skills after PyPI
-serves it).
+Rank 8 + 9: `EnterWorktree` with path `.claude/worktrees/smtputf8`, read
+`.bitranox/sdd/progress.md`, invoke bitranox:process-agents-subagent-driven-development and arm its
+`plan-execution` receipt, invoke bitranox:meta-skill-writer and run its `start` receipt (the skill
+edit needs it), then `python3 <plugin>/skills/process-agents-subagent-driven-development/scripts/task_brief.py docs/plans/2026-10-13-smtputf8.md 6`
+and dispatch Task 6 with the rank-9 requests added as a separate commit. The skill part needs a RED
+retrieval run on the current SKILL.md first (e.g. "install btx-lib-mail safely", "send to
+empfaenger@mueller.de with umlauts") and a `.skillwriter/checklist-<date>-...-mirror.md` in the
+bitranox-skills twin dir `plugins/bitranox/skills/coding-python-send-mail/`. Then the final review
+over `git merge-base master smtputf8`..HEAD with the ledger's Minor list.
 
 ## Files that matter
 
-- `docs/plans/2026-10-13-smtputf8.md` (branch `smtputf8`) - the plan, complete code per task
-- `docs/plans/2026-10-13-smtputf8-design.md` - the agreed design
-- `src/btx_lib_mail/_validation.py`, `_compose.py`, `_transport.py`, `lib_mail.py`
-- `tests/smtp_test_server.py` (aiosmtpd helpers; `run_server` forwards `enable_SMTPUTF8=`)
+- `docs/plans/2026-10-13-smtputf8.md` (branch `smtputf8`) - the plan; Task 6 lists every doc file
+- `.claude/worktrees/smtputf8/.bitranox/sdd/progress.md` - ledger, minors, rank-9 requests verbatim
+- `INSTALL.md` ("Why we recommend uv: supply-chain protection"), `README.md`, `docs/installation.md`
+- `skills/python-send-mail/SKILL.md` and its twin
+  in the bitranox-skills clone (sibling `KI/bitranox-skills`), `plugins/bitranox/skills/coding-python-send-mail/`
+- the sibling `apps/bitranox_template_py_cli/README.md` - "Install uv" model
 - `EXECUTION-USER-REVIEW.md` (gitignored) - the owner's answers, verbatim
 
 ## How to verify
 
-- `git -C .claude/worktrees/smtputf8 log --oneline -1` shows 18e0b53 (the plan).
-- `curl -s https://pypi.org/pypi/btx-lib-mail/json` reports `info.version` 4.1.0.
-- In the worktree, after each task: the task's pytest command, then `make test`.
+- `git -C .claude/worktrees/smtputf8 log --oneline -1` shows a127659 (declare Python 3.15).
+- In the worktree: `make test` passes; `.venv-3.15/bin/python -m pytest -q --no-cov tests/test_international_addresses.py` passes.
 
 > Read this, then replace the first line with `# STALE - read <date>, work continued`. Do not
 > delete it - if this session ends badly it is the only record of where things stood.
