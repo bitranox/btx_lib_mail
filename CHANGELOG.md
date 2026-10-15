@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [4.3.1] 2026-10-15 17:39:07
+
 ### Tests
 
 - The `os_windows`, `os_macos`, `os_linux` and `os_posix` markers now skip a test off its platform
