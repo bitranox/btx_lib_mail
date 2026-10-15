@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import fields
 from typing import TYPE_CHECKING, Any
 
@@ -125,3 +126,20 @@ def data_server() -> Iterator[tuple[Any, CollectingHandler]]:
         yield controller, handler
     finally:
         controller.stop()
+
+
+#: Which platforms each ``os_*`` marker lets a test run on. Registering a marker in pyproject only
+#: silences pytest's unknown-marker warning; without this table a marked test runs everywhere.
+_PLATFORM_MARKERS: dict[str, Callable[[str], bool]] = {
+    "os_windows": lambda platform: platform == "win32",
+    "os_macos": lambda platform: platform == "darwin",
+    "os_linux": lambda platform: platform.startswith("linux"),
+    "os_posix": lambda platform: platform != "win32",
+}
+
+
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    """Skip a test whose ``os_*`` marker names a platform other than the running one."""
+    for name, runs_on in _PLATFORM_MARKERS.items():
+        if item.get_closest_marker(name) is not None and not runs_on(sys.platform):
+            pytest.skip(f"marked {name}; this is {sys.platform}")
