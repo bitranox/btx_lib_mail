@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [4.5.0] 2026-10-16 15:48:15
+
 ### Added
 - `send(inline_images=...)`: images the HTML body shows in place. A mapping of Content-ID to image
   path; the HTML references each as `cid:<Content-ID>`. The HTML and the images travel as a
