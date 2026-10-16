@@ -4,6 +4,11 @@ Attachments are validated against multiple security checks before being
 included in outgoing mail. This prevents accidental (or malicious) attachment
 of sensitive files, dangerous executables, or oversized payloads.
 
+Inline images (`send(inline_images=...)`) pass the same checks, with three differences: a
+violation always raises (warn mode included), only the image types of `INLINE_IMAGE_TYPES` pass,
+narrowed by the extension allowlist or blocklist below, and they do not count toward
+`attachment_max_count`. See [Inline (CID) images](api.md#inline-cid-images).
+
 ### Security Checks
 
 1. **Path Traversal Prevention**  -  A path with a `..` component (`../x`, `a/../b`)

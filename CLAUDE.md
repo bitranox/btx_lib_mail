@@ -34,8 +34,9 @@ src/btx_lib_mail/
   lib_mail.py          # send() and the public re-exports of the private modules below
   _config.py           # ConfMail and the global conf
   _attachments.py      # attachment security: blocklists, path checks, open-once
+  _inline_images.py    # inline (CID) images: INLINE_IMAGE_TYPES, Content-ID checks, opened through the attachment checks
   _validation.py       # email and host syntax, NFC and internationalised address syntax, needs_smtputf8, EHLO name, durations, recipient and host lists
-  _compose.py          # message assembly: shared body encoded once, per-recipient header lines
+  _compose.py          # message assembly: shared body encoded once (mixed/alternative/related), per-recipient header lines
   _transport.py        # Transport protocol, DeliveryOptions, SmtplibTransport (BDAT/DATA), SMTPUTF8 MAIL FROM parameters, SMTPUTF8NotSupportedError, deadline
   _common.py           # logger, SkipKind (what a warn-mode warning left out), printable(), is_valid_unicode()
   _descriptor_path.py  # descriptor_path(): the path the kernel holds for an open file (per OS)
@@ -52,6 +53,7 @@ tests/
   test_cli_send.py             # send command: settings sources, --env-file, --password-file, --json, real server
   test_deadline.py             # delivery deadline against a dripping server
   test_errors.py               # BtxMailError hierarchy at every raise site
+  test_inline_images.py        # inline (CID) images: MIME tree, Content-ID, refusals, DATA/BDAT round trip, --inline-image
   test_international_addresses.py # NFC, internationalised syntax, SMTPUTF8 on the wire, failover, CLI
   test_lib_mail.py             # configuration, validators, attachment rules, orchestration
   test_limits.py               # per-call ceilings: address length, recipient and attachment counts
@@ -127,7 +129,7 @@ tests/
 - Docstrings: Google style (Args/Returns/Raises/Examples, Attributes for classes), enforced on `src/` by ruff's `D` rules
 - `bandit` security scanning
 - `import-linter` enforces one layers contract (a module imports only from layers below it; modules in one layer
-  are independent): `cli` > `lib_mail` > `_compose` > `_config | _transport` > `_attachments | _validation` >
+  are independent): `cli` > `lib_mail` > `_compose` > `_config | _transport | _inline_images` > `_attachments | _validation` >
   `secret_safety | errors` > `_common | _descriptor_path` > `behaviors`
 
 ## Public API
@@ -152,6 +154,7 @@ from btx_lib_mail import (
     DANGEROUS_DIRECTORIES_POSIX,
     DANGEROUS_DIRECTORIES_WINDOWS,
     SENSITIVE_PATH_PATTERNS,
+    INLINE_IMAGE_TYPES,
     # Secret safety
     SecretSafeModel,
     redact_validation_error,

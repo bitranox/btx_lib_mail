@@ -113,6 +113,7 @@ passed positionally; every other one is keyword-only.
 | `mail_body_html`               | `str`                                       | `""`    | Optional HTML body (UTF-8).                                                                                                                                                                                                                                                                                                                                                                                  |
 | `smtphosts`                    | `Sequence[str] \| AbstractSet[str] \| None` | `None`  | Host override: a list, tuple, set or frozenset of hosts, or one host as a string; a set has no order, so neither has the failover between its hosts. A lazy iterable (a generator, a `range`) or any other type is refused with `InvalidInputError`. `None` or an empty value (`[]`, `()`, `""`, an empty set) falls back to `smtphosts` of the config in use (the passed `config`, else the global `conf`). |
 | `attachment_file_paths`        | `Iterable[pathlib.Path \| str] \| None`     | `None`  | Attachment paths, an iterable of `Path` or `str` entries; a single path passed alone, or any other entry, is refused with `InvalidInputError`. A generator (such as `Path.glob()`) is read only one entry past `attachment_max_count`, and refused when it yields more. Missing or unreadable files raise unless `raise_on_missing_attachments` is `False` on the config in use.                             |
+| `inline_images`                | `Mapping[str, pathlib.Path \| str] \| None` | `None`  | Keyword-only. Images the HTML body shows in place: Content-ID to image path, referenced in `mail_body_html` as `cid:<Content-ID>`. Needs `mail_body_html`. See [Inline (CID) images](#inline-cid-images). `None` or an empty mapping sends the message exactly as without it.                                                                                                                                |
 | `credentials`                  | `tuple[str, str] \| None`                   | `None`  | Keyword-only, like every parameter below. `(username, password)` override; neither may contain NUL or invalid Unicode (a lone surrogate), and the same check applies to credentials taken from the config. `None` or an empty pair defaults to `resolved_credentials()` of the config in use; any other value that is not a pair of `str` is refused.                                                        |
 | `use_starttls`                 | `bool \| None`                              | `None`  | When `None`, the helper uses `smtp_use_starttls` of the config in use.                                                                                                                                                                                                                                                                                                                                       |
 | `starttls_verify`              | `bool \| None`                              | `None`  | When `None`, the helper uses `smtp_starttls_verify` of the config in use. `False` skips certificate verification.                                                                                                                                                                                                                                                                                            |
@@ -194,6 +195,62 @@ Windows, whose file systems do, and exactly on Linux:
 /.docker/config.json, /.pypirc, /.npmrc, /gh/hosts.yml
 ```
 
+#### Inline (CID) images
+
+`inline_images` maps a Content-ID to an image file; the HTML body references the image as
+`cid:<Content-ID>`:
+
+```python
+send(
+    mail_from="reports@example.com",
+    mail_recipients=["team@example.com"],
+    mail_subject="weekly report",
+    mail_body="The chart is in the HTML version.",
+    mail_body_html='<p>This week:</p><img src="cid:chart" alt="chart">',
+    inline_images={"chart": Path("/data/report/chart.png")},
+)
+```
+
+- **Content-ID**: 1 to 250 printable ASCII characters other than space, `<`, `>` and `"`
+  (no whitespace, no control character, no non-ASCII letter); `chart` and
+  `chart@example.com` both work. The image part carries it as `Content-ID: <chart>`, written
+  raw so a long one is never turned into an RFC 2047 encoded-word. Anything else, a key that is
+  not a `str`, a value that is neither a `str` nor a path, or a mapping given without
+  `mail_body_html`, is refused with `InvalidInputError` before any file is opened.
+- **Image types**: the extension (any case) must be one of `INLINE_IMAGE_TYPES`, exported from
+  the package root, and sets the part's `Content-Type`: `.png` `image/png`, `.jpg` and `.jpeg`
+  `image/jpeg`, `.gif` `image/gif`, `.webp` `image/webp`. Another extension (`.svg`, `.bmp`, `.txt`,
+  none) is refused as `AttachmentSecurityError` with `violation_type` `EXTENSION`, the category the
+  attachment extension rules already use. The attachment extension policy narrows the set further:
+  with `attachment_allowed_extensions` set, an image type must also be on it; without it, an image
+  type on `attachment_blocked_extensions` is refused.
+- **Security**: each image passes the attachment checks (path traversal, symlink, sensitive
+  patterns, directory allowlist and blocklist, file name, size limit per image, opened once with
+  the `CHANGED` check, the size counted again while it is read). A violation always raises, in warn
+  mode too (`attachment_raise_on_security_violation=False` leaves out attachments, never an image
+  the HTML references).
+- **Missing image**: always `AttachmentNotFoundError`, whatever `raise_on_missing_attachments`
+  says, since the HTML references it; an image that exists but cannot be read is reported the same
+  way.
+- **Count**: inline images do not count toward `attachment_max_count`; each one counts toward the
+  size limit on its own.
+- **Streaming**: each image's base64 is streamed from its open file into the spool, like an
+  attachment's, so memory stays bounded.
+
+The MIME tree gets each wrapper only when it is needed:
+
+| Bodies and files                | Tree                                                                                                        |
+|---------------------------------|-------------------------------------------------------------------------------------------------------------|
+| no inline images                | unchanged: `text/plain`, `text/html`, or `multipart/alternative`, inside `multipart/mixed` with attachments |
+| HTML + inline images            | `multipart/related[text/html, image...]`                                                                    |
+| plain + HTML + inline images    | `multipart/alternative[text/plain, multipart/related[text/html, image...]]`                                 |
+| either of the two + attachments | `multipart/mixed[<the tree above>, attachment...]`                                                          |
+
+The `multipart/related` carries `type="text/html"` (RFC 2387). Each image part has
+`Content-Type: image/...`, `Content-Transfer-Encoding: base64`, `Content-ID: <key>` and
+`Content-Disposition: inline; filename="<name>"`, the file name encoded as an attachment's is
+(RFC 2231 for a non-ASCII name). Images keep the order of the mapping.
+
 **Raises:** every exception below is a `BtxMailError` (see [Exceptions](#exceptions)).
 
 - `InvalidInputError` (a `ValueError`)  -  a refused sender, recipient, host, subject (over
@@ -205,15 +262,18 @@ Windows, whose file systems do, and exactly on Linux:
   is not a `ConfMail`), `attachment_file_paths` given as one path or holding an entry that is
   neither `str` nor a path, more distinct recipients than `recipient_max_count` or more
   attachments than `attachment_max_count`, no SMTP host in the call or the config in use, a
-  user name or password (passed or configured) containing NUL or invalid Unicode, or no valid
-  recipient left after validation.
+  user name or password (passed or configured) containing NUL or invalid Unicode, no valid
+  recipient left after validation, or `inline_images` that is not a mapping of valid
+  Content-IDs to paths or comes without `mail_body_html`.
 - `AttachmentNotFoundError` (a `FileNotFoundError`)  -  when a required attachment is missing,
   is not a regular file (a directory, a FIFO), or cannot be examined or opened (`can not be read
-  (EACCES)`, the errno name in brackets; a symlink loop reads `ELOOP`) and `raise_on_missing_attachments` is `True`.
+  (EACCES)`, the errno name in brackets; a symlink loop reads `ELOOP`) and `raise_on_missing_attachments` is `True`;
+  for an inline image, whatever that setting says.
 - `AttachmentSecurityError`  -  when an attachment violates security policies and
   `attachment_raise_on_security_violation` is `True`, including a file that changed or
   grew past the size limit after it was checked (see
-  [attachment security](attachment-security.md)).
+  [attachment security](attachment-security.md)); for an inline image whatever that setting
+  says, including a file that is not an accepted image type (`EXTENSION`).
 - `DeliveryError` (a `RuntimeError`)  -  when every configured host fails for a recipient; its
   message lists recipients and host roster, and `failed_recipients` / `hosts` carry them as
   tuples. It is raised after every recipient was attempted; one it does not name was delivered.

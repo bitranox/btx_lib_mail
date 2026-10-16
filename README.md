@@ -37,6 +37,10 @@ What you get:
 - **Internationalised addresses (RFC 6531 SMTPUTF8).** `empfänger@müller.de` works as sender or
   recipient, NFC-normalised, and is sent as UTF-8 to relays that offer SMTPUTF8; ASCII mail is
   unchanged.
+- **Images inside the HTML.** Pass `inline_images={"logo": Path("logo.png")}` and reference
+  `cid:logo` in the HTML body: the image travels in a `multipart/related` part, streamed like an
+  attachment and checked by the same rules, so a newsletter or report shows its pictures without
+  hot-linking them from a web server.
 - **No more hand-rolling smtplib.** No MIME assembly, no dot-stuffing, no failover loop.
   One function call, or one command.
 - **A command-line mailer.** `btx-lib-mail send ...` turns any shell into a mail client,
@@ -109,6 +113,26 @@ send(
     attachment_max_size_bytes=50 * 1024**3,  # the default cap is 25 MiB; raise it for big files
 )
 ```
+
+Show images inside an HTML body (inline, `cid:` references; `.png`, `.jpg`, `.jpeg`, `.gif`,
+`.webp`):
+
+```python
+from pathlib import Path
+from btx_lib_mail import send
+
+send(
+    mail_from="reports@example.com",
+    mail_recipients=["team@example.com"],
+    mail_subject="weekly report",
+    mail_body="Your mail client shows only text; the chart is in the HTML version.",
+    mail_body_html='<p>This week:</p><img src="cid:chart" alt="chart">',
+    smtphosts=["smtp.example.com:587"],
+    inline_images={"chart": Path("/data/report/chart.png")},
+)
+```
+
+The same from the shell: `--html-body '<img src="cid:chart">' --inline-image chart=/data/report/chart.png`.
 
 Send from the shell:
 

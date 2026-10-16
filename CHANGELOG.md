@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### Added
+- `send(inline_images=...)`: images the HTML body shows in place. A mapping of Content-ID to image
+  path; the HTML references each as `cid:<Content-ID>`. The HTML and the images travel as a
+  `multipart/related` (`type="text/html"`), inside `multipart/alternative` when there is a plain
+  body too and inside `multipart/mixed` when there are attachments; without inline images the
+  message is unchanged byte for byte. Each image part carries `Content-ID: <key>`,
+  `Content-Disposition: inline` with the file name, and base64 streamed from the open file like an
+  attachment's. A Content-ID is 1 to 250 printable ASCII characters other than space, `<`, `>` and
+  `"`; a bad one, a mapping without `mail_body_html`, or a value of the wrong type is an
+  `InvalidInputError`. `INLINE_IMAGE_TYPES` (exported) lists the accepted extensions and their
+  Content-Type (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`); another extension is an
+  `AttachmentSecurityError` (`EXTENSION`), and the attachment extension allowlist or blocklist
+  narrows the set further. Each image passes the attachment security checks; a violation always
+  raises, warn mode included, and a missing image is always an `AttachmentNotFoundError`, since
+  the HTML references it. Inline images do not count toward `attachment_max_count`; the size limit
+  applies to each one.
+- CLI `send --inline-image CID=PATH` (repeatable, split at the first `=`); a malformed value or a
+  repeated CID is a usage error (exit code 2).
+
 ## [4.4.0] 2026-10-16 13:47:00
 
 ### Added
