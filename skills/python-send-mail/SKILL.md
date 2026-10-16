@@ -16,6 +16,7 @@ description: Use when sending email from Python or the shell, especially with la
 |-------------------------------------------------------|------------------------------------------------------|---------------------------------------------------|
 | Send mail from Python (multipart, UTF-8, attachments) | `btx_lib_mail.send(...)`                             | hand-rolling `smtplib` + `email` MIME assembly    |
 | Send a large attachment on a low-memory box           | `send(..., attachment_file_paths=[...])` (streamed)  | reading the file into RAM, `sendmail(msg_str)`    |
+| A logo or picture shown inside the HTML body          | `send(..., inline_images={"logo": path})`            | `data:` URIs, hand-built `multipart/related`      |
 | Send from a shell / an agent with nothing installed   | `uvx --exclude-newer "7 days" btx-lib-mail send ...` | installing a mailer, writing a throwaway script   |
 | A script must read the result                         | `btx-lib-mail --json send ...`                       | scraping the human text or stderr                 |
 | Test code that sends mail, no server                  | `send(..., transport=your_recorder)`                 | patching `smtplib` or your own `send` wrapper     |
@@ -283,6 +284,41 @@ Application code that wraps `send` should accept and forward a `transport` argum
 tests can inject the recorder. The CLI takes one through its context:
 `CliRunner().invoke(cli, ["send", ...], obj=CliContext(transport=recorder))` with
 `from btx_lib_mail.cli import CliContext, cli`.
+
+### Inline images (a logo inside the HTML body)
+
+`inline_images` maps a Content-ID to an image file; the HTML shows each one as
+`<img src="cid:<Content-ID>">`, and the image travels inside the message, so no remote URL has to
+be loaded and no `data:` URI is needed. It requires `mail_body_html`:
+
+```python
+from pathlib import Path
+
+from btx_lib_mail import send
+
+send(
+    mail_from="shop@example.com",
+    mail_recipients="customer@example.com",
+    mail_subject="Your order has shipped",
+    mail_body="Your order has shipped.",  # plain-text alternative
+    mail_body_html='<img src="cid:logo" alt="Shop" width="200"><p>Your order has shipped.</p>',
+    smtphosts=["smtp.example.com:587"],
+    inline_images={"logo": Path("assets/logo.png")},
+)
+```
+
+The HTML and the images go out as `multipart/related`, inside `multipart/alternative` when there is
+a plain body and inside `multipart/mixed` when there are attachments; each image part carries
+`Content-ID: <key>` and `Content-Disposition: inline`. Without `inline_images` the message is
+unchanged. A Content-ID is 1 to 250 printable ASCII characters other than space, `<`, `>` and `"`;
+a bad one, or images without `mail_body_html`, is an `InvalidInputError`. Only the extensions in
+`INLINE_IMAGE_TYPES` are accepted (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`); another one is an
+`AttachmentSecurityError` (`EXTENSION`). Every image passes the attachment security checks, and a
+violation always raises, even with `attachment_raise_on_security_violation=False`; a missing image is
+always an `AttachmentNotFoundError`, because the HTML references it. Images do not count toward
+`attachment_max_count`. Mind the default blocked directories: an image under `/root`, `/var` or
+`/etc` (a package installed for root by `uv tool install` lives under `/root/.local`) is refused as
+`DIRECTORY`. On the CLI, `--inline-image CID=PATH`, repeatable.
 
 ### Large attachments (streamed, bounded memory)
 
