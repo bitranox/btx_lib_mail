@@ -11,11 +11,12 @@ import mimetypes
 import tempfile
 import unicodedata
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from email import policy as email_policy
 from email.generator import BytesGenerator
 from email.message import EmailMessage
 from email.utils import formatdate
+from functools import partial
 from typing import IO, TYPE_CHECKING, Final, cast
 
 from ._attachments import AttachmentPayload, AttachmentSecurityError, AttachmentViolation, log_violation
@@ -25,9 +26,11 @@ from ._validation import require_text
 from .errors import InvalidInputError
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from _typeshed import WriteableBuffer
+
+    from ._inline_images import InlineImagePayload
 
 # Message assembly spills to disk above this threshold so a large message never
 # has to fit in memory as one contiguous string.
@@ -56,11 +59,19 @@ def _guess_attachment_mimetype(filename: str) -> tuple[str, str]:
 
 @dataclass(frozen=True)
 class MessageContent:
-    """The recipient-independent content of one `send()` call."""
+    """The recipient-independent content of one `send()` call.
+
+    Attributes:
+        plain_body: The plain-text body, or "".
+        html_body: The HTML body, or ""; required when there are inline images.
+        attachments: The checked, open attachments.
+        inline_images: The checked, open images the HTML shows in place.
+    """
 
     plain_body: str
     html_body: str
     attachments: tuple[AttachmentPayload, ...]
+    inline_images: tuple[InlineImagePayload, ...] = ()
 
 
 def _new_spool() -> IO[bytes]:
@@ -99,28 +110,104 @@ def _compose_body(content: MessageContent) -> IO[bytes]:
 
 
 def _write_body(spool: IO[bytes], content: MessageContent) -> None:
-    # The text and HTML bodies arrive as str and are encoded in memory; only the
-    # attachments, which arrive as files, are streamed.
-    body_message = _build_body_message(content.plain_body, content.html_body)
-    if not content.attachments:
-        _flatten_into(spool, body_message)
-        return
+    """Write the whole body: the text entity, wrapped in multipart/mixed when there are attachments.
 
-    # With attachments: hand-write a multipart/mixed so each attachment's base64
-    # is streamed from its file instead of held in an in-memory message part.
+    Each multipart is hand-written (:func:`_write_multipart`), so every
+    attachment's and every inline image's base64 is streamed from its file
+    instead of held in an in-memory message part.
+
+    Args:
+        spool: Where the bytes are written.
+        content: The recipient-independent body, attachments and inline images.
+    """
+    if not content.attachments:
+        _write_text_entity(spool, content, top_level=True)
+        return
+    parts: list[Callable[[IO[bytes]], None]] = [partial(_write_text_entity, content=content, top_level=False)]
+    parts.extend(partial(_write_attachment_part, attachment=attachment) for attachment in content.attachments)
+    _write_multipart(spool, "multipart/mixed", parts, top_level=True)
+
+
+def _write_text_entity(spool: IO[bytes], content: MessageContent, *, top_level: bool) -> None:
+    """Write the text entity: the bodies, and the inline images the HTML shows.
+
+    Without inline images it is the single-part or multipart/alternative message
+    the email package builds, as it always was. With them, the HTML and the
+    images form a multipart/related (RFC 2387), which replaces the HTML part of
+    the multipart/alternative when there is a plain body too.
+
+    Args:
+        spool: Where the bytes are written.
+        content: The recipient-independent content.
+        top_level: Whether this entity is the whole body, and so carries ``MIME-Version``.
+    """
+    if not content.inline_images:
+        # The text and HTML bodies arrive as str and are encoded in memory; only the
+        # attachments and images, which arrive as files, are streamed.
+        _flatten_into(spool, _build_body_message(content.plain_body, content.html_body))
+        return
+    related = partial(_write_related, html_body=content.html_body, images=content.inline_images)
+    if not content.plain_body:
+        related(spool, top_level=top_level)
+        return
+    plain = partial(_flatten_into, message=_text_part(content.plain_body, subtype="plain"))
+    _write_multipart(spool, "multipart/alternative", [plain, partial(related, top_level=False)], top_level=top_level)
+
+
+def _write_related(spool: IO[bytes], *, html_body: str, images: tuple[InlineImagePayload, ...], top_level: bool) -> None:
+    """Write a multipart/related holding the HTML part first, then each inline image.
+
+    Args:
+        spool: Where the bytes are written.
+        html_body: The HTML body, which references each image as ``cid:<Content-ID>``.
+        images: The inline images, in the caller's order.
+        top_level: Whether this entity is the whole body.
+    """
+    parts: list[Callable[[IO[bytes]], None]] = [partial(_flatten_into, message=_text_part(html_body, subtype="html"))]
+    parts.extend(partial(_write_inline_image_part, image=image) for image in images)
+    # RFC 2387: "type" names the root part's type, so a reader knows to show the HTML.
+    _write_multipart(spool, 'multipart/related; type="text/html"', parts, top_level=top_level)
+
+
+def _text_part(text: str, *, subtype: str) -> EmailMessage:
+    """Return a text part without ``MIME-Version``, for use inside a hand-written multipart.
+
+    Examples:
+        >>> part = _text_part("<p>Hi</p>", subtype="html")
+        >>> (part.get_content_type(), "MIME-Version" in part)
+        ('text/html', False)
+    """
+    part = EmailMessage()
+    part.set_content(text, subtype=subtype)
+    # set_content adds MIME-Version; a part inside a multipart needs none.
+    del part["MIME-Version"]
+    return part
+
+
+def _write_multipart(spool: IO[bytes], content_type: str, parts: Sequence[Callable[[IO[bytes]], None]], *, top_level: bool) -> None:
+    """Write a multipart entity: its header block, then each part between boundary delimiters.
+
+    Each part writer writes the part's own header block and content; the CRLF
+    that ends each part (and begins the next delimiter) is written here.
+
+    Args:
+        spool: Where the bytes are written.
+        content_type: The multipart type with any parameters but the boundary,
+            which is added here.
+        parts: One writer per body part, in order.
+        top_level: Whether this entity is the whole body, and so carries ``MIME-Version``.
+    """
     boundary = f"==============={uuid.uuid4().hex}=="
-    outer = EmailMessage()
-    outer["MIME-Version"] = "1.0"
-    outer["Content-Type"] = f'multipart/mixed; boundary="{boundary}"'
+    headers = EmailMessage()
+    if top_level:
+        headers["MIME-Version"] = "1.0"
+    headers["Content-Type"] = f'{content_type}; boundary="{boundary}"'
     delimiter = b"--" + boundary.encode("ascii") + b"\r\n"
-    spool.write(_header_block(outer))
-    # First body part: the text/alternative message, headers and all.
-    spool.write(delimiter)
-    _flatten_into(spool, body_message)
-    spool.write(b"\r\n")
-    for attachment in content.attachments:
+    spool.write(_header_block(headers))
+    for write_part in parts:
         spool.write(delimiter)
-        _write_attachment_part(spool, attachment)
+        write_part(spool)
+        spool.write(b"\r\n")
     spool.write(b"--" + boundary.encode("ascii") + b"--\r\n")
 
 
@@ -141,20 +228,21 @@ def compose_body_once(content: MessageContent, *, raise_on_violation: bool) -> I
     Raises:
         AttachmentSecurityError: In strict mode; in warn mode too when the
             violation names no attachment left to drop, since composing again
-            would meet it again and never end.
+            would meet it again and never end, or names an inline image.
     """
     while True:
         try:
             return _compose_body(content)
         except AttachmentSecurityError as exc:
-            if raise_on_violation:
+            # An inline image is never left out: the HTML references it.
+            if raise_on_violation or any(image.attachment.source == exc.path for image in content.inline_images):
                 raise
             violation = exc
         remaining = tuple(attachment for attachment in content.attachments if attachment.source != violation.path)
         if len(remaining) == len(content.attachments):
             raise violation
         log_violation(violation, str(violation.path))
-        content = MessageContent(plain_body=content.plain_body, html_body=content.html_body, attachments=remaining)
+        content = replace(content, attachments=remaining)
 
 
 def envelope_header_lines(*, sender: str, subject: str, recipients: Sequence[str]) -> tuple[bytes, ...]:
@@ -450,13 +538,6 @@ def _flatten_into(spool: IO[bytes], message: EmailMessage) -> None:
 def _write_attachment_part(spool: IO[bytes], attachment: AttachmentPayload) -> None:
     """Write one base64 attachment part, streaming the checked file's bytes in chunks.
 
-    Encoding the file incrementally (57 raw bytes per 76-char base64 line, read
-    in a large multiple so whole lines are emitted per chunk) keeps peak memory
-    at roughly one chunk instead of the full attachment plus its base64
-    expansion. The bytes are counted as they are read, so a file that grows
-    past the size limit after it was checked is refused, having been read at
-    most one chunk past the limit.
-
     Args:
         spool: The spool to append the attachment part to.
         attachment: The checked attachment to stream from.
@@ -471,7 +552,64 @@ def _write_attachment_part(spool: IO[bytes], attachment: AttachmentPayload) -> N
     part_headers["Content-Transfer-Encoding"] = "base64"
     part_headers.add_header("Content-Disposition", "attachment", filename=attachment.filename)
     spool.write(_header_block(part_headers))
+    _stream_base64(spool, attachment)
 
+
+def _write_inline_image_part(spool: IO[bytes], image: InlineImagePayload) -> None:
+    """Write one base64 inline image part, streaming the checked file's bytes in chunks.
+
+    The Content-ID line is written raw: the email package encodes an over-long
+    unstructured header as RFC 2047 encoded-words, which no client would match
+    against ``cid:`` in the HTML. The Content-ID is printable ASCII without
+    spaces (:func:`~btx_lib_mail._inline_images.check_content_id`), so the raw
+    line is valid as it is. The file name is encoded as an attachment's is
+    (RFC 2231 for non-ASCII).
+
+    Args:
+        spool: The spool to append the image part to.
+        image: The checked inline image to stream from.
+
+    Raises:
+        AttachmentSecurityError: If the file grows past its size limit while
+            it is being read.
+    """
+    type_headers = EmailMessage()
+    type_headers["Content-Type"] = image.content_type
+    type_headers["Content-Transfer-Encoding"] = "base64"
+    disposition = EmailMessage()
+    disposition.add_header("Content-Disposition", "inline", filename=image.attachment.filename)
+    spool.write(_header_lines(type_headers) + _content_id_line(image.content_id) + _header_lines(disposition) + b"\r\n")
+    _stream_base64(spool, image.attachment)
+
+
+def _content_id_line(content_id: str) -> bytes:
+    r"""Return the raw, CRLF-terminated ``Content-ID`` header line for a checked Content-ID.
+
+    Examples:
+        >>> _content_id_line("logo@example.com")
+        b'Content-ID: <logo@example.com>\r\n'
+    """
+    return b"Content-ID: <" + content_id.encode("ascii") + b">\r\n"
+
+
+def _stream_base64(spool: IO[bytes], attachment: AttachmentPayload) -> None:
+    """Append the checked file's bytes as base64 lines, reading it in chunks.
+
+    Encoding the file incrementally (57 raw bytes per 76-char base64 line, read
+    in a large multiple so whole lines are emitted per chunk) keeps peak memory
+    at roughly one chunk instead of the full file plus its base64 expansion.
+    The bytes are counted as they are read, so a file that grows past the size
+    limit after it was checked is refused, having been read at most one chunk
+    past the limit.
+
+    Args:
+        spool: The spool to append the base64 lines to.
+        attachment: The checked file to stream from.
+
+    Raises:
+        AttachmentSecurityError: If the file grows past its size limit while
+            it is being read.
+    """
     # 57 decoded bytes -> one 76-char base64 line; a large multiple keeps each
     # read aligned to whole lines so chunk encodings concatenate cleanly.
     raw_chunk = 57 * 1024
@@ -490,4 +628,3 @@ def _write_attachment_part(spool: IO[bytes], attachment: AttachmentPayload) -> N
                 violation_type=AttachmentViolation.SIZE,
             )
         spool.write(base64.encodebytes(chunk).replace(b"\n", b"\r\n"))
-    spool.write(b"\r\n")

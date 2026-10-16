@@ -40,7 +40,44 @@ from ._settings_sources import (
     resolve_password,
 )
 
-__all__ = ["cli_send_mail"]
+__all__ = ["cli_send_mail", "inline_image_pairs"]
+
+
+def _inline_images_option(_ctx: click.Context, _param: click.Parameter, values: Sequence[str]) -> dict[str, Path]:
+    """Click callback of `--inline-image`: see :func:`inline_image_pairs`."""
+    return inline_image_pairs(values)
+
+
+def inline_image_pairs(values: Sequence[str]) -> dict[str, Path]:
+    """Return the `--inline-image CID=PATH` values as a Content-ID to path mapping.
+
+    Each value is split at its first ``=``, so a path may hold one. The
+    Content-ID itself is checked by `send()`.
+
+    Args:
+        values: The option's values, in order.
+
+    Returns:
+        The mapping, in the order the options were given.
+
+    Raises:
+        click.BadParameter: If a value has no ``=``, an empty Content-ID or an
+            empty path, or a Content-ID is given more than once (a usage error,
+            exit code 2).
+
+    Examples:
+        >>> {key: path.name for key, path in inline_image_pairs(["logo=img/logo.png", "a=b=c.gif"]).items()}
+        {'logo': 'logo.png', 'a': 'b=c.gif'}
+    """
+    images: dict[str, Path] = {}
+    for value in values:
+        content_id, separator, path = value.partition("=")
+        if not separator or not content_id or not path:
+            raise click.BadParameter(f"expected CID=PATH, got {value!r}", param_hint="--inline-image")
+        if content_id in images:
+            raise click.BadParameter(f"Content-ID {content_id!r} given more than once", param_hint="--inline-image")
+        images[content_id] = Path(path)
+    return images
 
 
 @cli.command(
@@ -80,6 +117,14 @@ __all__ = ["cli_send_mail"]
     type=click.Path(path_type=Path),
     multiple=True,
     help="Attachment file path (repeat for multiple files).",
+)
+@option(
+    "--inline-image",
+    "inline_images",
+    multiple=True,
+    callback=_inline_images_option,
+    help="Image the HTML body shows in place as cid:CID (repeat for multiple). Needs --html-body.",
+    metavar="CID=PATH",
 )
 @option(
     "--env-file",
@@ -195,6 +240,7 @@ def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per sett
     body: str,
     html_body: str | None,
     attachments: Sequence[Path],
+    inline_images: dict[str, Path],
     env_file: Path | None,
     starttls: bool | None,
     starttls_verify: bool | None,
@@ -236,6 +282,8 @@ def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per sett
         body: Required plain-text body.
         html_body: Optional HTML body.
         attachments: Zero or more filesystem paths to attach.
+        inline_images: Content-ID to image path, from the repeatable
+            `--inline-image CID=PATH` (split at the first `=`).
         env_file: `KEY=value` file read for settings neither an option nor the
             environment gave; also `BTX_MAIL_ENV_FILE`. When it is not given,
             `./.env` is read if it is a regular file.
@@ -321,6 +369,7 @@ def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per sett
             mail_body=body,
             mail_body_html=html_body or "",
             attachment_file_paths=list(attachments),
+            inline_images=inline_images,
             config=settings,
             transport=cli_context(ctx).transport,
         )

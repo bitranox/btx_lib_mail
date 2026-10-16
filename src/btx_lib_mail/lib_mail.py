@@ -9,6 +9,7 @@ Contents:
     - Re-exported from the private modules it composes: `ConfMail` and `conf`
       (`_config`), `Transport`, `SmtplibTransport` and `DeliveryOptions`
       (`_transport`), the attachment security names (`_attachments`),
+      `INLINE_IMAGE_TYPES` (`_inline_images`),
       `validate_email_address`, `validate_smtp_host` and `EMAIL_PATTERN`
       (`_validation`), and `logger` (`_common`).
 
@@ -20,6 +21,7 @@ configuration flow and delivery flow separated.
 from __future__ import annotations
 
 import base64
+import contextlib
 import re
 import smtplib
 from dataclasses import dataclass, field
@@ -45,6 +47,7 @@ from ._attachments import (
 from ._common import logger, printable
 from ._compose import MessageContent, check_body, check_subject, compose_body_once, envelope_header_lines, message_for
 from ._config import ConfMail, conf
+from ._inline_images import INLINE_IMAGE_TYPES, InlineImagePayload, close_inline_images, coerce_inline_images, prepare_inline_images
 from ._transport import DEFAULT_TRANSPORT, DeliveryOptions, SmtplibTransport, SMTPUTF8NotSupportedError, Transport
 from ._validation import (
     EMAIL_PATTERN,
@@ -70,7 +73,7 @@ from .errors import DeliveryError, InvalidInputError
 
 if TYPE_CHECKING:
     import pathlib
-    from collections.abc import Iterable, Sequence
+    from collections.abc import Generator, Iterable, Mapping, Sequence
     from collections.abc import Set as AbstractSet
 
 
@@ -83,6 +86,8 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
     smtphosts: Sequence[str] | AbstractSet[str] | None = None,
     attachment_file_paths: Iterable[pathlib.Path | str] | None = None,
     *,
+    # Images the HTML body shows in place, keyed by the Content-ID it references as cid:<key>.
+    inline_images: Mapping[str, pathlib.Path | str] | None = None,
     credentials: tuple[str, str] | None = None,
     use_starttls: bool | None = None,
     starttls_verify: bool | None = None,
@@ -131,6 +136,19 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
             (``pathlib.Path`` or ``str``). Each existing, readable file
             becomes an attachment. A generator (``Path.glob()``) is read
             only one entry past ``attachment_max_count``.
+        inline_images: Optional mapping of Content-ID to image path: images the
+            HTML body shows in place, referenced there as ``cid:<Content-ID>``.
+            Needs `mail_body_html`. A Content-ID is 1 to 250 printable ASCII
+            characters other than space, ``<``, ``>`` and ``"``. Each file must
+            have an extension of `INLINE_IMAGE_TYPES` (``.png``, ``.jpg``,
+            ``.jpeg``, ``.gif``, ``.webp``, any case) that the attachment
+            extension policy also lets through, and passes the same path,
+            symlink, directory, file name and size checks as an attachment. A
+            violation always raises, warn mode included, and a missing or
+            unreadable image is always an `AttachmentNotFoundError`, since the
+            HTML references it. Inline images do not count toward
+            ``attachment_max_count``. `None` or an empty mapping sends the
+            message exactly as without the keyword.
         credentials: Override `(user, password)` pair of `str`, neither
             holding NUL. `None` or an empty pair falls back to
             `resolved_credentials()` of the passed `config`, else of `conf`;
@@ -193,17 +211,19 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
             `local_hostname`, `timeout` or `delivery_deadline` is refused, a
             keyword has the wrong type (a string as an extension or directory
             set, a non-``bool`` flag, ``credentials`` that are not a pair of
-            ``str``, ``config`` that is not a ``ConfMail``), or no valid
-            recipient remains. Raised before the first delivery.
-            Also a `ValueError`.
+            ``str``, ``config`` that is not a ``ConfMail``), no valid
+            recipient remains, or `inline_images` is not a mapping of valid
+            Content-IDs to paths or comes without `mail_body_html`. Raised
+            before the first delivery. Also a `ValueError`.
         AttachmentNotFoundError: If required attachments are missing and
             `raise_on_missing_attachments` is `True` on the config in use
-            (the passed `config`, else the global `conf`). Also a
-            `FileNotFoundError`.
+            (the passed `config`, else the global `conf`), or an inline image
+            is missing or unreadable. Also a `FileNotFoundError`.
         AttachmentSecurityError: If an attachment violates security policies
             and `attachment_raise_on_security_violation` is `True`,
             including a file that changed or grew past the size limit after
-            it was checked.
+            it was checked; for an inline image whatever that setting says,
+            including a file that is not an accepted image type (`EXTENSION`).
         DeliveryError: If every SMTP host fails for a recipient; the error
             lists the affected recipients and host set, and carries them as
             `failed_recipients` and `hosts`. `rejected_recipients` names the
@@ -256,12 +276,9 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
         explicit_raise_on_violation=attachment_raise_on_security_violation,
     )
 
-    attachments = prepare_attachments(
-        coerce_attachment_paths(attachment_file_paths or (), max_count=security.max_count),
-        security,
-        raise_on_missing=resolved_raise_on_missing,
-    )
-    try:
+    requested_images = coerce_inline_images(inline_images, html_body=mail_body_html)
+    attachment_paths = coerce_attachment_paths(attachment_file_paths or (), max_count=security.max_count)
+    with _opened_files(attachment_paths, requested_images, security=security, raise_on_missing=resolved_raise_on_missing) as (attachments, images):
         plan = _DeliveryPlan(
             hosts=prepare_hosts(_requested_or_configured_hosts(smtphosts, settings)),
             delivery=_resolve_delivery_options(
@@ -283,7 +300,7 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
         # email package refuses fails the call before any recipient was sent to.
         envelopes = list(zip(recipients, envelope_header_lines(sender=mail_from, subject=mail_subject, recipients=recipients), strict=True))
         body = compose_body_once(
-            MessageContent(plain_body=mail_body, html_body=mail_body_html, attachments=attachments),
+            MessageContent(plain_body=mail_body, html_body=mail_body_html, attachments=attachments, inline_images=images),
             raise_on_violation=security.raise_on_violation,
         )
         try:
@@ -293,8 +310,6 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
             ]
         finally:
             body.close()
-    finally:
-        close_attachments(attachments)
 
     failed_recipients = [recipient for recipient, outcome in outcomes if outcome is not _Outcome.DELIVERED]
     if failed_recipients:
@@ -306,6 +321,36 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
         )
 
     return True
+
+
+@contextlib.contextmanager
+def _opened_files(
+    attachment_paths: tuple[pathlib.Path, ...],
+    images: tuple[tuple[str, pathlib.Path], ...],
+    *,
+    security: AttachmentSecurityOptions,
+    raise_on_missing: bool,
+) -> Generator[tuple[tuple[AttachmentPayload, ...], tuple[InlineImagePayload, ...]], None, None]:
+    """Check and open the attachments, then the inline images; close every one on exit.
+
+    Args:
+        attachment_paths: The attachment paths, in order.
+        images: The ``(content_id, path)`` pairs of the inline images.
+        security: The attachment security options of the call.
+        raise_on_missing: Whether a missing attachment raises; a missing inline image always does.
+
+    Yields:
+        The open attachments and the open inline images.
+    """
+    attachments = prepare_attachments(attachment_paths, security, raise_on_missing=raise_on_missing)
+    try:
+        opened_images = prepare_inline_images(images, security)
+        try:
+            yield attachments, opened_images
+        finally:
+            close_inline_images(opened_images)
+    finally:
+        close_attachments(attachments)
 
 
 @dataclass(frozen=True)
@@ -767,6 +812,7 @@ __all__ = [
     "DANGEROUS_EXTENSIONS_POSIX",
     "DANGEROUS_EXTENSIONS_WINDOWS",
     "EMAIL_PATTERN",
+    "INLINE_IMAGE_TYPES",
     "SENSITIVE_PATH_PATTERNS",
     "AttachmentPayload",
     "AttachmentSecurityError",

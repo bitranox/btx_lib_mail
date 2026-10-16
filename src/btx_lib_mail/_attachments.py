@@ -829,8 +829,7 @@ def _check_extension(
     Raises:
         AttachmentSecurityError: If the extension is not allowed.
     """
-    # Judged on the name the recipient reads: the header drops a trailing no-break space.
-    ext = _effective_suffix(_filename_as_sent(path.name) or path.name)
+    ext = extension_as_sent(path.name)
 
     if allowed is not None:
         # Whitelist mode: only allowed extensions pass
@@ -847,6 +846,29 @@ def _check_extension(
             reason=f'extension "{ext}" is blocked: "{path}"',
             violation_type=AttachmentViolation.EXTENSION,
         )
+
+
+def extension_as_sent(name: str) -> str:
+    """Return the lower-cased extension the recipient's system sees for a file sent under name.
+
+    Judged on the name the recipient reads (the header drops a trailing no-break
+    space and decodes an RFC 2047 encoded word), with the trailing dots and
+    spaces Windows drops removed. The extension checks and the inline image
+    Content-Type both use it, so the type sent is the one that was checked.
+
+    Args:
+        name: The file name as it is put in the ``Content-Disposition`` header.
+
+    Returns:
+        The lower-cased, dot-prefixed extension, or ``""`` when there is none.
+
+    Examples:
+        >>> extension_as_sent("Logo.PNG")
+        '.png'
+        >>> extension_as_sent("x.sh. . ")
+        '.sh'
+    """
+    return _effective_suffix(_filename_as_sent(name) or name)
 
 
 def _effective_suffix(name: str) -> str:
