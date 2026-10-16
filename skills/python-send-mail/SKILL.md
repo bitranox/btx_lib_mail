@@ -221,7 +221,7 @@ the builtin a caller would otherwise catch:
 | `ConfigurationError`      | pydantic `ValidationError` | a refused `ConfMail` setting (construction, `model_validate*`, assignment)                 |
 | `AttachmentNotFoundError` | `FileNotFoundError`        | a required attachment is missing, not a regular file, or cannot be opened                  |
 | `AttachmentSecurityError` | -                          | an attachment breaks a security rule (`violation_type` says which)                         |
-| `DeliveryError`           | `RuntimeError`             | every host failed for a recipient; `failed_recipients` and `hosts` are tuples to branch on |
+| `DeliveryError`           | `RuntimeError`             | every host failed for a recipient; `failed_recipients`, `rejected_recipients` (refused permanently by every host) and `hosts` are tuples to branch on |
 
 ```python
 from btx_lib_mail import BtxMailError, DeliveryError, send
@@ -229,7 +229,9 @@ from btx_lib_mail import BtxMailError, DeliveryError, send
 try:
     send("alerts@example.com", ["a@example.com", "b@example.com", "c@example.com"], "disk full", smtphosts=["smtp.example.com:587"])
 except DeliveryError as failed:
-    retry_later(failed.failed_recipients)  # the others were delivered; no message parsing
+    # the others were delivered; rejected ones got a permanent 5xx from every host, retrying cannot help
+    give_up(failed.rejected_recipients)
+    retry_later([r for r in failed.failed_recipients if r not in failed.rejected_recipients])
 except BtxMailError as refused:
     report(refused)  # anything else the library refused, before any delivery
 ```
@@ -365,10 +367,10 @@ subcommand; `btx-lib-mail --version` shows which release `uvx` resolved. Every c
 btx-lib-mail --json send --host smtp.example.com:587 --recipient a@example.com --subject s --body b
 # {"ok": true, "command": "send", "data": {"sender": ..., "recipients": [...], "hosts": [...]}, "skipped": []}
 # on failure: {"ok": false, "command": "send", "error": {"type": "DeliveryError", "message": ...,
-#              "failed_recipients": [...], "hosts": [...]}, "skipped": [...]}
+#              "failed_recipients": [...], "rejected_recipients": [...], "hosts": [...]}, "skipped": [...]}
 ```
 
-`failed_recipients` and `hosts` appear only for a `DeliveryError`; every other failure carries
+`failed_recipients`, `rejected_recipients` and `hosts` appear only for a `DeliveryError`; every other failure carries
 `type` and `message` alone. `data.recipients` lists the addresses delivered to (trimmed,
 lower-cased when ASCII, each once). `skipped` lists what was left out, each as `{"kind":
 "attachment" | "recipient", "value": ..., "reason": ...}`: with `--attachment-warn`, the attachments

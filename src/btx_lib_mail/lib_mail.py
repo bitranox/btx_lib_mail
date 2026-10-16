@@ -23,6 +23,7 @@ import base64
 import re
 import smtplib
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import IO, TYPE_CHECKING, Final, TypeVar
 
 from ._attachments import (
@@ -205,7 +206,10 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
             it was checked.
         DeliveryError: If every SMTP host fails for a recipient; the error
             lists the affected recipients and host set, and carries them as
-            `failed_recipients` and `hosts`. Also a `RuntimeError`.
+            `failed_recipients` and `hosts`. `rejected_recipients` names the
+            failed ones every host refused permanently (a 5xx reply to the
+            recipient or the message, or no SMTPUTF8 for a non-ASCII address),
+            so sending the same message again will not help. Also a `RuntimeError`.
 
     Examples:
         >>> class _NullTransport:  # a stand-in transport that accepts every message
@@ -283,20 +287,21 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
             raise_on_violation=security.raise_on_violation,
         )
         try:
-            failed_recipients = [
-                recipient
+            outcomes = [
+                (recipient, _deliver_composed(sender=mail_from, recipient=recipient, header_lines=header_lines, body=body, plan=plan))
                 for recipient, header_lines in envelopes
-                if not _deliver_composed(sender=mail_from, recipient=recipient, header_lines=header_lines, body=body, plan=plan)
             ]
         finally:
             body.close()
     finally:
         close_attachments(attachments)
 
+    failed_recipients = [recipient for recipient, outcome in outcomes if outcome is not _Outcome.DELIVERED]
     if failed_recipients:
         raise DeliveryError(
             f'following recipients failed "{failed_recipients}" on all of following hosts : "{plan.hosts}"',
             failed_recipients=tuple(failed_recipients),
+            rejected_recipients=tuple(recipient for recipient, outcome in outcomes if outcome is _Outcome.REJECTED),
             hosts=plan.hosts,
         )
 
@@ -334,6 +339,47 @@ class _HostOrder:
         if not isinstance(error, _REPLIES_ABOUT_THE_MESSAGE):
             self._hosts.remove(host)
             self._hosts.append(host)
+
+
+class _Outcome(Enum):
+    """How delivering one recipient's message ended."""
+
+    DELIVERED = "delivered"
+    # Every host refused this recipient or this message permanently: sending it again will not help.
+    REJECTED = "rejected"
+    # At least one host failed for another reason (connection, TLS, AUTH, timeout, a 4xx reply).
+    FAILED = "failed"
+
+
+def _is_permanent_refusal(error: BaseException) -> bool:
+    """Return whether *error* is a host's final no to this recipient or message.
+
+    A 5xx reply to RCPT TO or DATA, or a relay without SMTPUTF8 for a non-ASCII address. A 4xx
+    reply (greylisting, a full mailbox) is temporary, and a refused SENDER is not about the
+    recipient, so neither counts.
+
+    Examples:
+        >>> _is_permanent_refusal(smtplib.SMTPRecipientsRefused({"a@example.com": (550, b"no such user")}))
+        True
+        >>> _is_permanent_refusal(smtplib.SMTPRecipientsRefused({"a@example.com": (451, b"try later")}))
+        False
+        >>> _is_permanent_refusal(TimeoutError("timed out"))
+        False
+    """
+    if isinstance(error, smtplib.SMTPRecipientsRefused):
+        codes = [reply[0] for reply in error.recipients.values()]
+        return bool(codes) and all(_is_permanent_code(code) for code in codes)
+    if isinstance(error, smtplib.SMTPDataError):
+        return _is_permanent_code(error.smtp_code)
+    return isinstance(error, SMTPUTF8NotSupportedError)
+
+
+# The SMTP reply class for a permanent negative completion (RFC 5321, section 4.2.1).
+_PERMANENT_REPLY_CODES: Final = range(500, 600)
+
+
+def _is_permanent_code(code: object) -> bool:
+    return isinstance(code, int) and code in _PERMANENT_REPLY_CODES
 
 
 # A refused sender, recipient or message is about this message, not the host:
@@ -623,7 +669,7 @@ def _squeezed(text: str) -> str:
     return "".join(text.split()).replace("=", "")
 
 
-def _deliver_to_any_host(*, sender: str, recipient: str, message: IO[bytes], plan: _DeliveryPlan) -> bool:
+def _deliver_to_any_host(*, sender: str, recipient: str, message: IO[bytes], plan: _DeliveryPlan) -> _Outcome:
     """Attempt delivery of one composed message across hosts until one succeeds.
 
     Encapsulates failover logic to keep orchestration linear. The same
@@ -638,8 +684,10 @@ def _deliver_to_any_host(*, sender: str, recipient: str, message: IO[bytes], pla
         plan: Hosts to try in order, resolved delivery options, and the transport.
 
     Returns:
-        `True` if any host accepts the message; `False` otherwise.
+        `DELIVERED` if any host accepts the message; `REJECTED` if every host
+        refused it permanently (see `_is_permanent_refusal`); `FAILED` otherwise.
     """
+    every_refusal_permanent = True
     for host in plan.order.current():
         try:
             # A host that read part of the message and failed leaves the stream mid-way;
@@ -665,9 +713,10 @@ def _deliver_to_any_host(*, sender: str, recipient: str, message: IO[bytes], pla
                 printable(host),
                 extra={"sender": printable(sender), "recipient": printable(recipient), "host": printable(host)},
             )
-            return True
+            return _Outcome.DELIVERED
         except Exception as error:
             plan.order.note_failure(host, error)
+            every_refusal_permanent = every_refusal_permanent and _is_permanent_refusal(error)
             clean_recipient = printable(recipient)
             clean_host = printable(host)
             warning_call = (
@@ -689,10 +738,10 @@ def _deliver_to_any_host(*, sender: str, recipient: str, message: IO[bytes], pla
         # except branch above (the try's success path returns already).
         message_text, args, extra = warning_call
         logger.warning(message_text, *args, extra=extra)
-    return False
+    return _Outcome.REJECTED if every_refusal_permanent else _Outcome.FAILED
 
 
-def _deliver_composed(*, sender: str, recipient: str, header_lines: bytes, body: IO[bytes], plan: _DeliveryPlan) -> bool:
+def _deliver_composed(*, sender: str, recipient: str, header_lines: bytes, body: IO[bytes], plan: _DeliveryPlan) -> _Outcome:
     """Build recipient's message from its header block and the shared body, deliver it, and close it.
 
     Args:
@@ -703,7 +752,7 @@ def _deliver_composed(*, sender: str, recipient: str, header_lines: bytes, body:
         plan: Hosts to try in order, resolved delivery options, and the transport.
 
     Returns:
-        `True` if any host accepts the message; `False` otherwise.
+        How the delivery ended (see `_deliver_to_any_host`).
     """
     message = message_for(header_lines, body)
     try:

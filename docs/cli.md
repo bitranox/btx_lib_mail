@@ -157,11 +157,12 @@ with `--traceback`), and the exit code is the one the same failure has without `
 library, or a click exception (`UsageError`, `BadParameter`, `MissingParameter`,
 `NoSuchOption`, `NoSuchCommand`) for a usage error. `command` is the word in the subcommand's
 position (the first argument that is not a group option) when it names a command, and `null`
-otherwise. A `DeliveryError` also carries `failed_recipients` and `hosts`; no other error does:
+otherwise. A `DeliveryError` also carries `failed_recipients`, `rejected_recipients` (the failed ones
+every host refused permanently) and `hosts`; no other error does:
 
 ```json
 {"ok": false, "command": "validate-email", "error": {"type": "InvalidInputError", "message": "invalid email address: 'nope'"}, "skipped": []}
-{"ok": false, "command": "send", "error": {"type": "DeliveryError", "message": "...", "failed_recipients": ["b@example.com"], "hosts": ["relay.example.com"]}, "skipped": []}
+{"ok": false, "command": "send", "error": {"type": "DeliveryError", "message": "...", "failed_recipients": ["b@example.com"], "rejected_recipients": ["b@example.com"], "hosts": ["relay.example.com"]}, "skipped": []}
 ```
 
 `skipped` lists what `send` left out, on success and on failure alike, as `{"kind":

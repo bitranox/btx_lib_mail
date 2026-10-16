@@ -92,20 +92,32 @@ class DeliveryError(BtxMailError, RuntimeError):
 
     Attributes:
         failed_recipients: Recipients no host accepted.
+        rejected_recipients: The failed recipients every host refused permanently (a 5xx reply to
+            the recipient or the message, or no SMTPUTF8 for a non-ASCII address). Sending the same
+            message to them again will not help; the others may succeed on a later try.
         hosts: The hosts that were tried, in order.
     """
 
     # Defaulted so pickle, which rebuilds an exception from its args alone, can recreate it.
-    def __init__(self, message: str, *, failed_recipients: tuple[str, ...] = (), hosts: tuple[str, ...] = ()) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        failed_recipients: tuple[str, ...] = (),
+        rejected_recipients: tuple[str, ...] = (),
+        hosts: tuple[str, ...] = (),
+    ) -> None:
         """Build the error with the message plus the recipients and hosts it concerns.
 
         Args:
             message: Human-readable description of the failure.
             failed_recipients: Recipients no host accepted. Defaults to an empty tuple.
+            rejected_recipients: The subset every host refused permanently. Defaults to an empty tuple.
             hosts: The hosts that were tried, in order. Defaults to an empty tuple.
         """
         super().__init__(message)
         self.failed_recipients = failed_recipients
+        self.rejected_recipients = rejected_recipients
         self.hosts = hosts
 
 

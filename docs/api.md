@@ -217,6 +217,10 @@ Windows, whose file systems do, and exactly on Linux:
 - `DeliveryError` (a `RuntimeError`)  -  when every configured host fails for a recipient; its
   message lists recipients and host roster, and `failed_recipients` / `hosts` carry them as
   tuples. It is raised after every recipient was attempted; one it does not name was delivered.
+  `rejected_recipients` is the part of `failed_recipients` that every host refused permanently
+  (a 5xx reply to the recipient or the message, or no SMTPUTF8 for a non-ASCII address): sending
+  the same message again will not help. A temporary 4xx reply, a refused sender or any host
+  failing for another reason (connection, TLS, AUTH, timeout) keeps a recipient out of it.
 
 An attachment that exists but cannot be opened (no read permission, a name too long, a
 symlink loop) is reported like a missing one, never as a bare `OSError`: an
@@ -268,7 +272,7 @@ it too, and the CLI exit code follows that builtin.
 | `ConfigurationError`        | pydantic `ValidationError`      | A `ConfMail` setting is refused (construction, `model_validate*`, assignment).                         |
 | `AttachmentNotFoundError`   | `FileNotFoundError`             | A required attachment is missing, not a regular file, or cannot be opened.                             |
 | `AttachmentSecurityError`   | -                               | An attachment breaks a security rule; see `violation_type`.                                            |
-| `DeliveryError`             | `RuntimeError`                  | Every host failed for at least one recipient; see `failed_recipients`, `hosts`.                        |
+| `DeliveryError`             | `RuntimeError`                  | Every host failed for at least one recipient; see `failed_recipients`, `rejected_recipients`, `hosts`. |
 | `SMTPUTF8NotSupportedError` | `smtplib.SMTPNotSupportedError` | A relay without SMTPUTF8 for a message with a non-ASCII address; `send()` wraps it in `DeliveryError`. |
 
 `AttachmentSecurityError` carries `path` (the offending path), `reason` (a one-line

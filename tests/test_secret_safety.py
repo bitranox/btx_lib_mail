@@ -1408,14 +1408,14 @@ def test_the_per_host_warning_cannot_carry_a_forged_log_line_or_escape_sequence(
     # In send(), sender and recipient become email headers, whose policy refuses
     # an actual newline outright; the ESC sequence alone (no newline) exercises
     # the `isprintable()` cleaning. `host` is never a header, so it keeps CR/LF.
-    ok = lib_mail._deliver_to_any_host(
+    outcome = lib_mail._deliver_to_any_host(
         sender="sender\x1b[31mFORGED sender@example.com",
         recipient="rcpt@example.com",
         message=io.BytesIO(b"Subject: s\r\n\r\nb\r\n"),
         plan=lib_mail._DeliveryPlan(hosts=("evil\nFORGED line\x1b[31m",), delivery=delivery, transport=RefusingTransport(ValueError("boom"))),
     )
 
-    assert ok is False
+    assert outcome is lib_mail._Outcome.FAILED
     records = _failure_records(caplog)
     assert len(records) == 1, "positive control: the direct call still reaches the WARNING"
     record = records[0]
@@ -1439,14 +1439,14 @@ def test_the_success_path_debug_line_cannot_carry_a_forged_log_line_or_escape_se
 
     # See the ESC-only note above: in send(), sender and recipient become email
     # headers, which refuse an actual newline; `host` does not, so it keeps CR/LF.
-    ok = lib_mail._deliver_to_any_host(
+    outcome = lib_mail._deliver_to_any_host(
         sender="sender\x1b[31mFORGED sender@example.com",
         recipient="rcpt\x1b[31mFORGED recipient@example.com",
         message=io.BytesIO(b"Subject: s\r\n\r\nb\r\n"),
         plan=lib_mail._DeliveryPlan(hosts=("evil\nFORGED host\x1b[31m",), delivery=delivery, transport=RecordingTransport()),
     )
 
-    assert ok is True
+    assert outcome is lib_mail._Outcome.DELIVERED
     records = [r for r in caplog.records if r.name == "btx_lib_mail" and r.levelno == logging.DEBUG and "mail sent to" in r.msg]
     assert len(records) == 1, "positive control: the success path still logs the DEBUG line"
     record = records[0]

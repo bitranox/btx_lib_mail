@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+- `DeliveryError.rejected_recipients`: the failed recipients every host refused permanently, with a
+  5xx reply to `RCPT TO` or `DATA`, or no SMTPUTF8 support for a non-ASCII address. Sending the same
+  message to them again cannot succeed, so a caller can drop them while it retries the rest. A 4xx
+  reply (greylisting), a refused sender, or any host failing for another reason (connection, TLS,
+  AUTH, timeout) keeps a recipient out of this list. The CLI's `--json` error carries it as well,
+  between `failed_recipients` and `hosts`.
+
 ## [4.3.1] 2026-10-15 17:39:07
 
 ### Tests

@@ -2667,6 +2667,51 @@ def test_a_host_that_refused_one_recipient_keeps_its_place_for_the_next(refusal:
     ]
 
 
+_HOSTS = ["first.example.com", "second.example.com"]
+_REFUSED_550 = smtplib.SMTPRecipientsRefused({"one@example.com": (550, b"no such user")})
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    "refusal",
+    [_REFUSED_550, smtplib.SMTPDataError(554, b"message refused")],
+    ids=["recipient-550", "data-554"],
+)
+def test_a_recipient_every_host_refuses_permanently_is_named_rejected(refusal: smtplib.SMTPException) -> None:
+    """A 5xx on every host is the servers' final answer: a caller can stop retrying that recipient."""
+    transport = PerHostTransport({(host, "one@example.com"): refusal for host in _HOSTS})
+
+    with pytest.raises(DeliveryError) as caught:
+        lib_mail.send(**_with(mail_recipients=["one@example.com", "two@example.com"], smtphosts=_HOSTS, transport=transport))
+
+    assert caught.value.failed_recipients == ("one@example.com",)
+    assert caught.value.rejected_recipients == ("one@example.com",)
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize(
+    "failures",
+    [
+        {(host, "one@example.com"): smtplib.SMTPRecipientsRefused({"one@example.com": (451, b"try later")}) for host in _HOSTS},
+        {("first.example.com", "one@example.com"): _REFUSED_550, ("second.example.com", "one@example.com"): TimeoutError("timed out")},
+        {(host, "one@example.com"): smtplib.SMTPSenderRefused(550, b"sender refused", "sender@example.com") for host in _HOSTS},
+        {(host, "one@example.com"): ConnectionRefusedError("refused") for host in _HOSTS},
+    ],
+    ids=["temporary-451", "one-host-unreachable", "sender-refused", "no-host-reachable"],
+)
+def test_a_recipient_that_may_still_succeed_later_is_failed_but_not_rejected(
+    failures: dict[tuple[str, str | None], BaseException],
+) -> None:
+    """Only a permanent refusal from EVERY host is a rejection; anything a retry could fix is not."""
+    transport = PerHostTransport(failures)
+
+    with pytest.raises(DeliveryError) as caught:
+        lib_mail.send(**_with(mail_recipients=["one@example.com"], smtphosts=_HOSTS, transport=transport))
+
+    assert caught.value.failed_recipients == ("one@example.com",)
+    assert caught.value.rejected_recipients == ()
+
+
 _HUGE = "h" * 1_000_000
 
 

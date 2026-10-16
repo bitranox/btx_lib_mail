@@ -58,18 +58,21 @@ def _absent(value: object) -> bool:
 
 
 class ErrorPayload(BaseModel, frozen=True, extra="forbid"):
-    """A failure as JSON reports it: `failed_recipients` and `hosts` appear for a `DeliveryError` only.
+    """A failure as JSON reports it: the recipient lists and `hosts` appear for a `DeliveryError` only.
 
     Attributes:
         type: The exception's class name.
         message: The exception's message.
         failed_recipients: The recipients no host accepted; omitted unless delivery failed.
+        rejected_recipients: The failed recipients every host refused permanently; omitted unless
+            delivery failed.
         hosts: The hosts that were tried; omitted unless delivery failed.
     """
 
     type: str
     message: str
     failed_recipients: tuple[str, ...] | None = Field(default=None, exclude_if=_absent)
+    rejected_recipients: tuple[str, ...] | None = Field(default=None, exclude_if=_absent)
     hosts: tuple[str, ...] | None = Field(default=None, exclude_if=_absent)
 
 
@@ -194,7 +197,13 @@ def error_payload(exc: BaseException) -> ErrorPayload:
         {'type': 'ValueError', 'message': 'nope'}
     """
     if isinstance(exc, DeliveryError):
-        return ErrorPayload(type=type(exc).__name__, message=str(exc), failed_recipients=tuple(exc.failed_recipients), hosts=tuple(exc.hosts))
+        return ErrorPayload(
+            type=type(exc).__name__,
+            message=str(exc),
+            failed_recipients=tuple(exc.failed_recipients),
+            rejected_recipients=tuple(exc.rejected_recipients),
+            hosts=tuple(exc.hosts),
+        )
     return ErrorPayload(type=type(exc).__name__, message=str(exc))
 
 

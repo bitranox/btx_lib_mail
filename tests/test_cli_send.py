@@ -961,12 +961,13 @@ def test_a_json_delivery_failure_names_the_failed_recipients_and_what_was_skippe
     assert code != 0
     assert envelope["error"]["type"] == "DeliveryError"
     assert envelope["error"]["failed_recipients"] == ["one@example.com"]
+    assert envelope["error"]["rejected_recipients"] == [], "a refused connection is not a rejection"
     assert envelope["error"]["hosts"] == ["127.0.0.1:1"]
     assert [(item["kind"], item["value"]) for item in envelope["skipped"]] == [("attachment", str(script))]
     # Key ORDER is part of docs/cli.md's contract, and a dict comparison cannot see it;
     # json.loads keeps the document's order, so the key lists pin it.
     assert list(envelope) == ["ok", "command", "error", "skipped"]
-    assert list(envelope["error"]) == ["type", "message", "failed_recipients", "hosts"]
+    assert list(envelope["error"]) == ["type", "message", "failed_recipients", "rejected_recipients", "hosts"]
     assert list(envelope["skipped"][0]) == ["kind", "value", "reason"]
 
 
