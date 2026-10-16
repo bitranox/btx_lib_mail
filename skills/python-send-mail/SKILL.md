@@ -215,13 +215,18 @@ ASCII-only mail is unchanged and sends no SMTPUTF8 option.
 Every exception `send()` and `ConfMail` raise on purpose is a `BtxMailError`. Each also subclasses
 the builtin a caller would otherwise catch:
 
-| Exception                 | Also a                     | Raised when                                                                                |
-|---------------------------|----------------------------|--------------------------------------------------------------------------------------------|
-| `InvalidInputError`       | `ValueError`               | a refused sender, recipient, host, subject, EHLO name, timeout or deadline                 |
-| `ConfigurationError`      | pydantic `ValidationError` | a refused `ConfMail` setting (construction, `model_validate*`, assignment)                 |
-| `AttachmentNotFoundError` | `FileNotFoundError`        | a required attachment is missing, not a regular file, or cannot be opened                  |
-| `AttachmentSecurityError` | -                          | an attachment breaks a security rule (`violation_type` says which)                         |
+| Exception                 | Also a                     | Raised when                                                                                                                                           |
+|---------------------------|----------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `InvalidInputError`       | `ValueError`               | a refused sender, recipient, host, subject, EHLO name, timeout or deadline                                                                            |
+| `ConfigurationError`      | pydantic `ValidationError` | a refused `ConfMail` setting (construction, `model_validate*`, assignment)                                                                            |
+| `AttachmentNotFoundError` | `FileNotFoundError`        | a required attachment is missing, not a regular file, or cannot be opened                                                                             |
+| `AttachmentSecurityError` | -                          | an attachment breaks a security rule (`violation_type` says which)                                                                                    |
 | `DeliveryError`           | `RuntimeError`             | every host failed for a recipient; `failed_recipients`, `rejected_recipients` (refused permanently by every host) and `hosts` are tuples to branch on |
+
+`rejected_recipients` is always a subset of `failed_recipients`. A recipient is in it only when
+EVERY host answered its `RCPT TO` or `DATA` with a 5xx reply, or lacked SMTPUTF8 for a non-ASCII
+address. A 4xx reply (`451 try later`), a refused sender, or one host that failed another way
+(connection, TLS, AUTH, timeout) keeps a recipient out of it, so it stays worth retrying.
 
 ```python
 from btx_lib_mail import BtxMailError, DeliveryError, send

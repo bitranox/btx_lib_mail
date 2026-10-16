@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [4.4.0] 2026-10-16 13:47:00
+
 ### Added
 - `DeliveryError.rejected_recipients`: the failed recipients every host refused permanently, with a
   5xx reply to `RCPT TO` or `DATA`, or no SMTPUTF8 support for a non-ASCII address. Sending the same
