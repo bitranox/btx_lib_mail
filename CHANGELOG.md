@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [4.5.1] 2026-10-18 22:50:13
+
+### Documentation
+- The `python-send-mail` skill explains why a test that patches `smtplib.SMTP` intercepts nothing (the
+  library connects through its own `smtplib.SMTP` subclass, so the test opens a real connection and
+  fails with `DeliveryError` "following recipients failed ... on all of following hosts"), and that the
+  fix is forwarding `transport` through the application's own send wrappers.
+
 ## [4.5.0] 2026-10-16 15:48:15
 
 ### Added

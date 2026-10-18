@@ -285,6 +285,17 @@ tests can inject the recorder. The CLI takes one through its context:
 `CliRunner().invoke(cli, ["send", ...], obj=CliContext(transport=recorder))` with
 `from btx_lib_mail.cli import CliContext, cli`.
 
+**A test that patches `smtplib.SMTP` intercepts nothing.** The library connects through its own
+subclass of `smtplib.SMTP`, created when the module is imported, so `patch("smtplib.SMTP")` never
+replaces it: the mock is never called and the test opens a REAL connection to every host in
+`smtphosts`. It fails with `DeliveryError` (a `RuntimeError`) reading
+`following recipients failed "[...]" on all of following hosts`, after one log line per host naming
+the real socket error, and a host that answers gets a real SMTP session. A better mock is not the
+fix: add `transport: Transport | None = None` to your own send wrappers (`from btx_lib_mail import
+Transport`), pass it on to `send()`, inject the recorder above, and assert on what it recorded
+(host, recipient, the parsed message), never on a bare `True`: `send` returns `True` whenever it did
+not raise, so that check proves nothing about what was sent.
+
 ### Inline images (a logo inside the HTML body)
 
 Since btx_lib_mail 4.5.0, the `send()` keyword `inline_images` (there is no `ConfMail` field for it)
