@@ -250,5 +250,5 @@ max-line-length = 120
 ignores = ["E003"]
 
 [tool.uv]
-exclude-newer = "1 day"
-exclude-newer-package = {lib-cli-exit-tools = false}
+exclude-newer = "7 days"
+exclude-newer-package = {lib-cli-exit-tools = false, ruff = "2026-10-15T15:23:19Z"}
