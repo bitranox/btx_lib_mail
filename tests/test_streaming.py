@@ -137,16 +137,32 @@ def test_an_empty_chunk_keeps_the_line_start_state() -> None:
     assert pieces == [b"a\r\n", b"", b"..x\r\n"]
 
 
+def _best_of_three(feed: Callable[[bytes], bytes], chunk: bytes, count: int) -> float:
+    """Seconds for the fastest of three passes of `count` chunks through `feed`."""
+    timings: list[float] = []
+    for _ in range(3):
+        started = time.perf_counter()
+        for _ in range(count):
+            feed(chunk)
+        timings.append(time.perf_counter() - started)
+    return min(timings)
+
+
 @pytest.mark.os_agnostic
 def test_dot_stuffing_a_large_attachment_is_not_a_per_byte_loop() -> None:
-    """A per-byte loop took over a second for 32 MiB here, longer than sending it on a fast link."""
-    chunk = (b"QUJD" * 19 + b"\r\n.x\r\n") * 800  # base64-like lines, some dot-led; about 64 KiB
-    stuffer = _transport._DotStuffer()
-    started = time.perf_counter()
-    for _ in range(32 * 1024 * 1024 // len(chunk)):
-        stuffer.feed(chunk)
+    """The stuffer costs about one ``bytes.replace`` pass; a per-byte loop measured 11 times that.
 
-    assert time.perf_counter() - started < 0.5
+    Timed against that baseline on the same machine, not against a fixed budget: a shared CI
+    runner slows both sides alike, while a fixed 0.5 s for 32 MiB failed a correct stuffer at
+    0.507 s on a busy macOS runner. The limit of 3 sits between the two measured ratios, 1 and 11.
+    """
+    chunk = (b"QUJD" * 19 + b"\r\n.x\r\n") * 800  # base64-like lines, some dot-led; about 64 KiB
+    count = 8 * 1024 * 1024 // len(chunk)
+    baseline = _best_of_three(lambda data: data.replace(b"\n.", b"\n.."), chunk, count)
+
+    stuffing = _best_of_three(_transport._DotStuffer().feed, chunk, count)
+
+    assert stuffing < 3 * baseline, f"dot-stuffing took {stuffing / baseline:.1f}x one bytes.replace pass"
 
 
 @pytest.mark.os_agnostic
