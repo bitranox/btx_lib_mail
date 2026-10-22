@@ -64,6 +64,7 @@ dev = [
   "textual>=8.2.8",
   "import-linter>=2.15",
   "rtoml>=0.14.0",
+  "certifi>=2026.10.19",         # PYSEC-2026-4320
   # Real in-process SMTP server for streamed-delivery e2e tests (DATA path stock,
   # BDAT/CHUNKING via a small subclass); test-only, never imported by the library.
   "aiosmtpd>=1.4.6",
@@ -251,4 +252,4 @@ ignores = ["E003"]
 
 [tool.uv]
 exclude-newer = "7 days"
-exclude-newer-package = {lib-cli-exit-tools = false, ruff = "2026-10-15T15:23:19Z"}
+exclude-newer-package = {lib-cli-exit-tools = false, ruff = "2026-10-15T15:23:19Z", certifi = "2026-10-20T02:24:17Z"}
