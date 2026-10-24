@@ -103,7 +103,7 @@ cli.cli_send_mail   options > environment > --env-file > conf, assigned onto one
 
 Re-exports the public surface so callers import from `btx_lib_mail` and never from a
 private module. `__all__`: `send`, `conf`, `ConfMail`, `logger`, `validate_email_address`,
-`validate_smtp_host`, `DeliveryOptions`, `Transport`, the errors (`BtxMailError`,
+`validate_smtp_host`, `DeliveryOptions`, `SmtpCredentials`, `Transport`, the errors (`BtxMailError`,
 `InvalidInputError`, `ConfigurationError`, `AttachmentNotFoundError`, `DeliveryError`,
 `AttachmentSecurityError`), `AttachmentViolation`, the security constants
 (`DANGEROUS_EXTENSIONS_POSIX`, `DANGEROUS_EXTENSIONS_WINDOWS`,
@@ -247,7 +247,7 @@ redacted at the credential fields (`smtp_password`, `smtphosts`).
 
 * `Transport` - protocol: `deliver(*, host, sender, recipient, message, delivery)`
   delivers one composed message or raises.
-* `DeliveryOptions` - `credentials` (not in `repr`), `use_starttls`, `starttls_verify`,
+* `DeliveryOptions` - `credentials` (`SmtpCredentials | None`, not in `repr`), `use_starttls`, `starttls_verify`,
   `timeout`, `local_hostname`, `deadline`.
 * `SMTPUTF8NotSupportedError` - a relay without SMTPUTF8 for a message that needs it; a message refusal
   in the host order (the host is not demoted).
@@ -271,6 +271,9 @@ redacted at the credential fields (`smtp_password`, `smtphosts`).
 
 ### `_validation` Module (Checks)
 
+* `SmtpCredentials` - a `NamedTuple` of `username` and `password`, its `repr` without the
+  password; `require_credentials` builds it from the caller's pair, and
+  `ConfMail.resolved_credentials()`, `DeliveryOptions.credentials` and the CLI carry it.
 * `validate_email_address(address)` - `InvalidInputError` unless `EMAIL_PATTERN` matches or the address is a
   valid internationalised address (lengths in UTF-8 octets).
 * `to_nfc(address)`, `needs_smtputf8(sender, recipient)` - NFC normalisation and the one rule

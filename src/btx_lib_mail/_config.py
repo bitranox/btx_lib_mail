@@ -16,7 +16,7 @@ from ._attachments import (
     normalise_directories,
     normalise_extensions,
 )
-from ._validation import check_local_hostname, check_seconds, check_timeout, collect_host_inputs
+from ._validation import SmtpCredentials, check_local_hostname, check_seconds, check_timeout, collect_host_inputs
 from .errors import ConfigurationError, InvalidInputError
 from .secret_safety import SecretSafeModel
 
@@ -369,17 +369,17 @@ class ConfMail(SecretSafeModel):
                 )
         return self
 
-    def resolved_credentials(self) -> tuple[str, str] | None:
-        """Provide downstream helpers with a single optional tuple rather than two separate optional strings.
+    def resolved_credentials(self) -> SmtpCredentials | None:
+        """Provide downstream helpers with one optional value rather than two separate optional strings.
 
         Returns:
-            `(username, password)` with the plaintext password when both
+            The user name and the plaintext password when both
             `smtp_username` and `smtp_password` are populated; `None`
             otherwise.
         """
         password = self.smtp_password.get_secret_value() if self.smtp_password is not None else None
         if self.smtp_username and password:
-            return self.smtp_username, password
+            return SmtpCredentials(username=self.smtp_username, password=password)
         return None
 
 

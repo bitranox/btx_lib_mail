@@ -533,7 +533,7 @@ def test_an_image_that_grows_past_the_limit_while_read_is_refused_in_warn_mode(t
         raise_on_violation=False,
         max_count=None,
     )
-    images = _inline_images.prepare_inline_images((("logo", grown),), security)
+    images = _inline_images.prepare_inline_images((_inline_images.InlineImageRequest(content_id="logo", path=grown),), security)
     try:
         with grown.open("ab") as grow:
             grow.write(b"y" * 200_000)

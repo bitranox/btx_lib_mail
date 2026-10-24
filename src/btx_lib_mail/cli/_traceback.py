@@ -5,7 +5,7 @@ Private to btx_lib_mail.cli: import the public names from `btx_lib_mail.cli`.
 
 from __future__ import annotations
 
-from typing import Final
+from typing import Final, NamedTuple
 
 import lib_cli_exit_tools
 
@@ -29,7 +29,18 @@ TRACEBACK_VERBOSE_LIMIT: Final[int] = 10_000
 """Character budget applied when verbose tracebacks are requested."""
 
 
-TracebackState = tuple[bool, bool]
+class TracebackState(NamedTuple):
+    """The traceback settings of `lib_cli_exit_tools`, captured to restore them later.
+
+    A tuple subclass, so it still compares equal to ``(traceback, force_color)``.
+
+    Attributes:
+        traceback: Whether verbose tracebacks are on.
+        force_color: Whether tracebacks are coloured even off a terminal.
+    """
+
+    traceback: bool
+    force_color: bool
 
 
 def apply_traceback_preferences(enabled: bool) -> None:  # noqa: FBT001 - public API (docs/systemdesign/module_reference.md), positional call sites exist
@@ -57,15 +68,15 @@ def snapshot_traceback_state() -> TracebackState:
     They can then be restored after a CLI run modifies them.
 
     Returns:
-        The tuple `(traceback_enabled, force_color)` describing the current configuration.
+        The current traceback and colour settings.
 
     Examples:
         >>> snapshot_traceback_state() in [(False, False), (True, True)]
         True
     """
-    return (
-        bool(getattr(lib_cli_exit_tools.config, "traceback", False)),
-        bool(getattr(lib_cli_exit_tools.config, "traceback_force_color", False)),
+    return TracebackState(
+        traceback=bool(getattr(lib_cli_exit_tools.config, "traceback", False)),
+        force_color=bool(getattr(lib_cli_exit_tools.config, "traceback_force_color", False)),
     )
 
 
@@ -75,7 +86,7 @@ def restore_traceback_state(state: TracebackState) -> None:
     Global state then looks untouched to callers after CLI execution.
 
     Args:
-        state: The tuple produced by `snapshot_traceback_state()`.
+        state: The settings captured by `snapshot_traceback_state()`.
 
     Examples:
         >>> saved = snapshot_traceback_state()
@@ -84,5 +95,5 @@ def restore_traceback_state(state: TracebackState) -> None:
         >>> snapshot_traceback_state() == saved
         True
     """
-    lib_cli_exit_tools.config.traceback = bool(state[0])
-    lib_cli_exit_tools.config.traceback_force_color = bool(state[1])
+    lib_cli_exit_tools.config.traceback = bool(state.traceback)
+    lib_cli_exit_tools.config.traceback_force_color = bool(state.force_color)

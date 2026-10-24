@@ -186,7 +186,7 @@ def test_a_server_reply_cannot_forge_log_lines() -> None:
 
 
 _PLAIN_PASSWORD = "s3cret-Pass"
-_CREDENTIALS = ("user@example.com", _PLAIN_PASSWORD)
+_CREDENTIALS = lib_mail.SmtpCredentials("user@example.com", _PLAIN_PASSWORD)
 
 
 @pytest.mark.os_agnostic
@@ -379,10 +379,18 @@ def test_send_refuses_a_userinfo_host_before_any_delivery(hosts: list[str], capl
 
 @pytest.mark.os_agnostic
 def test_delivery_options_repr_hides_the_credentials() -> None:
-    options = lib_mail.DeliveryOptions(credentials=("user", _HOST_DUMMY), use_starttls=True, starttls_verify=True, timeout=5.0)
+    options = lib_mail.DeliveryOptions(credentials=lib_mail.SmtpCredentials("user", _HOST_DUMMY), use_starttls=True, starttls_verify=True, timeout=5.0)
     assert "use_starttls=True" in repr(options), "positive control: the repr is still produced"
     assert _HOST_DUMMY not in repr(options)
     assert options.credentials == ("user", _HOST_DUMMY)
+
+
+@pytest.mark.os_agnostic
+def test_smtp_credentials_repr_and_str_hide_the_password() -> None:
+    credentials = lib_mail.SmtpCredentials("user", _HOST_DUMMY)
+    assert "username='user'" in repr(credentials), "positive control: the repr is still produced"
+    for rendering in (repr(credentials), str(credentials), repr((credentials,)), f"{credentials}"):
+        assert _HOST_DUMMY not in rendering
 
 
 def _leaks(exc: BaseException, needle: str) -> list[str]:
@@ -1936,14 +1944,16 @@ _PLAIN_TOKEN = base64.b64encode(f"\0{_USER}\0{_PASSWORD}".encode()).decode()
 )
 def test_an_authentication_failure_keeps_its_code_and_status_but_not_the_server_text(reply: bytes) -> None:
     """A server that echoes the AUTH line in a shape of its own defeats any search for the password."""
-    described = lib_mail._describe_failure(smtplib.SMTPAuthenticationError(535, reply), credentials=(_USER, _PASSWORD))
+    described = lib_mail._describe_failure(smtplib.SMTPAuthenticationError(535, reply), credentials=lib_mail.SmtpCredentials(_USER, _PASSWORD))
 
     assert described == "SMTPAuthenticationError 535 5.7.8"
 
 
 @pytest.mark.os_agnostic
 def test_an_authentication_failure_without_an_enhanced_status_keeps_its_code() -> None:
-    described = lib_mail._describe_failure(smtplib.SMTPAuthenticationError(535, b"Authentication failed"), credentials=(_USER, _PASSWORD))
+    described = lib_mail._describe_failure(
+        smtplib.SMTPAuthenticationError(535, b"Authentication failed"), credentials=lib_mail.SmtpCredentials(_USER, _PASSWORD)
+    )
 
     assert described == "SMTPAuthenticationError 535"
 
@@ -1952,20 +1962,20 @@ def test_an_authentication_failure_without_an_enhanced_status_keeps_its_code() -
 @pytest.mark.parametrize(
     ("error", "credentials"),
     [
-        (ConnectionError(f"login token {_PLAIN_TOKEN[:20]} {_PLAIN_TOKEN[20:]}"), (_USER, _PASSWORD)),
-        (ConnectionError(f"login token {_PLAIN_TOKEN.rstrip('=')}"), (_USER, _PASSWORD)),
-        (ConnectionError("connection reset by peer"), ("user", "e")),
+        (ConnectionError(f"login token {_PLAIN_TOKEN[:20]} {_PLAIN_TOKEN[20:]}"), lib_mail.SmtpCredentials(_USER, _PASSWORD)),
+        (ConnectionError(f"login token {_PLAIN_TOKEN.rstrip('=')}"), lib_mail.SmtpCredentials(_USER, _PASSWORD)),
+        (ConnectionError("connection reset by peer"), lib_mail.SmtpCredentials("user", "e")),
     ],
     ids=["split", "unpadded", "one-character-password"],
 )
-def test_another_failure_whose_text_carries_the_password_is_named_only(error: OSError, credentials: tuple[str, str]) -> None:
+def test_another_failure_whose_text_carries_the_password_is_named_only(error: OSError, credentials: lib_mail.SmtpCredentials) -> None:
     """Replacing a one-character password in the text showed every place it stood, so the password itself."""
     assert lib_mail._describe_failure(error, credentials=credentials) == type(error).__name__
 
 
 @pytest.mark.os_agnostic
 def test_a_failure_whose_text_does_not_carry_the_password_keeps_it() -> None:
-    described = lib_mail._describe_failure(ConnectionError("connection reset by peer"), credentials=(_USER, _PASSWORD))
+    described = lib_mail._describe_failure(ConnectionError("connection reset by peer"), credentials=lib_mail.SmtpCredentials(_USER, _PASSWORD))
 
     assert described == "ConnectionError: connection reset by peer"
 
@@ -1973,7 +1983,10 @@ def test_a_failure_whose_text_does_not_carry_the_password_keeps_it() -> None:
 @pytest.mark.os_agnostic
 def test_an_empty_password_leaves_the_failure_text_alone() -> None:
     """An empty password is in every text; checking for it would drop every failure's text."""
-    assert lib_mail._describe_failure(ConnectionError("connection reset by peer"), credentials=("user", "")) == "ConnectionError: connection reset by peer"
+    assert (
+        lib_mail._describe_failure(ConnectionError("connection reset by peer"), credentials=lib_mail.SmtpCredentials("user", ""))
+        == "ConnectionError: connection reset by peer"
+    )
 
 
 # Sweep 9 reviewer B: each test below fails on the mutant it was written against.

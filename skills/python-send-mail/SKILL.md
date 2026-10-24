@@ -252,8 +252,26 @@ symlink loop) is reported like a missing file, never as a bare `OSError`: `Attac
 `deliver(*, host, sender, recipient, message, delivery)`. Pass a recording one with
 `transport=` and assert on what it received; do not patch `smtplib` or your own wrapper around
 `send`. `message` is a seekable binary stream at its first byte (rewound before every host
-attempt); `delivery` is a `DeliveryOptions` (`credentials`, `use_starttls`, `starttls_verify`,
-`timeout`, `local_hostname`, `deadline`). Raise from `deliver` to make that host fail.
+attempt); `delivery` is a frozen `DeliveryOptions`. Raise from `deliver` to make that host fail.
+
+| `DeliveryOptions` field | Type                      | Meaning                                                  |
+|-------------------------|---------------------------|----------------------------------------------------------|
+| `credentials`           | `SmtpCredentials \| None` | `None`: no AUTH; else `.username: str`, `.password: str` |
+| `use_starttls`          | `bool`                    | STARTTLS before AUTH                                     |
+| `starttls_verify`       | `bool`                    | verify the server certificate during STARTTLS            |
+| `timeout`               | `float`                   | socket timeout, seconds                                  |
+| `local_hostname`        | `str \| None` = `None`    | EHLO name; `None`: the host's own                        |
+| `deadline`              | `float \| None` = `None`  | ceiling on one SMTP session, seconds; `None`: none       |
+
+Read the credentials by name, `delivery.credentials.username` and `.password`; the password is
+plaintext, so never log or record it. `repr()`, `str()` and an f-string of `SmtpCredentials` or
+`DeliveryOptions` leave it out, but `SmtpCredentials(username, password)` is still a `NamedTuple`:
+indexing, unpacking, `"%s %s" % creds`, `*creds`, `tuple()` and `_asdict()` all expose the password,
+so log `.username`, never the tuple's contents. Build it positionally or with those keywords. A
+test that calls `deliver` directly builds the options with keywords, the first four required:
+`DeliveryOptions(credentials=SmtpCredentials("mailer", "pw"), use_starttls=False,
+starttls_verify=True, timeout=10.0)`, with `from btx_lib_mail import DeliveryOptions,
+SmtpCredentials`.
 
 ```python
 from email import message_from_bytes
@@ -618,7 +636,7 @@ def load_api_settings(raw: dict[str, object]) -> ApiSettings:
 The API and CLI surface is discoverable from the INSTALL (always matches your version): run
 `uvx --exclude-newer "7 days" btx_lib_mail --help` and `uvx --exclude-newer "7 days" btx_lib_mail send --help` for every CLI option, and
 `python -c "import btx_lib_mail as m; help(m)"` for the public API - `send`, `conf`, `ConfMail`,
-`Transport`, `DeliveryOptions`, `validate_email_address`, `validate_smtp_host`, the exceptions
+`Transport`, `DeliveryOptions`, `SmtpCredentials`, `validate_email_address`, `validate_smtp_host`, the exceptions
 (`BtxMailError`, `InvalidInputError`, `ConfigurationError`, `AttachmentNotFoundError`,
 `AttachmentSecurityError`, `DeliveryError`), `AttachmentViolation`, `SecretSafeModel`,
 `redact_validation_error`, `REDACTED_INPUT` (the `"[redacted]"` stand-in a redacted error input

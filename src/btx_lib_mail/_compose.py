@@ -37,8 +37,8 @@ if TYPE_CHECKING:
 _SPOOL_MAX_SIZE: Final[int] = 1024 * 1024  # 1 MiB
 
 
-def _guess_attachment_mimetype(filename: str) -> tuple[str, str]:
-    """Return the ``(maintype, subtype)`` Content-Type for an attachment name.
+def _guess_attachment_mimetype(filename: str) -> str:
+    """Return the ``maintype/subtype`` Content-Type for an attachment name.
 
     A specific Content-Type helps the receiving client render the attachment;
     an unrecognised extension falls back to the generic binary type so
@@ -48,13 +48,19 @@ def _guess_attachment_mimetype(filename: str) -> tuple[str, str]:
         filename: The attachment's file name.
 
     Returns:
-        The guessed ``(maintype, subtype)`` pair.
+        The guessed Content-Type, such as ``application/pdf``.
+
+    Examples:
+        >>> _guess_attachment_mimetype("report.pdf")
+        'application/pdf'
+        >>> _guess_attachment_mimetype("data.unknown-extension")
+        'application/octet-stream'
     """
     guessed, _encoding = mimetypes.guess_type(filename)
     if guessed is None:
-        return "application", "octet-stream"
+        return "application/octet-stream"
     maintype, _slash, subtype = guessed.partition("/")
-    return maintype, subtype or "octet-stream"
+    return f"{maintype}/{subtype or 'octet-stream'}"
 
 
 @dataclass(frozen=True)
@@ -546,9 +552,8 @@ def _write_attachment_part(spool: IO[bytes], attachment: AttachmentPayload) -> N
         AttachmentSecurityError: If the file grows past its size limit while
             it is being read.
     """
-    maintype, subtype = _guess_attachment_mimetype(attachment.filename)
     part_headers = EmailMessage()
-    part_headers["Content-Type"] = f"{maintype}/{subtype}"
+    part_headers["Content-Type"] = _guess_attachment_mimetype(attachment.filename)
     part_headers["Content-Transfer-Encoding"] = "base64"
     part_headers.add_header("Content-Disposition", "attachment", filename=attachment.filename)
     spool.write(_header_block(part_headers))

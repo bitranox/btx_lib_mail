@@ -11,7 +11,7 @@ import re
 import string
 import unicodedata
 from collections.abc import Iterable, Sequence
-from typing import Any, Final, cast
+from typing import Any, Final, NamedTuple, cast
 
 from ._common import SkipKind, is_valid_unicode, logger, printable
 from .errors import InvalidInputError
@@ -158,8 +158,34 @@ def require_collection(value: object, *, field_name: str, of_what: str = "") -> 
     return cast("Iterable[object]", value)
 
 
-def require_credentials(value: object) -> tuple[str, str]:
-    """Return value when it is a ``(user, password)`` pair of ``str``.
+class SmtpCredentials(NamedTuple):
+    """The SMTP user name and password, named so the two cannot be swapped silently.
+
+    A tuple subclass, so code that unpacks ``username, password = credentials``
+    still works. Its ``repr`` leaves the password out, like every other place
+    that holds it.
+
+    Attributes:
+        username: The SMTP AUTH user name.
+        password: The SMTP AUTH password, in plaintext.
+
+    Examples:
+        >>> SmtpCredentials("mailer", "DUMMY-PLANTED-password")
+        SmtpCredentials(username='mailer', password=<hidden>)
+        >>> SmtpCredentials("mailer", "DUMMY-PLANTED-password").username
+        'mailer'
+    """
+
+    username: str
+    password: str
+
+    def __repr__(self) -> str:
+        """Return the repr with the password left out."""
+        return f"SmtpCredentials(username={self.username!r}, password=<hidden>)"
+
+
+def require_credentials(value: object) -> SmtpCredentials:
+    """Return value as `SmtpCredentials` when it is a ``(user, password)`` pair of ``str``.
 
     The message does not echo the value, which holds a password.
 
@@ -167,7 +193,7 @@ def require_credentials(value: object) -> tuple[str, str]:
         value: The caller's credentials.
 
     Returns:
-        The pair as a tuple.
+        The pair, its two fields named.
 
     Raises:
         InvalidInputError: If value is not a tuple or list of two ``str``.
@@ -175,7 +201,7 @@ def require_credentials(value: object) -> tuple[str, str]:
     if isinstance(value, (tuple, list)):
         pair = cast("tuple[object, ...] | list[object]", value)
         if len(pair) == 2 and isinstance(pair[0], str) and isinstance(pair[1], str):  # noqa: PLR2004 - a user and a password
-            return (pair[0], pair[1])
+            return SmtpCredentials(username=pair[0], password=pair[1])
     raise InvalidInputError("credentials must be a (user, password) pair of str")
 
 
@@ -198,7 +224,7 @@ def check_local_hostname(value: str, *, label: str) -> None:
         raise InvalidInputError(f"{label} has {len(value)} characters, more than the {_MAX_EHLO_NAME} allowed")
 
 
-def check_credentials(credentials: tuple[str, str] | None) -> None:
+def check_credentials(credentials: SmtpCredentials | None) -> None:
     """Refuse a user name or password AUTH cannot carry, without echoing it.
 
     A lone surrogate (an invalid UTF-8 byte in argv or an env file) would make
@@ -207,14 +233,14 @@ def check_credentials(credentials: tuple[str, str] | None) -> None:
     identity on a lenient server.
 
     Args:
-        credentials: ``(user name, password)``, or ``None`` for no AUTH.
+        credentials: The user name and password, or ``None`` for no AUTH.
 
     Raises:
         InvalidInputError: If either cannot be encoded as UTF-8 or contains NUL.
     """
     if credentials is None:
         return
-    for value, label in zip(credentials, ("the SMTP user name", "the SMTP password"), strict=True):
+    for value, label in ((credentials.username, "the SMTP user name"), (credentials.password, "the SMTP password")):
         if not is_valid_unicode(value):
             raise InvalidInputError(f"{label} must be valid Unicode text")
         if "\x00" in value:
@@ -985,7 +1011,7 @@ def _validate_port_and_brackets(host: str) -> None:
     """
     if not host.startswith("["):
         if ":" in host:
-            _validate_port(host.rsplit(":", 1)[1], host)
+            _validate_port(host.rsplit(":", 1)[1], original=host)
         return
     bracket_end = host.find("]")
     if bracket_end == -1:
@@ -995,7 +1021,7 @@ def _validate_port_and_brackets(host: str) -> None:
         return
     if not remainder.startswith(":"):
         raise InvalidInputError(f'unexpected characters after bracket in "{_shown(host)}"')
-    _validate_port(remainder[1:], host)
+    _validate_port(remainder[1:], original=host)
 
 
 def _validate_host_shape(host: str) -> None:
@@ -1025,12 +1051,12 @@ def _validate_host_shape(host: str) -> None:
     if not name:
         raise InvalidInputError(f'missing host name in "{_shown(host)}"')
     if host.startswith("["):
-        _check_address_literal(name, host)
+        _check_address_literal(name, host=host)
     else:
-        _check_host_name(name, host)
+        _check_host_name(name, host=host)
 
 
-def _check_address_literal(address: str, host: str) -> None:
+def _check_address_literal(address: str, *, host: str) -> None:
     """Refuse bracket content that is not an IP address (IPv6, zone id included, or IPv4).
 
     Args:
@@ -1046,7 +1072,7 @@ def _check_address_literal(address: str, host: str) -> None:
         raise InvalidInputError(f'not an IP address in brackets in "{_shown(host)}"') from None
 
 
-def _check_host_name(name: str, host: str) -> None:
+def _check_host_name(name: str, *, host: str) -> None:
     """Refuse a host name DNS can never resolve: too long, an empty label, or a label's hyphen.
 
     The character set is not restricted (internal names use ``_``, IDN names
@@ -1074,7 +1100,7 @@ def _check_host_name(name: str, host: str) -> None:
             raise InvalidInputError(f'a host name label must not start or end with "-" in "{_shown(host)}"')
 
 
-def _validate_port(port_str: str, original: str) -> None:
+def _validate_port(port_str: str, *, original: str) -> None:
     """Validate that port_str is plain ASCII digits naming a port in the 1-65535 range.
 
     Args:
@@ -1100,7 +1126,19 @@ def _validate_port(port_str: str, original: str) -> None:
         raise InvalidInputError(f'invalid smtp port in "{_shown(original)}"')
 
 
-def parse_smtp_host(address: str) -> tuple[str, int | None]:
+class SmtpHostAddress(NamedTuple):
+    """An SMTP host split into what `smtplib.SMTP.connect` takes.
+
+    Attributes:
+        hostname: The host name or IP address; an IPv6 address without its brackets.
+        port: The port, or ``None`` for smtplib's default.
+    """
+
+    hostname: str
+    port: int | None
+
+
+def parse_smtp_host(address: str) -> SmtpHostAddress:
     """Validate and split an SMTP host string into hostname and port.
 
     Calls `validate_smtp_host` first, then extracts the components. IPv6
@@ -1115,6 +1153,12 @@ def parse_smtp_host(address: str) -> tuple[str, int | None]:
 
     Raises:
         InvalidInputError: If address fails `validate_smtp_host`.
+
+    Examples:
+        >>> parse_smtp_host("[2001:db8::1]:2525")
+        SmtpHostAddress(hostname='2001:db8::1', port=2525)
+        >>> parse_smtp_host("smtp.example.com")
+        SmtpHostAddress(hostname='smtp.example.com', port=None)
     """
     validate_smtp_host(address)
 
@@ -1123,10 +1167,10 @@ def parse_smtp_host(address: str) -> tuple[str, int | None]:
         ipv6_addr = address[1:bracket_end]
         remainder = address[bracket_end + 1 :]
         if remainder.startswith(":"):
-            return ipv6_addr, int(remainder[1:])
-        return ipv6_addr, None
+            return SmtpHostAddress(hostname=ipv6_addr, port=int(remainder[1:]))
+        return SmtpHostAddress(hostname=ipv6_addr, port=None)
 
     if ":" not in address:
-        return address, None
+        return SmtpHostAddress(hostname=address, port=None)
     host, port_str = address.rsplit(":", 1)
-    return host, int(port_str)
+    return SmtpHostAddress(hostname=host, port=int(port_str))

@@ -49,6 +49,19 @@ _CONTENT_ID_CHARACTERS: Final[frozenset[str]] = frozenset(chr(code) for code in 
 
 
 @dataclass(frozen=True)
+class InlineImageRequest:
+    """An inline image the caller asked for: its Content-ID checked, its file not opened yet.
+
+    Attributes:
+        content_id: The key the HTML references as ``cid:<content_id>``.
+        path: The image file, checked and opened by :func:`prepare_inline_images`.
+    """
+
+    content_id: str
+    path: pathlib.Path
+
+
+@dataclass(frozen=True)
 class InlineImagePayload:
     """A checked inline image, open, with the Content-ID and Content-Type it is sent under.
 
@@ -98,8 +111,8 @@ def check_content_id(content_id: object) -> str:
     return content_id
 
 
-def coerce_inline_images(entries: object, *, html_body: object) -> tuple[tuple[str, pathlib.Path], ...]:
-    """Return the caller's inline images as ``(content_id, path)`` pairs, each Content-ID checked.
+def coerce_inline_images(entries: object, *, html_body: object) -> tuple[InlineImageRequest, ...]:
+    """Return the caller's inline images as requests, each Content-ID checked.
 
     Args:
         entries: The ``inline_images`` keyword, typed loosely because the
@@ -109,7 +122,7 @@ def coerce_inline_images(entries: object, *, html_body: object) -> tuple[tuple[s
             only HTML can reference them.
 
     Returns:
-        The pairs in the mapping's order; empty when there are none.
+        The requests in the mapping's order; empty when there are none.
 
     Raises:
         InvalidInputError: If entries is neither ``None`` nor a mapping, a key is
@@ -117,7 +130,7 @@ def coerce_inline_images(entries: object, *, html_body: object) -> tuple[tuple[s
             a ``pathlib`` path, or there are images but html_body is empty.
 
     Examples:
-        >>> [(key, path.name) for key, path in coerce_inline_images({"logo": "/srv/logo.png"}, html_body="<img src='cid:logo'>")]
+        >>> [(image.content_id, image.path.name) for image in coerce_inline_images({"logo": "/srv/logo.png"}, html_body="<img src='cid:logo'>")]
         [('logo', 'logo.png')]
         >>> coerce_inline_images(None, html_body="")
         ()
@@ -126,7 +139,9 @@ def coerce_inline_images(entries: object, *, html_body: object) -> tuple[tuple[s
         return ()
     if not isinstance(entries, Mapping):
         raise InvalidInputError(f"inline_images must be a mapping of Content-ID to path, got {type(entries).__name__}")
-    images = tuple((check_content_id(key), _image_path(value)) for key, value in cast("Mapping[object, object]", entries).items())
+    images = tuple(
+        InlineImageRequest(content_id=check_content_id(key), path=_image_path(value)) for key, value in cast("Mapping[object, object]", entries).items()
+    )
     if images and not html_body:
         raise InvalidInputError("inline_images need an HTML body that references them: mail_body_html is empty")
     return images
@@ -158,11 +173,11 @@ def image_security(security: AttachmentSecurityOptions) -> AttachmentSecurityOpt
     return replace(security, allowed_extensions=allowed, raise_on_violation=True, max_count=None)
 
 
-def prepare_inline_images(images: tuple[tuple[str, pathlib.Path], ...], security: AttachmentSecurityOptions) -> tuple[InlineImagePayload, ...]:
+def prepare_inline_images(images: tuple[InlineImageRequest, ...], security: AttachmentSecurityOptions) -> tuple[InlineImagePayload, ...]:
     """Check and open each inline image once, through the attachment checks.
 
     Args:
-        images: The ``(content_id, path)`` pairs from :func:`coerce_inline_images`.
+        images: The requests from :func:`coerce_inline_images`.
         security: The attachment security options of the call; narrowed by
             :func:`image_security`.
 
@@ -182,10 +197,10 @@ def prepare_inline_images(images: tuple[tuple[str, pathlib.Path], ...], security
     if not images:
         return ()
     # Strict and raise_on_missing: every path yields a payload or raises, so the zip below pairs them.
-    payloads = prepare_attachments(tuple(path for _key, path in images), image_security(security), raise_on_missing=True)
+    payloads = prepare_attachments(tuple(image.path for image in images), image_security(security), raise_on_missing=True)
     return tuple(
-        InlineImagePayload(content_id=content_id, content_type=INLINE_IMAGE_TYPES[extension_as_sent(payload.filename)], attachment=payload)
-        for (content_id, _path), payload in zip(images, payloads, strict=True)
+        InlineImagePayload(content_id=image.content_id, content_type=INLINE_IMAGE_TYPES[extension_as_sent(payload.filename)], attachment=payload)
+        for image, payload in zip(images, payloads, strict=True)
     )
 
 
@@ -198,6 +213,7 @@ __all__ = [
     "CONTENT_ID_MAX_LENGTH",
     "INLINE_IMAGE_TYPES",
     "InlineImagePayload",
+    "InlineImageRequest",
     "check_content_id",
     "close_inline_images",
     "coerce_inline_images",

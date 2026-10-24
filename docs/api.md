@@ -71,8 +71,10 @@ Common helpers:
 - Assignment to a field (`conf.smtp_timeout = 10.0`) is validated like construction
   (`validate_assignment=True`); there is no bulk-update method, so update the global
   `conf` field by field, or pass your own instance with `send(config=...)`.
-- `ConfMail.resolved_credentials() -> tuple[str, str] | None`  -  return the
-  `(username, password)` pair when both credential fields are populated.
+- `ConfMail.resolved_credentials() -> SmtpCredentials | None`  -  return the user name and
+  password when both credential fields are populated. `SmtpCredentials` (exported) is a
+  `NamedTuple` with the fields `username` and `password`; its `repr` leaves the password out,
+  and it still unpacks as `username, password = credentials`.
 
 ## Functions
 
@@ -383,7 +385,8 @@ def deliver(self, *, host: str, sender: str, recipient: str, message: IO[bytes],
 it before every host attempt. `deliver` returns on success and raises on any failure, so the
 next host is tried. An `OSError` it raises is logged with its text, anything else by type name
 only; never put a credential into the text of an `OSError`. `DeliveryOptions` is a frozen
-dataclass with `credentials` (`tuple[str, str] | None`, left out of `repr`), `use_starttls`,
+dataclass with `credentials` (`SmtpCredentials | None`, left out of `repr`; read
+`credentials.username` and `credentials.password`), `use_starttls`,
 `starttls_verify`, `timeout`, `local_hostname` and `deadline`. The default transport,
 `SmtplibTransport` (importable from `btx_lib_mail.lib_mail`), speaks SMTP. Its keyword-only
 `local_hostname_lookup` takes a callable returning the `EHLO` name to use when a delivery names

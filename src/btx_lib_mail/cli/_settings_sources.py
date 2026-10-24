@@ -18,7 +18,7 @@ import rich_click as click
 from pydantic import ValidationError
 
 from ..errors import InvalidInputError
-from ..lib_mail import validate_smtp_host
+from ..lib_mail import SmtpCredentials, validate_smtp_host
 
 if TYPE_CHECKING:
     from collections.abc import Generator, Mapping, Sequence
@@ -316,9 +316,9 @@ def checked_hosts(values: Sequence[str]) -> list[str]:
     return hosts
 
 
-def resolve_credentials(user: str | None, password: str | None) -> tuple[str, str] | None:
+def resolve_credentials(user: str | None, password: str | None) -> SmtpCredentials | None:
     if user and password:
-        return user, password
+        return SmtpCredentials(username=user, password=password)
     return None
 
 

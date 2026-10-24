@@ -142,7 +142,7 @@ from btx_lib_mail import (
     # Scaffold helpers (behaviors.py) and metadata (__init__conf__.py)
     CANONICAL_GREETING, emit_greeting, noop_main, raise_intentional_failure, print_info,
     # Delivery seam
-    DeliveryOptions, Transport,
+    DeliveryOptions, SmtpCredentials, Transport,
     # Errors (every one is a BtxMailError)
     BtxMailError, InvalidInputError, ConfigurationError,
     AttachmentNotFoundError, DeliveryError, SMTPUTF8NotSupportedError,

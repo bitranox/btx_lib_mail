@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from typing import IO, TYPE_CHECKING, Final, Protocol, cast
 
 from ._common import logger, printable
-from ._validation import needs_smtputf8, parse_smtp_host
+from ._validation import SmtpCredentials, needs_smtputf8, parse_smtp_host
 from .errors import BtxMailError
 
 if TYPE_CHECKING:
@@ -38,7 +38,7 @@ class DeliveryOptions:
     single argument instead of a long parameter list.
 
     Attributes:
-        credentials: (username, password) pair, or None when anonymous
+        credentials: The user name and password, or None when anonymous
             delivery is requested.
         use_starttls: True enables STARTTLS handshakes.
         starttls_verify: True verifies the server certificate and hostname
@@ -52,7 +52,7 @@ class DeliveryOptions:
     """
 
     # repr=False: a transport or a debugger printing the options must not print the password.
-    credentials: tuple[str, str] | None = field(repr=False)
+    credentials: SmtpCredentials | None = field(repr=False)
     use_starttls: bool
     starttls_verify: bool
     timeout: float
@@ -367,7 +367,7 @@ class SmtplibTransport:
             delivery: Resolved delivery options (STARTTLS, credentials,
                 timeouts, deadline).
         """
-        hostname, port = parse_smtp_host(host)
+        address = parse_smtp_host(host)
         # Not connected yet: the greeting is read while connecting, and that read
         # belongs inside the deadline. No `with`: its exit turns a QUIT reply other
         # than 221 into a failure, after the server has already taken the message.
@@ -376,7 +376,7 @@ class SmtplibTransport:
             with _session_deadline(smtp_connection, delivery.deadline):
                 # Waited for before connecting: a relay may drop a connection left idle after its greeting.
                 ehlo_name = self._ehlo_name_in_time(delivery, smtp_connection)
-                smtp_connection.connect(hostname, port or 0)
+                smtp_connection.connect(address.hostname, address.port or 0)
                 # smtplib reads the name only when it sends EHLO, after the greeting.
                 smtp_connection.local_hostname = ehlo_name or _own_address_literal(smtp_connection)
                 _prepare_session(smtp_connection, host=host, delivery=delivery)
@@ -421,8 +421,7 @@ def _prepare_session(smtp_connection: smtplib.SMTP, *, host: str, delivery: Deli
                 printable(host),
                 extra={"host": printable(host)},
             )
-        username, password = delivery.credentials
-        _authenticate(smtp_connection, username, password)
+        _authenticate(smtp_connection, delivery.credentials)
     smtp_connection.ehlo_or_helo_if_needed()
 
 
@@ -430,9 +429,9 @@ def _send_message(smtp_connection: smtplib.SMTP, *, sender: str, recipient: str,
     """Send one message over a prepared session, with BDAT where the server offers CHUNKING."""
     message.seek(0)
     if smtp_connection.has_extn("chunking"):
-        _send_via_bdat(smtp_connection, sender, recipient, message)
+        _send_via_bdat(smtp_connection, message, sender=sender, recipient=recipient)
     else:
-        _send_via_data(smtp_connection, sender, recipient, message)
+        _send_via_data(smtp_connection, message, sender=sender, recipient=recipient)
 
 
 def _quit_quietly(smtp_connection: smtplib.SMTP) -> None:
@@ -740,7 +739,7 @@ def _cut_session(smtp_connection: _SessionSMTP) -> bool:
     return True
 
 
-def _authenticate(smtp_connection: smtplib.SMTP, username: str, password: str) -> None:
+def _authenticate(smtp_connection: smtplib.SMTP, credentials: SmtpCredentials) -> None:
     """Log in, using UTF-8 AUTH PLAIN only when the credentials are not ASCII.
 
     stdlib smtplib encodes every AUTH exchange as ASCII, so a non-ASCII
@@ -749,22 +748,20 @@ def _authenticate(smtp_connection: smtplib.SMTP, username: str, password: str) -
 
     Args:
         smtp_connection: The SMTP connection to authenticate on.
-        username: SMTP account name.
-        password: SMTP account password.
+        credentials: The SMTP account name and password.
     """
-    if username.isascii() and password.isascii():
-        smtp_connection.login(username, password)
+    if credentials.username.isascii() and credentials.password.isascii():
+        smtp_connection.login(credentials.username, credentials.password)
         return
-    _login_plain_utf8(smtp_connection, username, password)
+    _login_plain_utf8(smtp_connection, credentials)
 
 
-def _login_plain_utf8(smtp_connection: smtplib.SMTP, username: str, password: str) -> None:
+def _login_plain_utf8(smtp_connection: smtplib.SMTP, credentials: SmtpCredentials) -> None:
     """Authenticate with RFC 4616 AUTH PLAIN, credentials encoded as UTF-8.
 
     Args:
         smtp_connection: The SMTP connection to authenticate on.
-        username: SMTP account name.
-        password: SMTP account password.
+        credentials: The SMTP account name and password.
 
     Raises:
         smtplib.SMTPNotSupportedError: The server offers no AUTH, or no
@@ -778,7 +775,7 @@ def _login_plain_utf8(smtp_connection: smtplib.SMTP, username: str, password: st
     mechanisms = smtp_connection.esmtp_features["auth"].upper().split()
     if "PLAIN" not in mechanisms:
         raise smtplib.SMTPNotSupportedError("non-ASCII SMTP credentials need a server that offers AUTH PLAIN (RFC 4616)")
-    token = base64.b64encode(b"\0" + username.encode("utf-8") + b"\0" + password.encode("utf-8")).decode("ascii")
+    token = base64.b64encode(b"\0" + credentials.username.encode("utf-8") + b"\0" + credentials.password.encode("utf-8")).decode("ascii")
     code, reply = smtp_connection.docmd("AUTH", "PLAIN " + token)
     if code == _SMTP_AUTH_CONTINUE:
         # A server that ignores the initial response asks for it with an empty
@@ -822,7 +819,7 @@ class SMTPUTF8NotSupportedError(BtxMailError, smtplib.SMTPNotSupportedError):
     """
 
 
-def _open_envelope(smtp_connection: smtplib.SMTP, sender: str, recipient: str) -> None:
+def _open_envelope(smtp_connection: smtplib.SMTP, *, sender: str, recipient: str) -> None:
     """Issue MAIL FROM / RCPT TO, raising on rejection (shared by DATA and BDAT).
 
     A message with a non-ASCII address announces SMTPUTF8 and BODY=8BITMIME on
@@ -838,7 +835,7 @@ def _open_envelope(smtp_connection: smtplib.SMTP, sender: str, recipient: str) -
         smtplib.SMTPSenderRefused: The server rejected MAIL FROM.
         smtplib.SMTPRecipientsRefused: The server rejected RCPT TO.
     """
-    code, resp = smtp_connection.mail(sender, _mail_options(smtp_connection, sender, recipient))
+    code, resp = smtp_connection.mail(sender, _mail_options(smtp_connection, sender=sender, recipient=recipient))
     if code != _SMTP_OK:
         raise smtplib.SMTPSenderRefused(code, resp, sender)
     code, resp = smtp_connection.rcpt(recipient)
@@ -846,7 +843,7 @@ def _open_envelope(smtp_connection: smtplib.SMTP, sender: str, recipient: str) -
         raise smtplib.SMTPRecipientsRefused({recipient: (code, resp)})
 
 
-def _mail_options(smtp_connection: smtplib.SMTP, sender: str, recipient: str) -> tuple[str, ...]:
+def _mail_options(smtp_connection: smtplib.SMTP, *, sender: str, recipient: str) -> tuple[str, ...]:
     """Return the MAIL FROM parameters this message needs, refusing a relay that cannot take it.
 
     smtplib checks the advertisement only in an ESMTP session; after a HELO
@@ -865,7 +862,7 @@ def _mail_options(smtp_connection: smtplib.SMTP, sender: str, recipient: str) ->
         SMTPUTF8NotSupportedError: The message needs SMTPUTF8 and the relay does not offer it.
 
     Examples:
-        >>> _mail_options(smtplib.SMTP(), "a@example.com", "b@example.com")
+        >>> _mail_options(smtplib.SMTP(), sender="a@example.com", recipient="b@example.com")
         ()
     """
     if not needs_smtputf8(sender, recipient):
@@ -875,7 +872,7 @@ def _mail_options(smtp_connection: smtplib.SMTP, sender: str, recipient: str) ->
     return _SMTPUTF8_MAIL_OPTIONS
 
 
-def _send_via_data(smtp_connection: smtplib.SMTP, sender: str, recipient: str, message: IO[bytes]) -> None:
+def _send_via_data(smtp_connection: smtplib.SMTP, message: IO[bytes], *, sender: str, recipient: str) -> None:
     """Stream the message through the classic DATA phase with incremental dot-stuffing.
 
     Args:
@@ -888,7 +885,7 @@ def _send_via_data(smtp_connection: smtplib.SMTP, sender: str, recipient: str, m
         smtplib.SMTPDataError: The server rejected DATA or the final
             transcript.
     """
-    _open_envelope(smtp_connection, sender, recipient)
+    _open_envelope(smtp_connection, sender=sender, recipient=recipient)
     code, resp = smtp_connection.docmd("DATA")
     if code != _SMTP_START_MAIL_INPUT:
         raise smtplib.SMTPDataError(code, resp)
@@ -912,7 +909,7 @@ def _send_via_data(smtp_connection: smtplib.SMTP, sender: str, recipient: str, m
         raise smtplib.SMTPDataError(code, resp)
 
 
-def _send_via_bdat(smtp_connection: smtplib.SMTP, sender: str, recipient: str, message: IO[bytes]) -> None:
+def _send_via_bdat(smtp_connection: smtplib.SMTP, message: IO[bytes], *, sender: str, recipient: str) -> None:
     """Stream the message as RFC 3030 BDAT chunks (length-prefixed, no dot-stuffing).
 
     Args:
@@ -924,7 +921,7 @@ def _send_via_bdat(smtp_connection: smtplib.SMTP, sender: str, recipient: str, m
     Raises:
         smtplib.SMTPDataError: The server rejected a BDAT chunk.
     """
-    _open_envelope(smtp_connection, sender, recipient)
+    _open_envelope(smtp_connection, sender=sender, recipient=recipient)
     sock = _require_socket(smtp_connection)
     while True:
         chunk = message.read(STREAM_CHUNK_SIZE)

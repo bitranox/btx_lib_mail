@@ -334,8 +334,7 @@ def cli_send_mail(  # noqa: PLR0913 - Click command surface; one option per sett
             resolve_password(password=password, password_file=password_file, sources=sources),
         )
         if credentials is not None:
-            user, secret = credentials
-            settings.smtp_username, settings.smtp_password = user, SecretStr(secret)
+            settings.smtp_username, settings.smtp_password = credentials.username, SecretStr(credentials.password)
         settings.recipient_max_count = or_default(
             resolve_int(recipient_max_count, "BTX_MAIL_RECIPIENT_MAX_COUNT", sources=sources), settings.recipient_max_count
         )

@@ -10,8 +10,8 @@ Contents:
       (`_config`), `Transport`, `SmtplibTransport` and `DeliveryOptions`
       (`_transport`), the attachment security names (`_attachments`),
       `INLINE_IMAGE_TYPES` (`_inline_images`),
-      `validate_email_address`, `validate_smtp_host` and `EMAIL_PATTERN`
-      (`_validation`), and `logger` (`_common`).
+      `validate_email_address`, `validate_smtp_host`, `EMAIL_PATTERN` and
+      `SmtpCredentials` (`_validation`), and `logger` (`_common`).
 
 Matches `docs/systemdesign/module_reference.md#core-components` by
 translating intent gathered by the CLI into SMTP side effects while keeping
@@ -51,6 +51,7 @@ from ._inline_images import INLINE_IMAGE_TYPES, InlineImagePayload, close_inline
 from ._transport import DEFAULT_TRANSPORT, DeliveryOptions, SmtplibTransport, SMTPUTF8NotSupportedError, Transport
 from ._validation import (
     EMAIL_PATTERN,
+    SmtpCredentials,
     address_length_problem,
     as_timeout,
     check_credentials,
@@ -75,6 +76,8 @@ if TYPE_CHECKING:
     import pathlib
     from collections.abc import Generator, Iterable, Mapping, Sequence
     from collections.abc import Set as AbstractSet
+
+    from ._inline_images import InlineImageRequest
 
 
 def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called positionally by existing consumers
@@ -326,7 +329,7 @@ def send(  # noqa: PLR0913, PLR0917 - public API; the first 7 params are called 
 @contextlib.contextmanager
 def _opened_files(
     attachment_paths: tuple[pathlib.Path, ...],
-    images: tuple[tuple[str, pathlib.Path], ...],
+    images: tuple[InlineImageRequest, ...],
     *,
     security: AttachmentSecurityOptions,
     raise_on_missing: bool,
@@ -335,7 +338,7 @@ def _opened_files(
 
     Args:
         attachment_paths: The attachment paths, in order.
-        images: The ``(content_id, path)`` pairs of the inline images.
+        images: The inline images requested, Content-IDs checked.
         security: The attachment security options of the call.
         raise_on_missing: Whether a missing attachment raises; a missing inline image always does.
 
@@ -630,7 +633,7 @@ def _directories_or(explicit: object, *, setting: _DirectorySetting, field_name:
 _FAILURE_TEXT_LIMIT: Final[int] = 200
 
 
-def _describe_failure(error: BaseException, *, credentials: tuple[str, str] | None = None) -> str:
+def _describe_failure(error: BaseException, *, credentials: SmtpCredentials | None = None) -> str:
     """Return a one-line, credential-free description of a delivery failure.
 
     The per-host failure log used to attach the whole exception. An
@@ -650,8 +653,8 @@ def _describe_failure(error: BaseException, *, credentials: tuple[str, str] | No
 
     Args:
         error: The exception raised while delivering to one host.
-        credentials: The ``(user, password)`` in use, whose password is
-            replaced wherever the text repeats it.
+        credentials: The user name and password in use; text that repeats
+            the password is dropped.
 
     Returns:
         A one-line, credential-free description, truncated to `_FAILURE_TEXT_LIMIT` characters.
@@ -688,21 +691,21 @@ def _enhanced_status(text: str) -> list[str]:
     return first if first and _ENHANCED_STATUS.fullmatch(first[0]) else []
 
 
-def _holds_password(text: str, credentials: tuple[str, str] | None) -> bool:
+def _holds_password(text: str, credentials: SmtpCredentials | None) -> bool:
     """Whether text holds the password, or the base64 form SMTP AUTH sends it in, spaces and padding aside.
 
     Examples:
-        >>> _holds_password("535 AUTH PLAIN AHUAc Hc rejected", ("u", "pw"))
+        >>> _holds_password("535 AUTH PLAIN AHUAc Hc rejected", SmtpCredentials("u", "pw"))
         True
-        >>> _holds_password("535 rejected", ("u", "pw"))
+        >>> _holds_password("535 rejected", SmtpCredentials("u", "pw"))
         False
     """
-    if credentials is None or not credentials[1]:
+    if credentials is None or not credentials.password:
         return False
-    user, password = credentials
+    password = credentials.password
     squeezed = _squeezed(text)
     forms = (
-        base64.b64encode(f"\0{user}\0{password}".encode()).decode("ascii"),  # AUTH PLAIN
+        base64.b64encode(f"\0{credentials.username}\0{password}".encode()).decode("ascii"),  # AUTH PLAIN
         base64.b64encode(password.encode()).decode("ascii"),  # AUTH LOGIN
         password,
     )
@@ -821,6 +824,7 @@ __all__ = [
     "ConfMail",
     "DeliveryOptions",
     "SMTPUTF8NotSupportedError",
+    "SmtpCredentials",
     "SmtplibTransport",
     "Transport",
     "conf",

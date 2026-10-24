@@ -107,7 +107,7 @@ wheels = [
 
 [[package]]
 name = "btx-lib-mail"
-version = "4.5.2"
+version = "4.6.0"
 source = { editable = "." }
 dependencies = [
     { name = "lib-cli-exit-tools" },

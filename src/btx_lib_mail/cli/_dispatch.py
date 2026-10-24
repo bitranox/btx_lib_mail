@@ -6,7 +6,7 @@ Private to btx_lib_mail.cli: import the public names from `btx_lib_mail.cli`.
 from __future__ import annotations
 
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import lib_cli_exit_tools
 import rich_click as click
@@ -46,14 +46,14 @@ def _invoke_cli(argv: Sequence[str] | None) -> int:
     # process (an application embedding main()) must not report an earlier run's skips.
     FAILED_RUN_SKIPPED.set(())
     argv_list = list(argv) if argv is not None else None
-    as_json, bare = _json_mode(argv_list if argv_list is not None else sys.argv[1:])
-    if not as_json:
+    json_mode = _json_mode(argv_list if argv_list is not None else sys.argv[1:])
+    if not json_mode.enabled:
         return lib_cli_exit_tools.run_cli(cli, argv=argv_list, prog_name=__init__conf__.shell_command)
     return lib_cli_exit_tools.run_cli(
         cli,
         argv=argv_list,
         prog_name=__init__conf__.shell_command,
-        exception_handler=_json_exception_handler(argv_list if argv_list is not None else sys.argv[1:], bare=bare),
+        exception_handler=_json_exception_handler(argv_list if argv_list is not None else sys.argv[1:], bare=json_mode.bare),
     )
 
 
@@ -205,8 +205,20 @@ def _split_at_command(argv: Sequence[str]) -> tuple[list[str], str | None]:
     return list(argv), None
 
 
-def _json_mode(argv: Sequence[str]) -> tuple[bool, bool]:
-    """Return ``(as_json, bare)`` from the group options in *argv*, before the subcommand.
+class _JsonMode(NamedTuple):
+    """Which JSON output the group options ask for.
+
+    Attributes:
+        enabled: Whether output is JSON (``--json``, ``-j`` or ``--json-bare``).
+        bare: Whether it is the bare form (``--json-bare``).
+    """
+
+    enabled: bool
+    bare: bool
+
+
+def _json_mode(argv: Sequence[str]) -> _JsonMode:
+    """Return the JSON output mode from the group options in *argv*, before the subcommand.
 
     Read from argv rather than the Click context: an error can escape before the
     context exists (a malformed option), and its report must still be JSON. Only
@@ -217,11 +229,11 @@ def _json_mode(argv: Sequence[str]) -> tuple[bool, bool]:
         argv: Command-line arguments, including the subcommand and its options.
 
     Returns:
-        A tuple of ``(as_json, bare)``.
+        Whether output is JSON, and whether it is bare.
     """
     group_options, _word = _split_at_command(argv)
     bare = "--json-bare" in group_options
-    return bare or "--json" in group_options or "-j" in group_options, bare
+    return _JsonMode(enabled=bare or "--json" in group_options or "-j" in group_options, bare=bare)
 
 
 def _command_named(argv: Sequence[str]) -> str | None:
@@ -275,8 +287,7 @@ def _restore_when_requested(*, state: TracebackState, should_restore: bool) -> N
     ``lib_cli_exit_tools.config``.
 
     Args:
-        state: Tuple captured by :func:`snapshot_traceback_state` describing the
-            prior configuration.
+        state: The prior configuration, captured by :func:`snapshot_traceback_state`.
         should_restore: ``True`` to reapply the stored configuration; ``False`` to
             keep the current settings.
     """

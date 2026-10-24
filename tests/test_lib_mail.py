@@ -2076,10 +2076,24 @@ def test_send_uses_a_passed_config_and_leaves_the_global_conf_alone() -> None:
 
     host, delivery = transport.deliveries[0].host, transport.deliveries[0].options
     assert host == "cfg.example.com:2525"
-    assert delivery.credentials == ("user", "DUMMY-PLANTED-cfg")
+    assert delivery.credentials == lib_mail.SmtpCredentials(username="user", password="DUMMY-PLANTED-cfg")
     assert delivery.timeout == 7.0
     assert delivery.use_starttls is False
     assert lib_mail.conf.smtphosts == ["global.example.com"]
+
+
+@pytest.mark.os_agnostic
+@pytest.mark.parametrize("pair", [("user", "DUMMY-PLANTED-kw"), ["user", "DUMMY-PLANTED-kw"]], ids=["tuple", "list"])
+def test_a_plain_credentials_pair_reaches_the_transport_with_named_fields(pair: tuple[str, str]) -> None:
+    """A Transport reads delivery.credentials.username and .password, whatever shape the caller passed."""
+    transport = RecordingTransport()
+
+    lib_mail.send("sender@example.com", "rcpt@example.com", "s", smtphosts=["kw.example.com"], credentials=pair, transport=transport)
+
+    credentials = transport.only.options.credentials
+    # == alone cannot tell: a NamedTuple compares equal to the plain tuple it was built from.
+    assert type(credentials) is lib_mail.SmtpCredentials
+    assert (credentials.username, credentials.password) == ("user", "DUMMY-PLANTED-kw")
 
 
 @pytest.mark.os_agnostic

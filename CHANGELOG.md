@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [4.6.0] 2026-10-24 14:09:52
+
+### Changed
+- `SmtpCredentials` (exported from `btx_lib_mail` and `btx_lib_mail.lib_mail`): the SMTP user
+  name and password as a `NamedTuple` with the fields `username` and `password`, its `repr`
+  without the password. `ConfMail.resolved_credentials()` returns it, and
+  `DeliveryOptions.credentials` is typed `SmtpCredentials | None`, so a custom `Transport` reads
+  `delivery.credentials.username` and `.password` by name. It is still a tuple: unpacking and
+  comparing with a plain pair work as before. `send(credentials=...)` still takes any
+  `(user, password)` pair of `str`. Code that builds `DeliveryOptions` itself must pass
+  `SmtpCredentials`: a plain tuple is now a type error, and `SmtplibTransport` reads the fields
+  by name.
+- The `python-send-mail` skill names `SmtpCredentials` and says a custom `Transport` reads
+  `delivery.credentials.username` and `.password`.
+- `btx_lib_mail.cli.TracebackState` is a `NamedTuple` with the fields `traceback` and
+  `force_color`; it still compares equal to the `(traceback, force_color)` tuple.
+
 ## [4.5.2] 2026-10-24 12:54:21
 
 ### Documentation
