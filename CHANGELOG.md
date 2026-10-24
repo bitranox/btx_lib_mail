@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [4.5.2] 2026-10-24 12:54:21
+
+### Documentation
+- The `python-send-mail` skill states the `inline_images` keyword as current behaviour, without a
+  version-history opener.
+
 ## [4.5.1] 2026-10-18 22:50:13
 
 ### Documentation

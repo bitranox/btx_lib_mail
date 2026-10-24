@@ -298,7 +298,7 @@ not raise, so that check proves nothing about what was sent.
 
 ### Inline images (a logo inside the HTML body)
 
-Since btx_lib_mail 4.5.0, the `send()` keyword `inline_images` (there is no `ConfMail` field for it)
+The `send()` keyword `inline_images` (there is no `ConfMail` field for it)
 maps a Content-ID to an image file; the HTML shows each one as
 `<img src="cid:<Content-ID>">`, and the image travels inside the message, so no remote URL has to
 be loaded and no `data:` URI is needed. It requires `mail_body_html`:
