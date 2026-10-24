@@ -166,7 +166,11 @@ def build_conf(section: Mapping[str, object]) -> ConfMail:
 ```
 
 A `credentials` pair is not a `ConfMail` key either: split it into `smtp_username` and
-`smtp_password` before validating.
+`smtp_password` before validating. A subclass (`class EmailConfig(ConfMail)`) inherits the
+refusal, so `EmailConfig(**email_table)` raises the same `extra_forbidden` error for the app's
+own keys (sender, recipients, an attachment directory); map the table as above, or declare those
+keys as fields of the subclass. `model_config = ConfigDict(extra="ignore")` on the subclass turns
+the refusal off and with it the protection against a misspelled SMTP setting.
 
 The `send()` overrides fall back to the config only on `None` or an empty value of their own type.
 For `credentials`, `()` uses the configured credentials, while `""`, `0` or `False` raise
@@ -501,6 +505,17 @@ send(mail_from="alerts@example.com", mail_recipients=["a@example.com", "b@exampl
 The name must be non-empty printable ASCII without spaces; anything else is refused before a
 connection opens (`ConfigurationError` on `ConfMail`, `InvalidInputError` from `send()`). Changing
 the container's hostname is not needed.
+
+A real-socket timing test of code that relies on the deadline (a watchdog freeing a worker slot, a
+bound on one send) also sets the EHLO name explicitly. Otherwise the FIRST send of each process
+spends up to half the time the deadline has left on the reverse-DNS lookup and may announce the
+address literal; deliveries after the lookup finishes reuse the name, and that first send has
+only the rest of its deadline for the session itself, so on a slow relay it can time out where
+later sends succeed. That shows only where reverse DNS is slow (containers, macOS runners), so
+the test flakes there and passes on a host that resolves its own name at once. A test can also
+replace the lookup with
+`transport=SmtplibTransport(local_hostname_lookup=lambda: "test.example.com")`
+(`from btx_lib_mail.lib_mail import SmtplibTransport`); the lookup runs once per transport.
 
 ## Attachment security
 

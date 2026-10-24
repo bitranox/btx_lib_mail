@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [4.6.1] 2026-10-24 17:57:45
+
+### Changed
+- The `python-send-mail` skill says a `ConfMail` subclass inherits the `extra_forbidden` refusal
+  (declare the app's own keys as fields or map the table; `extra="ignore"` also drops the protection
+  against a misspelled SMTP setting), and that a real-socket timing test sets the EHLO name or
+  passes `SmtplibTransport(local_hostname_lookup=...)`, since the first send of a process spends up
+  to half its remaining deadline on the reverse-DNS lookup.
+
 ## [4.6.0] 2026-10-24 14:09:52
 
 ### Changed
