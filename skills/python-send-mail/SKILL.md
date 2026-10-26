@@ -467,6 +467,19 @@ error or a missing attachment, `22` (Windows `87`) a refused value. Other comman
 argument), and `fail`, which raises on purpose to show the traceback and exit-code handling
 (`--traceback fail` prints the full traceback). Run `uvx --exclude-newer "7 days" btx-lib-mail send --help` for every option.
 
+**Give a repeated test mail a distinct subject.** Gmail groups messages with the same subject from
+one sender into one conversation, so the second and third send of the same test mail look as if
+they never arrived. Put the send time or a counter in the subject
+(`--subject "Layout test $(date +%H:%M:%S)"`, or an f-string in `mail_subject=`). When a recipient
+reports that a resend never arrived, check acceptance before investigating the relay: `send`
+returning `True` (or `"ok": true` under `--json`) means one of the configured `smtphosts` accepted
+a copy for every recipient that was not skipped (listed under `skipped` in `--json`, logged as a
+WARNING by `send()`). Failover runs per recipient, so two copies
+can leave through different hosts: the DEBUG line `mail sent to "<recipient>" via host "<host>"`
+names the host for each, and that host's own log shows whether the recipient's server answered
+`250`. If it did, point the recipient at the conversation thread and the spam folder; nothing is
+wrong with the relay.
+
 ## Streaming and BDAT (how delivery works)
 
 - The message body (with every attachment) is encoded once into a disk-backed spool; each

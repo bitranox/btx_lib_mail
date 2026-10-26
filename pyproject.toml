@@ -1,6 +1,6 @@
 [project]
 name = "btx_lib_mail"
-version = "4.6.1"
+version = "4.6.2"
 description = "Send email from Python or the shell: streamed large attachments (bounded memory), RFC 3030 BDAT/CHUNKING, STARTTLS, multi-host failover, and attachment security."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -70,7 +70,7 @@ dev = [
   "aiosmtpd>=1.4.6",
   # Generates a throwaway self-signed cert for the STARTTLS+AUTH e2e test; test-only.
   "cryptography>=50.0.2",
-  "filelock>=4.2.1; python_version >= '3.11'", # CVE-2026-112906, -112940, -112914, via cachecontrol; 4.2.1 needs 3.11, so 3.10 keeps 4.1.x
+  "filelock>=4.2.4; python_version >= '3.11'", # CVE-2026-112906, -112940, -112914, via cachecontrol; 4.2.1 needs 3.11, so 3.10 keeps 4.1.x
 ]
 
 [project.scripts]

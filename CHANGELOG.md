@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [4.6.2] 2026-10-26 13:52:06
+
+### Changed
+
+- The `python-send-mail` skill says to vary a repeated test mail's subject, because a mail client
+  threads identical subjects and the resend looks lost, and what `send()` returning `True` means
+  when `smtphosts` fail over per recipient.
+
 ## [4.6.1] 2026-10-24 17:57:45
 
 ### Changed
