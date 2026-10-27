@@ -42,6 +42,7 @@ Issues = "https://github.com/bitranox/btx_lib_mail/issues"
 dev = [
   "pytest>=9.1.1",
   "pytest-cov>=7.1.0",
+  "pytest-xdist>=3.8.0",
   "ruff>=0.17.1",
   "pyright[nodejs]>=1.1.414",
   "bandit>=1.9.4",
@@ -256,4 +257,4 @@ ignores = ["E003"]
 
 [tool.uv]
 exclude-newer = "7 days"
-exclude-newer-package = {lib-cli-exit-tools = false, certifi = "2026-10-20T02:24:17Z"}
+exclude-newer-package = {lib-cli-exit-tools = false}
