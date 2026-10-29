@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-## [4.6.3] 2026-10-29 14:38:36
+## [4.6.3] - 2026-10-29
 
 ### Changed
 
@@ -10,7 +10,7 @@
   relay: `localhost:25` without STARTTLS, addressed to `root@<myhostname>`, since a bare `root`
   or `root@localhost` is refused as an invalid recipient.
 
-## [4.6.2] 2026-10-26 13:52:06
+## [4.6.2] - 2026-10-26
 
 ### Changed
 
@@ -18,7 +18,7 @@
   threads identical subjects and the resend looks lost, and what `send()` returning `True` means
   when `smtphosts` fail over per recipient.
 
-## [4.6.1] 2026-10-24 17:57:45
+## [4.6.1] - 2026-10-24
 
 ### Changed
 - The `python-send-mail` skill says a `ConfMail` subclass inherits the `extra_forbidden` refusal
@@ -27,7 +27,7 @@
   passes `SmtplibTransport(local_hostname_lookup=...)`, since the first send of a process spends up
   to half its remaining deadline on the reverse-DNS lookup.
 
-## [4.6.0] 2026-10-24 14:09:52
+## [4.6.0] - 2026-10-24
 
 ### Changed
 - `SmtpCredentials` (exported from `btx_lib_mail` and `btx_lib_mail.lib_mail`): the SMTP user
@@ -44,13 +44,13 @@
 - `btx_lib_mail.cli.TracebackState` is a `NamedTuple` with the fields `traceback` and
   `force_color`; it still compares equal to the `(traceback, force_color)` tuple.
 
-## [4.5.2] 2026-10-24 12:54:21
+## [4.5.2] - 2026-10-24
 
 ### Documentation
 - The `python-send-mail` skill states the `inline_images` keyword as current behaviour, without a
   version-history opener.
 
-## [4.5.1] 2026-10-18 22:50:13
+## [4.5.1] - 2026-10-18
 
 ### Documentation
 - The `python-send-mail` skill explains why a test that patches `smtplib.SMTP` intercepts nothing (the
@@ -58,7 +58,7 @@
   fails with `DeliveryError` "following recipients failed ... on all of following hosts"), and that the
   fix is forwarding `transport` through the application's own send wrappers.
 
-## [4.5.0] 2026-10-16 15:48:15
+## [4.5.0] - 2026-10-16
 
 ### Added
 - `send(inline_images=...)`: images the HTML body shows in place. A mapping of Content-ID to image
@@ -79,7 +79,7 @@
 - CLI `send --inline-image CID=PATH` (repeatable, split at the first `=`); a malformed value or a
   repeated CID is a usage error (exit code 2).
 
-## [4.4.0] 2026-10-16 13:47:00
+## [4.4.0] - 2026-10-16
 
 ### Added
 - `DeliveryError.rejected_recipients`: the failed recipients every host refused permanently, with a
@@ -89,7 +89,7 @@
   AUTH, timeout) keeps a recipient out of this list. The CLI's `--json` error carries it as well,
   between `failed_recipients` and `hosts`.
 
-## [4.3.1] 2026-10-15 17:39:07
+## [4.3.1] - 2026-10-15
 
 ### Tests
 
@@ -97,7 +97,7 @@
   (`pytest_runtest_setup` in `tests/conftest.py`); registered in `pyproject.toml` alone they skipped
   nothing, so a test trusting its marker ran everywhere. `tests/test_platform_markers.py` pins it.
 
-## [4.3.0] 2026-10-13 17:40:35
+## [4.3.0] - 2026-10-13
 
 ### Fixed
 - A delivery with `smtp_delivery_deadline` set no longer outlives it by the lookup of this host's own
@@ -114,7 +114,7 @@
   forked child whose parent had not finished it). Unset, every transport shares this host's own
   name, looked up once per process.
 
-## [4.2.0] 2026-10-13 14:56:19
+## [4.2.0] - 2026-10-13
 
 ### Added
 - Internationalised email addresses (RFC 6531 SMTPUTF8): a non-ASCII local part or domain works as
@@ -135,7 +135,7 @@
   is refused by length (the message names the octets) rather than by the address pattern.
 - `validate_email_address()` checks the NFC form, so it agrees with `send()`.
 
-## [4.1.0] 2026-10-12 23:07:06
+## [4.1.0] - 2026-10-12
 
 ### Changed
 - `ConfMail` takes a number given to a text field (`smtp_username`, `smtp_local_hostname`) as its
@@ -144,7 +144,7 @@
   A bool is still refused. Subclasses keep the rule even when they set their own `model_config`. A
   Python caller passing an int there now gets its digits rather than a `ConfigurationError`.
 
-## [4.0.1] 2026-10-12 22:45:19
+## [4.0.1] - 2026-10-12
 
 ### Added
 - `uv.lock` is committed, and `[tool.uv] exclude-newer` sets a cooldown that keeps releases younger
@@ -155,7 +155,7 @@
 - The install section explains why installing with uv protects against supply-chain attacks and why
   a plain `pip install` from PyPI does not.
 
-## [4.0.0] 2026-10-06 12:59:22
+## [4.0.0] - 2026-10-06
 
 ### Added
 
@@ -531,7 +531,7 @@
   release: the JSON output modes, the delivery deadline, the EHLO name, the error classes, the
   per-call limits, `--env-file` and `--password-file`, and the attachment rules added above.
 
-## [3.0.1] 2026-10-02 00:26:45
+## [3.0.1] - 2026-10-02
 
 ### Fixed
 
@@ -544,7 +544,7 @@
 - A host name with a second colon (`smtp.example.com:587:25`) is refused as `more than one ":"`,
   rather than as an IPv6 address it is not.
 
-## [3.0.0] 2026-10-01 18:44:25
+## [3.0.0] - 2026-10-01
 
 ### Changed (breaking)
 
@@ -572,7 +572,7 @@
 - `docs/api.md`, `docs/configuration.md`, `docs/cli.md`, the module reference and the
   `python-send-mail` skill describe the host checks.
 
-## [2.0.0] 2026-10-01 13:18:45
+## [2.0.0] - 2026-10-01
 
 ### Changed (breaking)
 
@@ -594,7 +594,7 @@
 
 - The `cryptography` dev floor is raised to 50.0.2.
 
-## [1.8.0] 2026-09-29 14:14:27
+## [1.8.0] - 2026-09-29
 
 ### Added
 
@@ -643,7 +643,7 @@
   skipped; the retry-then-skip wrapper that hid this is gone, and a start
   failure now fails the test (only the port bind race is retried).
 
-## [1.7.0] 2026-09-29 11:30:27
+## [1.7.0] - 2026-09-29
 
 ### Security
 
@@ -680,7 +680,7 @@
   import with `TypeError`. That includes a base class listing a field that only
   its subclasses declare: list it in the subclass that declares the field.
 
-## [1.6.0] 2026-09-29 01:04:40
+## [1.6.0] - 2026-09-29
 
 ### Security
 
@@ -768,7 +768,7 @@
 - Hosts with interior whitespace or control characters are refused (such hosts
   could never deliver).
 
-## [1.5.2] 2026-07-30 18:08:05
+## [1.5.2] - 2026-07-30
 
 ### Changed
 
@@ -777,7 +777,7 @@
   it. An install re-fetches a skill only when that version changes, so the two numbers drifting
   apart meant a skill edit could ship to nobody. No functional change to the library.
 
-## [1.5.1] 2026-07-24 16:48:37
+## [1.5.1] - 2026-07-24
 
 ### Fixed
 - Latest `ruff` (0.16) widened its default rule set to ~920 rules; CI went red
@@ -800,7 +800,7 @@
   the enabled rule set; every remaining `noqa`/`nosec` now matches a rule that
   is actually enabled.
 
-## [1.5.0] 2026-07-19
+## [1.5.0] - 2026-07-19
 
 ### Added
 - Streamed attachment delivery with bounded memory: the message is composed once
@@ -830,7 +830,7 @@
 - Added `aiosmtpd` and `cryptography` as dev-only dependencies for the real-server
   delivery e2e tests (DATA, BDAT, STARTTLS with authentication, and a memory bound).
 
-## [1.4.0] 2026-07-19
+## [1.4.0] - 2026-07-19
 
 ### Added
 - STARTTLS certificate-verification control: `ConfMail.smtp_starttls_verify`
