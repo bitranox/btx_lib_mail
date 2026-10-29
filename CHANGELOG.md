@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [4.6.3] 2026-10-29 14:38:36
+
+### Changed
+
+- The `python-send-mail` skill shows how to mail the machine's owner through a local postfix
+  relay: `localhost:25` without STARTTLS, addressed to `root@<myhostname>`, since a bare `root`
+  or `root@localhost` is refused as an invalid recipient.
+
 ## [4.6.2] 2026-10-26 13:52:06
 
 ### Changed

@@ -200,6 +200,29 @@ non-ASCII credential: that host's failure is logged as a WARNING (extra `error_t
 `SMTPNotSupportedError`) and delivery fails over to the next host. Credentials sent with STARTTLS
 off are allowed (an internal relay may offer no TLS) and logged as a WARNING naming the host.
 
+### Mailing the machine's owner through its local postfix
+
+When a host or container runs its own postfix that relays outbound mail with its own credential
+and `/etc/aliases` forwards `root` to the owner, send alerts through that postfix rather than
+putting a relay and its password into every app's config: `smtphosts=["localhost:25"]` and
+`use_starttls=False` (the `ConfMail` field is `smtp_use_starttls`; on the CLI `--host localhost:25`
+with `--no-starttls`). Address the mail to `root@<myhostname>` from a dotted sender such as
+`<app>@<myhostname>`, where `<myhostname>` is what `postconf -h myhostname` prints: postfix
+delivers it locally and the alias forwards it. Check first that
+`postconf -h myhostname mydestination` shows a dotted `$myhostname` that `mydestination` covers.
+
+Never a bare `root` or `root@localhost`. An ASCII address must match `EMAIL_PATTERN`, a dotted
+domain ending in a label of at least two letters, so both are refused before postfix sees them,
+and so is `root@<host>` for a single-label host name or sender; `sendmail root` working on the
+same box is why the bare name looks right. By default the refusal raises `InvalidInputError`
+(`invalid recipient root`). With `raise_on_invalid_recipient=False` the bad address is skipped
+with only a WARNING while any valid recipient remains (with none left, `no valid recipients`
+raises), so an alert to it is lost without an error. A tool that takes a configurable recipient
+should qualify a domain-less value with the host's FQDN in code instead of relying on every
+deployment to spell out a full address. Confirm the alert left the box from postfix's own log
+(`/var/log/mail.log` or the journal) showing `status=sent` for the relay hop, never from `send()`
+returning `True`, which here means only that the local postfix accepted it.
+
 ### Internationalised addresses (SMTPUTF8)
 
 `empfänger@müller.de` works as sender or recipient in `send()`, the CLI and
