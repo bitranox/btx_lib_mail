@@ -63,6 +63,21 @@ uv tool install --exclude-newer "7 days" btx_lib_mail
 exclude-newer = "7 days"
 ```
 
+For the first seven days after a `btx_lib_mail` release the cooldown hides it: the commands above
+succeed but silently run the PREVIOUS release (`--version` shows which), and a command that pins
+the new version (`btx-lib-mail==X.Y.Z`, or a floor at it) fails with `No solution found` and a
+hint naming `exclude-newer-package`. When you need that release (a fix it ships), keep the
+cooldown for every dependency and exempt only this package:
+
+```bash
+uvx --exclude-newer "7 days" --exclude-newer-package btx-lib-mail=false btx-lib-mail --version
+uv tool install --exclude-newer "7 days" --exclude-newer-package btx_lib_mail=false btx_lib_mail
+```
+
+The installed tool's receipt keeps the exemption beside the cooldown. The same applies to any of
+your own libraries released in the same week: add one `--exclude-newer-package <name>=false` per
+package.
+
 Without uv, `pip install btx_lib_mail` or `pipx install btx_lib_mail` works but has no cooldown.
 
 Requires Python 3.10+. Both `btx_lib_mail` and `btx-lib-mail` are registered commands; `python -m

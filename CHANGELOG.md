@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [4.6.4] - 2026-10-30
+
+### Docs
+
+- The `python-send-mail` skill: the `--exclude-newer` cooldown in a release week, and
+  `exclude-newer-package` to pin the new version.
+
 ## [4.6.3] - 2026-10-29
 
 ### Changed
